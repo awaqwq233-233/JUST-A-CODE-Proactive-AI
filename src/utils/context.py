@@ -21,18 +21,18 @@ class SharedContext:
     def update_vision(self, results):
         """
         更新视觉信息 (由 Detector 线程调用)
+        
+        Args:
+            results (list): 检测结果，格式为 [{"label": str, "confidence": float, "bbox": tuple}]
         """
         detected = []
-        if results and len(results) > 0:
-            # 解析 YOLO 结果
-            # result.boxes.cls 包含类别ID
-            # result.names 包含类别名称映射
-            r = results[0]
-            for box in r.boxes:
-                class_id = int(box.cls[0])
-                class_name = r.names[class_id]
-                conf = float(box.conf[0])
-                detected.append(f"{class_name} ({conf:.2f})")
+        
+        if results and isinstance(results, list):
+            for item in results:
+                if isinstance(item, dict) and "label" in item and "confidence" in item:
+                    label = item["label"]
+                    confidence = item["confidence"]
+                    detected.append(f"{label} ({confidence:.2f})")
         
         with self._lock:
             self.current_objects = detected
@@ -43,14 +43,12 @@ class SharedContext:
         获取当前视觉摘要 (由 Brain 调用)
         """
         with self._lock:
-            # 如果数据太旧（比如超过 2 秒没更新），可能摄像头卡了或者没东西
             if time.time() - self.last_seen_time > 2.0:
                 return "我眼前暂时一片漆黑（无最新视觉数据）。"
             
             if not self.current_objects:
                 return "我没有看到特别的物体。"
             
-            # 统计物体数量，例如: 2 person, 1 cell phone
             counts = {}
             for obj in self.current_objects:
                 name = obj.split('(')[0].strip()

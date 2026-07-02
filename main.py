@@ -41,7 +41,7 @@ except Exception as e:
 
 # 导入模块
 from src.capture.camera import Camera
-from src.analysis.detector import ObjectDetector
+from src.analysis.detector import VisionDetector
 from src.audio.tts import Speaker
 try:
     from src.audio.genie_tts import GenieSpeaker
@@ -62,7 +62,7 @@ log_queue = queue.Queue()
 context = SharedContext()
 
 # 唤醒词配置
-WAKE_WORDS = ["jac", "j.a.c", "杰克", "接客", "你好", "hello", "hi"]
+WAKE_WORDS = ["jac", "j.a.c", "杰克", "接客", "你好", "hello jac", "hi jac", "你好 jac","hey jac"]
 SYSTEM_STATE = "SLEEP" # SLEEP | AWAKE
 LAST_INTERACTION_TIME = 0
 AWAKE_TIMEOUT = 20 # 唤醒后维持 20 秒活跃状态
@@ -236,7 +236,7 @@ def main():
     camera = Camera(camera_id=0)
     if not camera.start(): return
 
-    detector = ObjectDetector()
+    detector = VisionDetector(mode='hybrid')
     # 优先使用 Genie-TTS，如果配置不可用则回退到 pyttsx3
     speaker = None
     if GenieSpeaker is not None:

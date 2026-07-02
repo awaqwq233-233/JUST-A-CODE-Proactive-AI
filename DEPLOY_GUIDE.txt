@@ -63,10 +63,18 @@ J.A.C. - Just A Code 智能眼镜助手 - 全套离线/迁移部署指南
    下载地址示例 (High-Logic/Genie-TTS-Model/v2/base):
    https://huggingface.co/High-Logic/Genie-TTS-Model/tree/main/v2/base
 
-3. [YOLOv8 模型] (目标检测)
+3. [YOLOv8 模型] (目标检测 - 默认启用)
    * 首次运行会自动下载，或者手动下载：
    下载链接: https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.pt
    * 将文件放入项目根目录。
+
+4. [LocateAnything-3B 模型] (视觉语言定位 - 可选)
+   * 这是 NVIDIA 开发的 3B 参数视觉语言定位模型，支持自然语言查询定位。
+   * 模型会在首次运行时自动从 HuggingFace 下载 (nvidia/LocateAnything-3B)。
+   * 手动下载地址: https://huggingface.co/nvidia/LocateAnything-3B
+   * 模型大小约 10GB+，需要足够磁盘空间。
+   * 硬件要求: 建议 NVIDIA GPU (8GB+ VRAM)，或 Apple Silicon (M2/M3/M4)。
+   * 如果 LocateAnything 不可用，系统会自动降级到 YOLOv8。
 
 【平台特定文件】
 
@@ -104,7 +112,7 @@ python -m pip install --upgrade pip
 
 # 2. 安装基础依赖 (PyTorch, OpenCV, Whisper 等)
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-pip install opencv-python ultralytics pyaudio openai-whisper sounddevice numpy
+pip install opencv-python ultralytics pyaudio openai-whisper sounddevice numpy transformers
 
 # 3. 安装 Genie-TTS 和依赖
 pip install genie-tts onnxruntime
@@ -128,7 +136,7 @@ python3 -m pip install --upgrade pip
 
 # 2. 安装基础依赖
 pip3 install torch torchvision torchaudio
-pip3 install opencv-python ultralytics openai-whisper sounddevice numpy
+pip3 install opencv-python ultralytics openai-whisper sounddevice numpy transformers
 
 # 3. 安装 PyAudio (macOS 需要 portaudio)
 brew install portaudio
@@ -160,7 +168,15 @@ python3 main.py
 如果一切正常，你应该能看到：
 1. 摄像头画面启动
 2. 控制台显示 "J.A.C. - Just A Code (多模态版)"
-3. 按空格键可以开始对话
+3. 视觉检测器初始化，默认使用 hybrid 模式（YOLO + LocateAnything）
+4. 按空格键可以开始对话
+
+【检测模式说明】
+- yolo 模式: 使用 YOLOv8 进行快速自动检测
+- locate_anything 模式: 使用 LocateAnything-3B 进行基于语言的定位
+- hybrid 模式: 默认模式，YOLO 实时检测 + LocateAnything 按需定位
+
+可以在 main.py 中修改 detector = VisionDetector(mode='hybrid') 切换模式。
 
 ----------------------------------------------------------------------
 步骤 5: 权限设置 (macOS 特有)
