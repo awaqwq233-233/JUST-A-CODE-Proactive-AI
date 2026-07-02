@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# IDE / editor
+.vscode/
+.idea/
+.cursor/
+*.swp
+
+# Caches & runtime output
+.cache/
+temp/
+output/
+*.log
+temp_audio.wav
+
+# Large model / media assets (do not commit to GitHub)
+models/*
+!models/README.txt
+GenieData/
+genie_assets/onnx/
+genie_assets/*.mp3
+genie_assets/*.wav
+*.gguf
+*.pt
+*.onnx
+*.bin
+*.safetensors
+ffmpeg.exe
+
+# PyInstaller build output
+JAC_Prototype/
+JAC_Prototype.spec
+
+# Secrets & credentials (API keys, tokens, passwords)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials.json
+secrets/
+key
+key.pub
+**/api_keys.*
+**/apikeys.*
+*secret*.json
+*credentials*.json
+
+# Archives
+*.zip
+*.tar.gz
+*.7z
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Node (if ever added)
+node_modules/

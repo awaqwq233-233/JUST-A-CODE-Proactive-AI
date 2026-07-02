@@ -1,0 +1,195 @@
+======================================================================
+J.A.C. - Just A Code 智能眼镜助手 - 全套离线/迁移部署指南
+======================================================================
+
+本指南用于将 J.A.C. 系统迁移到一台全新的电脑上，支持 Windows 和 macOS 平台。
+请按照顺序执行以下步骤。
+
+----------------------------------------------------------------------
+步骤 1: 安装 Python 环境
+----------------------------------------------------------------------
+
+【Windows 用户】
+1. 访问 Python 官网下载 Python 3.10 或 3.11 版本 (推荐 3.10.11 以获得最佳兼容性)：
+   下载链接: https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe
+
+2. 安装时务必勾选：
+   [√] Add Python 3.10 to PATH (添加 Python 到环境变量)
+
+3. 安装完成后，打开 PowerShell 或 CMD，输入以下命令检查：
+   python --version
+   pip --version
+
+【macOS 用户】
+1. macOS 通常自带 Python，但建议使用 Homebrew 安装指定版本：
+   /usr/bin/ruby -e "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"
+   brew install python@3.10
+
+2. 安装完成后检查：
+   python3 --version
+   pip3 --version
+
+3. 建议设置别名（可选）：
+   echo 'alias python="python3"' >> ~/.zshrc
+   echo 'alias pip="pip3"' >> ~/.zshrc
+   source ~/.zshrc
+
+----------------------------------------------------------------------
+步骤 2: 手动下载必要的大文件 (模型与工具)
+----------------------------------------------------------------------
+
+请提前下载以下文件，并按照说明放入项目文件夹中。
+
+【通用文件】
+
+1. [LLM 模型] (Qwen1.5-1.8B-Chat GGUF)
+   下载链接: https://huggingface.co/Qwen/Qwen1.5-1.8B-Chat-GGUF/resolve/main/qwen1_5-1_8b-chat-q4_k_m.gguf
+   * 将下载的文件放入: `J.A.C/models/` 文件夹中。
+   * 最终路径应为: `J.A.C/models/qwen1_5-1_8b-chat-q4_k_m.gguf`
+
+2. [Genie-TTS 模型文件] (重要！)
+   Genie-TTS 运行需要一组完整的 ONNX 基础模型文件。请下载以下所有文件并放入 `genie_assets/onnx` 文件夹中。
+   如果无法下载，可以搜索 HuggingFace 的 "High-Logic/Genie-TTS-Model" 仓库。
+
+   必须下载的文件列表：
+   - t2s_encoder_fp32.bin
+   - t2s_encoder_fp32.onnx
+   - t2s_first_stage_decoder_fp32.onnx
+   - t2s_shared_fp16.bin
+   - t2s_stage_decoder_fp32.onnx
+   - vits_fp16.bin
+   - vits_fp32.onnx
+   
+   下载地址示例 (High-Logic/Genie-TTS-Model/v2/base):
+   https://huggingface.co/High-Logic/Genie-TTS-Model/tree/main/v2/base
+
+3. [YOLOv8 模型] (目标检测)
+   * 首次运行会自动下载，或者手动下载：
+   下载链接: https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.pt
+   * 将文件放入项目根目录。
+
+【平台特定文件】
+
+【Windows 用户】
+4. [Visual Studio C++ 生成工具] (如果安装依赖时报错才需要，通常建议安装)
+   下载链接: https://visualstudio.microsoft.com/visual-cpp-build-tools/
+   * 安装时勾选 "使用 C++ 的桌面开发"
+
+5. [FFmpeg] (音视频处理核心)
+   下载链接: https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+   * 解压后，找到 bin 文件夹下的 `ffmpeg.exe`。
+   * 将 `ffmpeg.exe` 复制到 J.A.C. 项目的根目录下 (与 main.py 同级)。
+
+【macOS 用户】
+4. [FFmpeg] (音视频处理核心)
+   使用 Homebrew 安装：
+   brew install ffmpeg
+   
+   或者下载预编译版本：
+   下载链接: https://evermeet.cx/ffmpeg/
+   * 将下载的 `ffmpeg` 文件复制到项目根目录。
+
+----------------------------------------------------------------------
+步骤 3: 一键安装依赖
+----------------------------------------------------------------------
+
+【Windows 用户】
+在新电脑上，打开项目文件夹，在空白处右键选择 "在终端中打开" 或 "Open in Terminal"，
+然后复制并粘贴以下所有命令 (一次性粘贴即可)：
+
+# --- 开始 ---
+
+# 1. 升级 pip
+python -m pip install --upgrade pip
+
+# 2. 安装基础依赖 (PyTorch, OpenCV, Whisper 等)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+pip install opencv-python ultralytics pyaudio openai-whisper sounddevice numpy
+
+# 3. 安装 Genie-TTS 和依赖
+pip install genie-tts onnxruntime
+
+# 4. 安装 llama-cpp-python (使用预编译包，避免编译错误)
+pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
+# 5. 验证 PyAudio (如果上面报错)
+pip install pipwin
+pipwin install pyaudio
+
+# --- 结束 ---
+
+【macOS 用户】
+打开终端，切换到项目目录，然后复制并粘贴以下命令：
+
+# --- 开始 ---
+
+# 1. 升级 pip
+python3 -m pip install --upgrade pip
+
+# 2. 安装基础依赖
+pip3 install torch torchvision torchaudio
+pip3 install opencv-python ultralytics openai-whisper sounddevice numpy
+
+# 3. 安装 PyAudio (macOS 需要 portaudio)
+brew install portaudio
+pip3 install pyaudio
+
+# 4. 安装 Genie-TTS 和依赖
+pip3 install genie-tts onnxruntime
+
+# 5. 安装 llama-cpp-python
+pip3 install llama-cpp-python
+
+# 6. 安装其他依赖
+pip3 install pyttsx3 webrtcvad-wheels
+
+# --- 结束 ---
+
+----------------------------------------------------------------------
+步骤 4: 运行系统
+----------------------------------------------------------------------
+
+【Windows 用户】
+在终端中输入：
+python main.py
+
+【macOS 用户】
+在终端中输入：
+python3 main.py
+
+如果一切正常，你应该能看到：
+1. 摄像头画面启动
+2. 控制台显示 "J.A.C. - Just A Code (多模态版)"
+3. 按空格键可以开始对话
+
+----------------------------------------------------------------------
+步骤 5: 权限设置 (macOS 特有)
+----------------------------------------------------------------------
+
+macOS 要求明确授权应用访问摄像头和麦克风：
+
+1. 首次运行时，系统会弹出权限请求对话框，请点击 "允许"
+2. 如果不小心拒绝了，可以在系统设置中修改：
+   - 打开 "系统设置" → "隐私与安全性"
+   - 在左侧选择 "摄像头"，确保终端或 IDE 被允许
+   - 在左侧选择 "麦克风"，确保终端或 IDE 被允许
+
+----------------------------------------------------------------------
+常见问题排查
+----------------------------------------------------------------------
+
+【Windows 常见问题】
+- PyAudio 安装失败：使用 pipwin 安装
+- ffmpeg 找不到：确保 ffmpeg.exe 在项目根目录
+- 模型加载失败：检查模型文件路径是否正确
+
+【macOS 常见问题】
+- portaudio 错误：运行 `brew install portaudio`
+- 权限错误：检查系统设置中的隐私权限
+- Python 版本问题：确保使用 python3 而不是系统自带的 python
+- pyttsx3 报错：这是正常的，系统会自动降级到 macOS 内置的 say 命令
+
+【通用问题】
+- 模型文件过大：确保有足够的磁盘空间 (约 10GB+)
+- 内存不足：建议至少 8GB RAM，推荐 16GB+
+- 摄像头无法打开：检查设备连接，尝试更换 camera_id (0, 1, 2...)

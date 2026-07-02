@@ -1,0 +1,4 @@
+pip install -r requirements.txt
+修复c++运行环境 python fix_install.py 若安装失败需要下载vs的c++开发套件 然后pip install llama-cpp-python
+检查依赖和安装依赖 pip install pyttsx3 llama-cpp-python pyaudio openai-whisper opencv-python ultralytics
+需要安装ffmpeg
