@@ -288,7 +288,7 @@ def main():
     print("==========================================")
     
     # 1. 初始化
-    camera = Camera(camera_id=0)
+    camera = Camera(camera_id=None)  # 使用 None 自动检测默认摄像头
     if not camera.start(): return
 
     detector = VisionDetector(mode='hybrid')

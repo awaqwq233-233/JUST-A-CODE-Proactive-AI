@@ -4,6 +4,8 @@ except ImportError:
     Llama = None
 
 import os
+import sys
+import platform
 
 class LocalBrain:
     """
@@ -30,13 +32,30 @@ class LocalBrain:
             return
 
         print(f"[系统] 正在加载大脑模型: {model_path} ...")
+        
+        # 兼容性参数配置 - 提高加载成功率
+        llama_args = {
+            "model_path": model_path,
+            "n_ctx": 2048,
+            "n_threads": 4,
+            "verbose": False,
+        }
+        
+        # Windows 上可能需要禁用一些高级优化
+        if platform.system() == "Windows":
+            llama_args["n_batch"] = 512
+            # 尝试不使用 AVX512 等高级指令集
+            # 注意：llama-cpp-python 0.3.x 可能不支持某些旧参数
+        
         try:
-            # n_ctx: 上下文长度，2048 对于日常对话足够
-            # n_threads: CPU 线程数，根据你的电脑配置调整
-            self.llm = Llama(model_path=model_path, n_ctx=2048, n_threads=4, verbose=False)
+            self.llm = Llama(**llama_args)
             print("[系统] 大脑加载成功！")
         except Exception as e:
             print(f"[错误] 大脑加载失败: {e}")
+            print("[提示] 可能是 CPU 不支持当前 llama-cpp-python 的指令集优化。")
+            print("       请尝试重新安装兼容的 llama-cpp-python 版本：")
+            print("       pip uninstall llama-cpp-python")
+            print("       pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu")
 
     def think(self, prompt, system_prompt="You are J.A.C., a helpful AI assistant. J.A.C. stands for Just A Code.", temperature=0.7, max_tokens=120):
         """

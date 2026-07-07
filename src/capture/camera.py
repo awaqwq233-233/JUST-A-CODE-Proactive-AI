@@ -12,12 +12,12 @@ class Camera:
     负责视频流的采集、帧获取和资源释放。
     兼容 Windows 和 macOS 平台。
     """
-    def __init__(self, camera_id=0, width=1280, height=720):
+    def __init__(self, camera_id=None, width=1280, height=720):
         """
         初始化摄像头
         
         Args:
-            camera_id (int): 摄像头设备ID，通常笔记本自带摄像头为0，外接为1
+            camera_id (int, optional): 摄像头设备ID，None 表示自动检测系统默认摄像头
             width (int): 期望的视频宽度
             height (int): 期望的视频高度
         """
@@ -26,11 +26,33 @@ class Camera:
         self.height = height
         self.cap = None
         self.is_running = False
+    
+    @staticmethod
+    def find_default_camera():
+        """
+        自动检测系统默认摄像头
+        
+        Returns:
+            int: 找到的可用摄像头 ID，如果未找到返回 0
+        """
+        # 尝试从 ID 0 开始检测，最多检测 5 个摄像头
+        for test_id in range(5):
+            cap = cv2.VideoCapture(test_id)
+            if cap.isOpened():
+                cap.release()
+                return test_id
+        return 0
 
     def start(self):
         """
         启动摄像头
         """
+        # 自动检测默认摄像头（如果未指定）
+        if self.camera_id is None:
+            print("[系统] 正在自动检测默认摄像头...")
+            self.camera_id = self.find_default_camera()
+            print(f"[系统] 使用摄像头 ID: {self.camera_id}")
+        
         print(f"[系统] 正在尝试打开摄像头 (ID: {self.camera_id})...")
         
         if IS_MACOS:
