@@ -88,12 +88,14 @@ def fix_install():
         # 这里的链接是一个非官方的预编译仓库，通常很有效
         subprocess.check_call([
             sys.executable, "-m", "pip", "install", 
-            "llama-cpp-python", 
-            "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+            "llama-cpp-python==0.3.26", 
+            "--extra-index-url", "https://abetlen.github.io/llama-cpp-python/whl/cpu",
+            "--force-reinstall"
         ])
     except Exception as e:
         print(f"[警告] llama-cpp-python 安装可能出错: {e}")
         print("如果这一步失败，请确保安装了 Visual Studio C++ Build Tools。")
+        print("注意: Qwen3.5-9B 需要 llama-cpp-python >= 0.3.19，如持续失败请升级 Python 后重试。")
 
     # 5. 解决 webrtcvad 问题
     print("\n>>> 解决 webrtcvad (语音检测) 依赖...")

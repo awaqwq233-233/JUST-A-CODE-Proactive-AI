@@ -1,0 +1,12 @@
+﻿# J.A.C. Ollama Modelfile
+# 从本地 GGUF 文件创建 Ollama 模型，利用 GPU 加速推理
+#
+# 使用方法:
+#   ollama create jac-qwen3.5 -f Modelfile
+#   ollama run jac-qwen3.5  (测试)
+
+FROM ./models/Qwen3.5-9B-Q4_K_M.gguf
+
+# 默认参数
+PARAMETER temperature 0.7
+PARAMETER num_ctx 2048

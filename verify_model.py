@@ -1,50 +1,70 @@
-import os
-import sys
+import requests
+import json
 
 def verify():
     print("--------------------------------------------------")
-    print("      J.A.C 模型验证工具")
+    print("     J.A.C 后端验证工具")
     print("--------------------------------------------------")
-    
-    # 1. 检查 llama-cpp-python
-    try:
-        from llama_cpp import Llama
-        print("[OK] 依赖库 llama-cpp-python 已安装。")
-    except ImportError:
-        print("[FAIL] 未找到 llama-cpp-python！")
-        print("       请运行: pip install llama-cpp-python")
-        return
+    print()
 
-    # 2. 检查模型文件
-    model_path = "models/qwen1_5-1_8b-chat-q4_k_m.gguf"
-    if not os.path.exists(model_path):
-        print(f"[FAIL] 未找到模型文件: {model_path}")
-        print("       请参考 models/README.txt 下载模型。")
-        return
-    else:
-        print(f"[OK] 发现模型文件: {model_path}")
-        size_mb = os.path.getsize(model_path) / (1024 * 1024)
-        print(f"     文件大小: {size_mb:.2f} MB")
-
-    # 3. 尝试加载
-    print("\n[INFO] 正在尝试加载模型 (这可能需要几秒钟)...")
+    # 1. 检查 LM Studio
+    print("[1] 检查 LM Studio API...")
     try:
-        llm = Llama(model_path=model_path, verbose=False)
-        print("[OK] 模型加载成功！")
+        r = requests.get("http://localhost:12345/v1/models", timeout=3)
+        if r.status_code == 200:
+            models = r.json().get("data", [])
+            if models:
+                print(f"    [OK] LM Studio 运行中，已加载模型: {models[0].get('id', 'unknown')}")
+            else:
+                print("    [OK] LM Studio 运行中 (未加载模型)")
+            print()
+            
+            # 2. 简单对话测试
+            print("[2] 简单对话测试...")
+            resp = requests.post(
+                "http://localhost:12345/v1/chat/completions",
+                json={
+                    "messages": [{"role": "user", "content": "用一句话介绍你自己"}],
+                    "max_tokens": 100,
+                    "temperature": 0.7,
+                    "stream": False
+                },
+                timeout=30,
+                headers={"Content-Type": "application/json"}
+            )
+            if resp.status_code == 200:
+                reply = resp.json()["choices"][0]["message"]["content"]
+                print(f"    [OK] 模型回复: {reply[:80]}...")
+                print()
+                print("--------------------------------------------------")
+                print("恭喜！LM Studio 后端已就绪。")
+                print("现在可以运行 python main.py 体验 J.A.C. 了。")
+                print("--------------------------------------------------")
+            else:
+                print(f"    [FAIL] API 返回 {resp.status_code}")
+        else:
+            print(f"    [FAIL] LM Studio API 返回 {r.status_code}")
+            print("    请确保 LM Studio 已启动并启用 API 服务器")
+    except requests.exceptions.ConnectionError:
+        print("    [FAIL] 无法连接到 LM Studio (127.0.0.1:12345)")
+        print("    请确保 LM Studio 已启动并启用了 API 服务器")
+        print()
         
-        print("\n[INFO] 进行简单的对话测试...")
-        output = llm.create_chat_completion(
-            messages=[{"role": "user", "content": "你好，你是谁？"}],
-            max_tokens=50
-        )
-        print(f"[J.A.C 回复] {output['choices'][0]['message']['content']}")
-        print("\n--------------------------------------------------")
-        print("恭喜！你的本地大脑已经准备就绪。")
-        print("现在可以运行 python main.py 体验完整版 J.A.C 了。")
-        print("--------------------------------------------------")
-        
-    except Exception as e:
-        print(f"[FAIL] 模型加载或推理失败: {e}")
+        # 3. 回退检查 Ollama
+        print("[!] 检查 Ollama...")
+        try:
+            r2 = requests.get("http://localhost:11434/api/tags", timeout=2)
+            if r2.status_code == 200:
+                print("    [OK] Ollama 运行中")
+                print("    代码已配置为自动检测后端，请直接运行 python main.py")
+            else:
+                print("    [FAIL] 无可用后端")
+        except:
+            print("    [FAIL] 无可用后端")
+            print()
+            print("--------------------------------------------------")
+            print("请启动 LM Studio 或 Ollama 后再试。")
+            print("--------------------------------------------------")
 
 if __name__ == "__main__":
     verify()

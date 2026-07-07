@@ -1,4 +1,4 @@
-import cv2
+﻿import cv2
 import sys
 import time
 import threading
@@ -55,16 +55,13 @@ from src.utils.context import SharedContext
 # 全局状态
 running = True
 conversation_running = False
+conversation_lock = threading.Lock()
 # 消息队列 (日志)
 log_queue = queue.Queue()
 
 # 上下文管理器 (新增)
 context = SharedContext()
 
-# 视觉查询队列 (用于 LocateAnything)
-vision_query_queue = queue.Queue(maxsize=1)
-
-# 唤醒词配置
 WAKE_WORDS = ["jac", "j.a.c", "杰克", "接客", "你好", "hello jac", "hi jac", "你好 jac","hey jac"]
 SYSTEM_STATE = "SLEEP" # SLEEP | AWAKE
 LAST_INTERACTION_TIME = 0
@@ -78,55 +75,6 @@ def check_wake_word(text):
             return True
     return False
 
-def _check_vision_query(text):
-    """
-    检查用户问题是否需要 LocateAnything 视觉查询
-    如果是，将查询放入队列供视觉线程处理
-    
-    支持的查询类型：
-    - "我看到了什么？" → "Locate all objects."
-    - "有多少人？" → "Locate all people."
-    - "有没有猫？" → "Locate cats."
-    - "找找手机" → "Locate cell phone."
-    """
-    text_lower = text.lower()
-    
-    query_mapping = [
-        ("看到了什么", "Locate all objects."),
-        ("有什么", "Locate all objects."),
-        ("什么东西", "Locate all objects."),
-        ("人", "Locate all people."),
-        ("person", "Locate all people."),
-        ("people", "Locate all people."),
-        ("猫", "Locate cats."),
-        ("cat", "Locate cats."),
-        ("狗", "Locate dogs."),
-        ("dog", "Locate dogs."),
-        ("手机", "Locate cell phone."),
-        ("phone", "Locate cell phone."),
-        ("电脑", "Locate computer."),
-        ("computer", "Locate computer."),
-        ("桌子", "Locate table."),
-        ("椅子", "Locate chair."),
-        ("车", "Locate vehicles."),
-        ("vehicle", "Locate vehicles."),
-        ("杯子", "Locate cup."),
-        ("瓶子", "Locate bottle."),
-        ("书", "Locate books."),
-        ("book", "Locate books."),
-        ("眼镜", "Locate glasses."),
-        ("glass", "Locate glasses."),
-    ]
-    
-    for keyword, query in query_mapping:
-        if keyword in text_lower:
-            try:
-                vision_query_queue.put(query, block=False)
-                print(f"[视觉] 生成 LocateAnything 查询: {query}")
-            except queue.Full:
-                pass
-            return
-
 def process_response(text, brain, speaker):
     """
     核心对话逻辑：思考 -> 回复
@@ -135,9 +83,6 @@ def process_response(text, brain, speaker):
     conversation_running = True
     context.is_thinking = True
     print(f"[交互] 正在思考: {text}")
-    
-    # 检查是否需要 LocateAnything 查询
-    _check_vision_query(text)
     
     try:
         # 获取当前的视觉摘要
@@ -159,7 +104,26 @@ def process_response(text, brain, speaker):
         
         # 随机温度
         temperature = random.uniform(0.65, 0.95)
-        full_response = brain.think(text, system_prompt=system_prompt, temperature=temperature, max_tokens=140)
+        # 检测是否为视觉相关的查询
+        visual_keywords = ["看到", "看见", "有什么", "什么东西", "看看", "画面", "图像", "我面前", "前面", "周围", "环境", "是谁", "在干嘛", "在做什么"]
+        is_visual = any(k in text for k in visual_keywords)
+
+        if is_visual and getattr(brain, "multimodal", False):
+            print("[视觉] 检测到视觉查询，使用多模态模型直接分析摄像头画面...")
+            # 使用多模态: 将当前帧发给 LLM 进行视觉识别
+            frame = context.get_frame()
+            if frame is not None:
+                vision_prompt = text
+                if "看到" in text or "看见" in text or "有什么" in text or "什么东西" in text:
+                    vision_prompt = "请详细描述这张图片中有什么物体、人物和环境。"
+                full_response = brain.think_with_image(vision_prompt, frame,
+                system_prompt="你是一个视觉分析助手。请准确描述图像内容，按照格式 [情绪] 回复内容 来回答，情绪可选：热情、平静、关怀、鼓励、开心、惊讶。",
+                    temperature=temperature, max_tokens=200)
+            else:
+                print("[警告] 没有可用的摄像头帧，降级为纯文本分析。")
+                full_response = brain.think(text, system_prompt=system_prompt, temperature=temperature, max_tokens=140)
+        else:
+            full_response = brain.think(text, system_prompt=system_prompt, temperature=temperature, max_tokens=140)
         print(f"[J.A.C 原始回复] {full_response}")
         
         context.is_thinking = False
@@ -191,6 +155,77 @@ def process_response(text, brain, speaker):
 
     finally:
         conversation_running = False
+
+def handle_user_text(text, speaker, brain, source="语音", bypass_wake=False):
+    """
+    统一处理来自语音或控制台的用户输入
+    """
+    global SYSTEM_STATE, LAST_INTERACTION_TIME
+
+    text = (text or "").strip()
+    if not text:
+        return
+
+    with conversation_lock:
+        current_time = time.time()
+
+        if SYSTEM_STATE == "AWAKE" and (current_time - LAST_INTERACTION_TIME > AWAKE_TIMEOUT):
+            print("[系统] 超时未交互，进入休眠模式。")
+            SYSTEM_STATE = "SLEEP"
+
+        if source == "控制台":
+            print(f"[控制台] {text}")
+        elif source == "语音":
+            print(f"[听写] {text}")
+
+        if bypass_wake:
+            SYSTEM_STATE = "AWAKE"
+            LAST_INTERACTION_TIME = current_time
+            process_response(text, brain, speaker)
+            return
+
+        if SYSTEM_STATE == "SLEEP":
+            if check_wake_word(text):
+                print("[系统] 检测到唤醒词！进入唤醒状态。")
+                SYSTEM_STATE = "AWAKE"
+                LAST_INTERACTION_TIME = current_time
+                speaker.speak("我在。", emotion_hint="热情")
+
+                if len(text) > 5:
+                    process_response(text, brain, speaker)
+            return
+
+        LAST_INTERACTION_TIME = current_time
+        if "再见" in text or "休息" in text:
+            speaker.speak("好的，有需要随时叫我。", emotion_hint="平静")
+            SYSTEM_STATE = "SLEEP"
+        else:
+            process_response(text, brain, speaker)
+
+def manual_input_thread_func(speaker, brain):
+    """
+    控制台输入线程：手动输入文本并直接进入思考流程
+    """
+    global running
+    print("[系统] 控制台输入已启用，直接输入文字并回车即可让 J.A.C 思考。")
+
+    while running:
+        try:
+            text = input()
+        except EOFError:
+            break
+        except Exception as e:
+            print(f"[错误] 控制台输入异常: {e}")
+            time.sleep(1)
+            continue
+
+        if not running:
+            break
+
+        if not text.strip():
+            continue
+
+        handle_user_text(text, speaker, brain, source="控制台", bypass_wake=True)
 
 def audio_thread_func(speaker, recognizer, recorder, brain):
     """
@@ -235,46 +270,8 @@ def audio_thread_func(speaker, recognizer, recorder, brain):
 
             if not text or len(text.strip()) < 1:
                 continue
-                
-            print(f"[听写] {text}")
-            
-            # 3. 唤醒逻辑判断
-            current_time = time.time()
-            
-            # 如果超时未交互，自动休眠
-            if SYSTEM_STATE == "AWAKE" and (current_time - LAST_INTERACTION_TIME > AWAKE_TIMEOUT):
-                print("[系统] 超时未交互，进入休眠模式。")
-                SYSTEM_STATE = "SLEEP"
-            
-            if SYSTEM_STATE == "SLEEP":
-                # 检查唤醒词
-                if check_wake_word(text):
-                    print(f"[系统] 检测到唤醒词！进入唤醒状态。")
-                    SYSTEM_STATE = "AWAKE"
-                    LAST_INTERACTION_TIME = current_time
-                    speaker.speak("我在。", emotion_hint="热情")
-                    
-                    # 如果唤醒词后面还有内容，直接处理
-                    # 比如 "你好JAC，现在几点了"
-                    # 简单的过滤掉唤醒词本身可能比较复杂，这里直接把整句扔给 LLM 也可以，
-                    # 或者只在 text 比较长的时候处理
-                    if len(text) > 5:
-                        process_response(text, brain, speaker)
-                else:
-                    # 忽略噪音
-                    # print("[系统] 未唤醒，忽略。")
-                    pass
-                    
-            elif SYSTEM_STATE == "AWAKE":
-                # 已经在对话中，直接处理
-                LAST_INTERACTION_TIME = current_time
-                
-                # 如果用户说 "再见" 或 "退下"
-                if "再见" in text or "休息" in text:
-                    speaker.speak("好的，有需要随时叫我。", emotion_hint="平静")
-                    SYSTEM_STATE = "SLEEP"
-                else:
-                    process_response(text, brain, speaker)
+
+            handle_user_text(text, speaker, brain, source="语音", bypass_wake=False)
                     
         except Exception as e:
             print(f"[错误] 语音循环异常: {e}")
@@ -291,7 +288,7 @@ def main():
     camera = Camera(camera_id=None)  # 使用 None 自动检测默认摄像头
     if not camera.start(): return
 
-    detector = VisionDetector(mode='hybrid')
+    detector = VisionDetector()
     # 优先使用 Genie-TTS，如果配置不可用则回退到 pyttsx3
     speaker = None
     if GenieSpeaker is not None:
@@ -304,16 +301,24 @@ def main():
     recognizer = SpeechRecognizer(model_size="tiny") 
     
     recorder = AudioRecorder()
-    brain = LocalBrain(model_path="models/qwen1_5-1_8b-chat-q4_k_m.gguf")
+    brain = LocalBrain(model_path="models/Qwen3.5-9B-Q4_K_M.gguf", backend="lm_studio")
 
     print("\n[操作提示]")
     print("  - 按 'q' 键: 退出")
     print("  - 按 'SPACE' (空格): 触发多模态对话")
+    print("  - 在控制台直接输入文字并回车: 作为你说的话进入思考")
     print("==========================================\n")
 
     audio_thread = threading.Thread(target=audio_thread_func, 
                                     args=(speaker, recognizer, recorder, brain))
     audio_thread.start()
+
+    manual_input_thread = threading.Thread(
+        target=manual_input_thread_func,
+        args=(speaker, brain),
+        daemon=True
+    )
+    manual_input_thread.start()
     
     frame_count = 0
     start_time = time.time()
@@ -325,19 +330,13 @@ def main():
             ret, frame = camera.get_frame()
             if not ret: break
             
-            # 尝试从队列获取 LocateAnything 查询
-            la_query = None
-            try:
-                la_query = vision_query_queue.get_nowait()
-                print(f"[视觉] 收到 LocateAnything 查询: {la_query}")
-            except queue.Empty:
-                pass
-            
             # 检测并获取结果
-            annotated_frame, results = detector.detect(frame, query=la_query)
+            annotated_frame, results = detector.detect(frame)
             
             # 关键：更新共享上下文
             context.update_vision(results)
+            # 缓存最新帧，用于多模态视觉查询
+            context.set_frame(frame)
             
             # FPS
             frame_count += 1

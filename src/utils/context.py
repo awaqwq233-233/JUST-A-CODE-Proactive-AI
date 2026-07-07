@@ -18,6 +18,9 @@ class SharedContext:
         self.is_thinking = False      # 是否正在思考
         self.is_speaking = False      # 是否正在说话
 
+        # 最新帧缓存 (用于多模态视觉查询)
+        self._current_frame = None
+
     def update_vision(self, results):
         """
         更新视觉信息 (由 Detector 线程调用)
@@ -56,3 +59,15 @@ class SharedContext:
             
             summary = ", ".join([f"{v}个{k}" for k, v in counts.items()])
             return f"我看到了：{summary}。"
+    def set_frame(self, frame):
+        """缓存最新帧 (由主线程设置，用于多模态查询时传递给 LLM)"""
+        if frame is not None:
+            with self._lock:
+                self._current_frame = frame.copy()
+
+    def get_frame(self):
+        """获取缓存的帧 (由 process_response 调用)"""
+        with self._lock:
+            if self._current_frame is None:
+                return None
+            return self._current_frame.copy()
