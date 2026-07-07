@@ -61,6 +61,9 @@ log_queue = queue.Queue()
 # 上下文管理器 (新增)
 context = SharedContext()
 
+# 视觉查询队列 (用于 LocateAnything)
+vision_query_queue = queue.Queue(maxsize=1)
+
 # 唤醒词配置
 WAKE_WORDS = ["jac", "j.a.c", "杰克", "接客", "你好", "hello jac", "hi jac", "你好 jac","hey jac"]
 SYSTEM_STATE = "SLEEP" # SLEEP | AWAKE
@@ -75,6 +78,55 @@ def check_wake_word(text):
             return True
     return False
 
+def _check_vision_query(text):
+    """
+    检查用户问题是否需要 LocateAnything 视觉查询
+    如果是，将查询放入队列供视觉线程处理
+    
+    支持的查询类型：
+    - "我看到了什么？" → "Locate all objects."
+    - "有多少人？" → "Locate all people."
+    - "有没有猫？" → "Locate cats."
+    - "找找手机" → "Locate cell phone."
+    """
+    text_lower = text.lower()
+    
+    query_mapping = [
+        ("看到了什么", "Locate all objects."),
+        ("有什么", "Locate all objects."),
+        ("什么东西", "Locate all objects."),
+        ("人", "Locate all people."),
+        ("person", "Locate all people."),
+        ("people", "Locate all people."),
+        ("猫", "Locate cats."),
+        ("cat", "Locate cats."),
+        ("狗", "Locate dogs."),
+        ("dog", "Locate dogs."),
+        ("手机", "Locate cell phone."),
+        ("phone", "Locate cell phone."),
+        ("电脑", "Locate computer."),
+        ("computer", "Locate computer."),
+        ("桌子", "Locate table."),
+        ("椅子", "Locate chair."),
+        ("车", "Locate vehicles."),
+        ("vehicle", "Locate vehicles."),
+        ("杯子", "Locate cup."),
+        ("瓶子", "Locate bottle."),
+        ("书", "Locate books."),
+        ("book", "Locate books."),
+        ("眼镜", "Locate glasses."),
+        ("glass", "Locate glasses."),
+    ]
+    
+    for keyword, query in query_mapping:
+        if keyword in text_lower:
+            try:
+                vision_query_queue.put(query, block=False)
+                print(f"[视觉] 生成 LocateAnything 查询: {query}")
+            except queue.Full:
+                pass
+            return
+
 def process_response(text, brain, speaker):
     """
     核心对话逻辑：思考 -> 回复
@@ -83,6 +135,9 @@ def process_response(text, brain, speaker):
     conversation_running = True
     context.is_thinking = True
     print(f"[交互] 正在思考: {text}")
+    
+    # 检查是否需要 LocateAnything 查询
+    _check_vision_query(text)
     
     try:
         # 获取当前的视觉摘要
@@ -270,8 +325,16 @@ def main():
             ret, frame = camera.get_frame()
             if not ret: break
             
+            # 尝试从队列获取 LocateAnything 查询
+            la_query = None
+            try:
+                la_query = vision_query_queue.get_nowait()
+                print(f"[视觉] 收到 LocateAnything 查询: {la_query}")
+            except queue.Empty:
+                pass
+            
             # 检测并获取结果
-            annotated_frame, results = detector.detect(frame)
+            annotated_frame, results = detector.detect(frame, query=la_query)
             
             # 关键：更新共享上下文
             context.update_vision(results)

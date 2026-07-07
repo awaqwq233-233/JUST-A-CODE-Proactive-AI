@@ -97,6 +97,7 @@ tokenizers==0.22.1
 torch==2.9.1
 torchvision==0.24.1
 transformers==4.44.0
+mlx-vlm==0.0.23
 tqdm==4.67.1
 typer-slim==0.21.0
 typing-inspection==0.4.2
