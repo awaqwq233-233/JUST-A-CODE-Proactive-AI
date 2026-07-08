@@ -229,6 +229,9 @@ class LocalBrain:
 
     def _query_lm_studio(self, messages, temperature, max_tokens):
         """通过 LM Studio (OpenAI 兼容 API) 发送请求"""
+        # Qwen3.5 是推理模型，需要足够 token 给思考+回答
+        if max_tokens < 2048:
+            max_tokens = 2048
         try:
             resp = requests.post(
                 self.lm_studio_url,
@@ -245,15 +248,22 @@ class LocalBrain:
                 print(f"[错误] LM Studio API 返回 {resp.status_code}: {resp.text}")
                 return "抱歉，大脑连接出了点问题。"
             data = resp.json()
-            return data["choices"][0]["message"]["content"]
+            content = data["choices"][0]["message"]["content"]
+            if not content:
+                reasoning = data.get("choices", [{}])[0].get("message", {}).get("reasoning_content", "")
+                if reasoning:
+                    print("[系统] content 为空，使用 reasoning_content 作为回答")
+                    parts = reasoning.rsplit('\n\n', 1)
+                    return parts[-1].strip() if len(parts) > 1 else reasoning
+                print(f"[调试] LM Studio 返回了空内容: {json.dumps(data, ensure_ascii=False)[:500]}")
+            return content
         except requests.exceptions.ConnectionError:
-            print("[错误] 无法连接到 LM Studio (127.0.0.1:1234)")
+            print("[错误] 无法连接到 LM Studio (127.0.0.1:12345)")
             print("       请确保 LM Studio 已启动并启用了 API 服务器")
             return "抱歉，无法连接到大脑服务器。"
         except Exception as e:
             print(f"[错误] LM Studio 请求失败: {e}")
             return "我的大脑有点混乱，请稍后再试。"
-
     def _query_ollama(self, messages, temperature, max_tokens):
         """通过 Ollama API 发送请求"""
         try:

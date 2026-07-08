@@ -96,6 +96,7 @@ def process_response(text, brain, speaker):
             f"【当前视觉信息】：{vision_info}\n"
             "请根据视觉信息和用户的提问，选择最合适的情绪（可选：热情、平静、关怀、鼓励、开心、惊讶、悲伤、生气）。"
             "【重要】请严格按照以下格式回复："
+            "不要输出推理过程，直接给出最终回答。请简短回答。"
             "[情绪] 回复内容"
             "例如：[开心] 哇，这只猫真可爱！"
             "例如：[关怀] 你看起来有点累，要注意休息哦。"
@@ -123,7 +124,7 @@ def process_response(text, brain, speaker):
                 print("[警告] 没有可用的摄像头帧，降级为纯文本分析。")
                 full_response = brain.think(text, system_prompt=system_prompt, temperature=temperature, max_tokens=140)
         else:
-            full_response = brain.think(text, system_prompt=system_prompt, temperature=temperature, max_tokens=140)
+            full_response = brain.think(text, system_prompt=system_prompt, temperature=temperature, max_tokens=256)
         print(f"[J.A.C 原始回复] {full_response}")
         
         context.is_thinking = False
