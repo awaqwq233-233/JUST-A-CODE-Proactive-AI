@@ -75,6 +75,44 @@ def check_wake_word(text):
             return True
     return False
 
+def is_visual_query(text):
+    """判断用户是否在问视觉相关问题"""
+    visual_keywords = [
+        "看到", "看见", "有什么", "什么东西", "看看", "画面", "图像",
+        "我面前", "前面", "周围", "环境", "是谁", "在干嘛", "在做什么",
+        "你看到了什么", "你现在看到什么", "看到了什么"
+    ]
+    return any(keyword in text for keyword in visual_keywords)
+
+def build_text_only_vision_reply(user_text, vision_info, brain, temperature):
+    """
+    纯文本模型的视觉降级回答：
+    不发截图，改为把当前检测摘要整理后交给 LLM。
+    """
+    vision_prompt = (
+        "你是 J.A.C.，正在根据摄像头检测摘要回答用户的视觉问题。"
+        "你看不到原始图片，只能依据下面这份实时检测摘要回答，不能编造未检测到的细节。"
+        f"\n【检测摘要】{vision_info}"
+        f"\n【用户问题】{user_text}"
+        "\n请严格按照 [情绪] 回复内容 的格式作答。"
+        "如果摘要信息不足，请明确说明你目前只能根据检测结果判断。"
+        "回答尽量自然、简短。"
+    )
+
+    response = brain.think(
+        vision_prompt,
+        system_prompt="你是一个谨慎的视觉问答助手。",
+        temperature=temperature,
+        max_tokens=128
+    )
+
+    if response and response.strip():
+        return response
+
+    if "一片漆黑" in vision_info:
+        return "[平静] 我眼前暂时没有拿到最新画面，你可以稍等一下再问我一次。"
+    return f"[平静] {vision_info}"
+
 def process_response(text, brain, speaker):
     """
     核心对话逻辑：思考 -> 回复
@@ -105,24 +143,32 @@ def process_response(text, brain, speaker):
         
         # 随机温度
         temperature = random.uniform(0.65, 0.95)
-        # 检测是否为视觉相关的查询
-        visual_keywords = ["看到", "看见", "有什么", "什么东西", "看看", "画面", "图像", "我面前", "前面", "周围", "环境", "是谁", "在干嘛", "在做什么"]
-        is_visual = any(k in text for k in visual_keywords)
+        is_visual = is_visual_query(text)
 
-        if is_visual and getattr(brain, "multimodal", False):
-            print("[视觉] 检测到视觉查询，使用多模态模型直接分析摄像头画面...")
-            # 使用多模态: 将当前帧发给 LLM 进行视觉识别
+        if is_visual:
             frame = context.get_frame()
-            if frame is not None:
+            can_try_image = frame is not None and getattr(brain, "backend", "") in ("lm_studio", "ollama", "llama_cpp")
+
+            if can_try_image:
+                print("[视觉] 检测到视觉查询，尝试将当前摄像头画面发送给大脑模型...")
                 vision_prompt = text
                 if "看到" in text or "看见" in text or "有什么" in text or "什么东西" in text:
                     vision_prompt = "请详细描述这张图片中有什么物体、人物和环境。"
-                full_response = brain.think_with_image(vision_prompt, frame,
-                system_prompt="你是一个视觉分析助手。请准确描述图像内容，按照格式 [情绪] 回复内容 来回答，情绪可选：热情、平静、关怀、鼓励、开心、惊讶。",
-                    temperature=temperature, max_tokens=200)
+
+                full_response = brain.think_with_image(
+                    vision_prompt,
+                    frame,
+                    system_prompt="你是一个视觉分析助手。请准确描述图像内容，按照格式 [情绪] 回复内容 来回答，情绪可选：热情、平静、关怀、鼓励、开心、惊讶。",
+                    temperature=temperature,
+                    max_tokens=200
+                )
+
+                if not full_response or "抱歉，大脑连接出了点问题" in full_response:
+                    print("[视觉] 图像请求未得到有效结果，改用检测摘要回答。")
+                    full_response = build_text_only_vision_reply(text, vision_info, brain, temperature)
             else:
-                print("[警告] 没有可用的摄像头帧，降级为纯文本分析。")
-                full_response = brain.think(text, system_prompt=system_prompt, temperature=temperature, max_tokens=140)
+                print("[警告] 没有可用的摄像头帧，改用检测摘要回答视觉问题。")
+                full_response = build_text_only_vision_reply(text, vision_info, brain, temperature)
         else:
             full_response = brain.think(text, system_prompt=system_prompt, temperature=temperature, max_tokens=256)
         print(f"[J.A.C 原始回复] {full_response}")

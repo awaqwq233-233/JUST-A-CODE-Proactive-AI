@@ -1,4 +1,4 @@
-﻿try:
+try:
     from llama_cpp import Llama
 except ImportError:
     Llama = None
@@ -31,6 +31,7 @@ class LocalBrain:
         self.llm = None
         self.multimodal = False
         self.backend = "mock"
+        self.active_model_id = None
         
         # LM Studio 连接参数 (OpenAI 兼容 API)
         self.lm_studio_url = "http://127.0.0.1:12345/v1/chat/completions"
@@ -75,7 +76,8 @@ class LocalBrain:
             if r.status_code == 200:
                 models = r.json().get("data", [])
                 if models:
-                    print(f"[系统] LM Studio 已加载模型: {models[0].get('id', 'unknown')}")
+                    self.active_model_id = models[0].get("id", "")
+                    print(f"[系统] LM Studio 已加载模型: {self.active_model_id or 'unknown'}")
                 return True
             return False
         except requests.exceptions.ConnectionError:
@@ -87,16 +89,18 @@ class LocalBrain:
         """初始化 LM Studio 后端"""
         print(f"[系统] LM Studio 后端已就绪")
         print(f"       API: {self.lm_studio_url}")
-        # LM Studio 如果加载了 VL 模型则支持多模态
+
         try:
             r = requests.get(self.lm_studio_check_url, timeout=2)
             if r.status_code == 200:
                 models = r.json().get("data", [])
-                for m in models:
-                    mid = m.get("id", "").lower()
-                    if "vl" in mid or "vision" in mid or "llava" in mid:
-                        self.multimodal = True
-                        print("[系统] 检测到视觉模型，多模态已启用！")
+                if models and not self.active_model_id:
+                    self.active_model_id = models[0].get("id", "")
+                # LM Studio 里的实际能力以服务端为准，不再仅靠模型名猜测。
+                # 对视觉请求先尝试走图像输入，失败后再由上层降级。
+                self.multimodal = True
+                print(f"[系统] 当前 LM Studio 模型: {self.active_model_id or 'unknown'}")
+                print("       视觉请求将直接尝试发送摄像头画面。")
         except:
             pass
 
@@ -185,7 +189,7 @@ class LocalBrain:
         if self.backend == "mock":
             return self._mock_response(prompt)
 
-        if not self.multimodal:
+        if self.backend not in ("lm_studio", "ollama") and not self.multimodal:
             print("[系统] 多模态不可用，降级为纯文本模式。")
             return self.think(prompt, system_prompt, temperature, max_tokens)
 
@@ -203,8 +207,8 @@ class LocalBrain:
             {
                 "role": "user",
                 "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                    {"type": "text", "text": prompt}
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
                 ]
             }
         ]
@@ -233,14 +237,18 @@ class LocalBrain:
         if max_tokens < 2048:
             max_tokens = 2048
         try:
+            payload = {
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": False
+            }
+            if self.active_model_id:
+                payload["model"] = self.active_model_id
+
             resp = requests.post(
                 self.lm_studio_url,
-                json={
-                    "messages": messages,
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                    "stream": False
-                },
+                json=payload,
                 timeout=120,
                 headers={"Content-Type": "application/json"}
             )
