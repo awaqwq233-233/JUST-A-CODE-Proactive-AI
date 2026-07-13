@@ -19,14 +19,14 @@ class AudioRecorder:
     支持 VAD (语音活动检测) 以实现自动停止录音。
     兼容 Windows 和 macOS 平台。
     """
-    def __init__(self, chunk=480, format=pyaudio.paInt16, channels=1, rate=16000, vad_aggressiveness=3):
+    def __init__(self, chunk=480, format=pyaudio.paInt16, channels=1, rate=16000, vad_aggressiveness=1):
         """
         初始化录音参数
         Whisper 模型通常使用 16kHz 采样率。
         VAD 要求 chunk 必须是 10/20/30ms。
         16000Hz * 0.03s = 480 frames.
         
-        vad_aggressiveness: 0-3，3 最激进（过滤噪音最强）
+        vad_aggressiveness: 0-3，3 最激进（过滤噪音最强），默认1提高识别率
         """
         self.chunk = chunk
         self.format = format
@@ -38,7 +38,7 @@ class AudioRecorder:
         self.stream = None
         self.vad = webrtcvad.Vad(vad_aggressiveness)
         
-        self.energy_threshold = 500
+        self.energy_threshold = 300  # 降低能量门槛，更容易检测到说话
 
     def start_recording(self):
         """开始录音"""
@@ -112,11 +112,13 @@ class AudioRecorder:
             return None
         
         trigger_window = collections.deque(maxlen=10)
-        trigger_threshold = 8
+        trigger_threshold = 6  # 降低触发阈值，从8/10改成6/10，更容易检测到语音
         
         speech_detected = False
         silence_start_time = None
         start_time = time.time()
+        warmup_chunks = 5  # 跳过前面几个可能有噪音的chunks，让设备稳定下来
+        warmup_done = False
         
         print("[耳朵] 正在聆听...", end="\r")
         
@@ -126,6 +128,13 @@ class AudioRecorder:
             except Exception as e:
                 print(f"\n[错误] 录音异常: {e}")
                 break
+            
+            # 预热期：跳过前几个chunks，避免设备刚启动的空/低质量数据
+            if not warmup_done:
+                warmup_chunks -= 1
+                if warmup_chunks <= 0:
+                    warmup_done = True
+                continue
             
             audio_data = np.frombuffer(data, dtype=np.int16)
             if len(audio_data) == 0:
@@ -139,6 +148,11 @@ class AudioRecorder:
                     is_speech = self.vad.is_speech(data, self.rate)
                 except:
                     is_speech = False
+            
+            # 调试信息：第一次运行时显示 RMS 和 VAD 状态，方便用户确认麦克风正常
+            if not speech_detected and warmup_done:
+                speech_count = sum(1 for _, s in trigger_window if s)
+                print(f"[耳朵] 正在聆听 (RMS:{rms}, VAD:{is_speech}, 语音块:{speech_count}/{trigger_threshold})", end="\r")
             
             if not speech_detected:
                 trigger_window.append((data, is_speech))
