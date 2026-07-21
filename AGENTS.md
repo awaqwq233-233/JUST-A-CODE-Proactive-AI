@@ -1,215 +1,227 @@
-# J.A.C. Project Notes
+# J.A.C. 项目说明（AGENTS.md）
 
-## Project Overview
+## 项目概述
 
-J.A.C. means "Just A Code". The project is a local-first multimodal AI assistant prototype inspired by JARVIS: it should perceive the user's environment through camera/audio, reason over the current scene, speak back with emotion-aware TTS, and eventually act proactively without explicit user triggering.
+J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型**，灵感来自 JARVIS：通过摄像头/麦克风感知用户的环境，基于当前场景做推理，用带情绪的 TTS 回应，未来目标是无需用户显式触发即可主动行动。
 
-The long-term product vision is an intelligent glasses assistant:
+长期产品愿景是**智能眼镜助手**：
 
-- Glasses / MR device capture real-world video and audio.
-- A MacBook-class host performs low-latency local perception and reasoning.
-- A cloud or LAN server handles heavier reasoning, long-term memory, routing to larger models, and external APIs when local compute is insufficient.
-- The assistant should eventually support proactive perception, agentic task execution, external API use, voice/HUD output, and a closed-loop task cycle.
+- 眼镜 / MR 设备采集真实世界的视频与音频。
+- MacBook 级别的主机做低延迟的本地感知与推理。
+- 云或局域网服务器承担更重的推理、长期记忆、路由到更大的模型，以及本地算力不足时的外部 API。
+- 助手最终要支持主动感知、agent 式任务执行、外部 API 调用、语音/HUD 输出，以及闭环任务循环。
 
-The current codebase is a Python desktop prototype, not the final glasses/cloud architecture yet.
+当前代码库是一个 **Python 桌面原型**，还不是最终的眼镜/云端架构。
 
-## Current Implementation
+## 当前实现
 
-The runnable entry point is `main.py`. It wires together:
+可运行入口是 `main.py`。它把以下模块串联起来：
 
-- OpenCV camera capture through `src/capture/camera.py`.
-- YOLOv8 object detection through `src/analysis/detector.py`.
-- Shared visual/status context through `src/utils/context.py`.
-- VAD-based microphone recording through `src/audio/recorder.py`.
-- Whisper speech-to-text through `src/audio/stt.py`.
-- Local LLM reasoning through `src/brain/llm.py`.
-- Genie-TTS voice synthesis through `src/audio/genie_tts.py`, with fallback to system `pyttsx3` / macOS `say` through `src/audio/tts.py`.
+- OpenCV 摄像头采集：`src/capture/camera.py`（自动探测摄像头 ID，默认 1280×720）。
+- YOLOv8 物体检测：`src/analysis/detector.py`（仅 YOLOv8，`conf=0.5`）。
+- 线程安全共享上下文：`src/utils/context.py`（在旧版基础上新增转录环形缓冲、最新帧缓存、介入标志）。
+- VAD 麦克风录音：`src/audio/recorder.py`（PyAudio + WebRTC VAD，阈值/预热/最短时长已调优）。
+- Whisper 语音识别：`src/audio/stt.py`（默认 `model_size="tiny"`，**非流式**）。
+- 本地大脑推理：`src/brain/llm.py`（`LocalBrain`，多后端：lm_studio / ollama / llama_cpp / auto）。
+- Genie-TTS 语音合成：`src/audio/genie_tts.py`（GPT-SoVITS ONNX，情绪参考音切换），兜底为 `src/audio/tts.py`（pyttsx3 / macOS `say`）。
+- **主动判断引擎（新增）**：`src/judgment/judge.py`（`JudgmentEngine`，连接 LM Studio 上的 MiniCPM-o，持续判断是否需要主动介入）。
 
-Runtime flow:
+### 运行流程（`main.py`）
 
-1. `main.py` starts the camera and object detector.
-2. A background audio thread listens with VAD.
-3. Wake words include `jac`, `j.a.c`, `杰克`, `接客`, `你好`, `hello`, and `hi`.
-4. After wake-up, recognized user speech is sent to `LocalBrain`.
-5. The system prompt includes the current visual summary from `SharedContext`.
-6. The model is expected to reply as `[情绪] 回复内容`.
-7. The emotion tag is parsed and passed to the speaker.
-8. The OpenCV window shows camera frames, YOLO annotations, FPS, and current state such as `Listening...`, `Thinking...`, or `Speaking...`.
+1. 初始化摄像头、YOLO 检测器、扬声器（优先 `GenieSpeaker`，不可用则回退 `Speaker`）、Whisper、`AudioRecorder`、`LocalBrain`（**默认 `backend="lm_studio"`，模型 `Qwen3.5-9B-Q4_K_M.gguf`**）。
+2. 启动三条线程：音频主循环（监听→识别→唤醒判断→响应）、**控制台输入线程（新增）**、判断引擎线程（daemon）。
+3. 主循环每帧：取帧 → YOLO 检测 → 更新 `SharedContext`（视觉摘要 + 缓存最新帧）→ 绘制 FPS / 状态灯（Listening/Thinking/Speaking）→ `cv2.imshow`。
+4. 唤醒词集合：`jac` / `j.a.c` / `杰克` / `接客` / `你好` / `hello jac` / `hi jac` / `你好 jac` / `hey jac`。
+5. 唤醒后进入 `AWAKE` 状态；`SYSTEM_STATE` 在 **20 秒（AWAKE_TIMEOUT）** 无交互后自动回到 `SLEEP`；用户说「再见/休息」立即休眠。
+6. 用户输入进入 `handle_user_text` → `process_response`：取视觉摘要 → 若判定为视觉相关问题（看到/看见/有什么/画面/是谁…）且后端支持图像，则把真实摄像头帧发给 `brain.think_with_image()`；否则用文本 `brain.think()`（带上视觉摘要）。
+7. 模型回复格式为 `[情绪] 回复内容`，解析情绪标签后交给扬声器（`emotion_hint`）。
+8. 若主动判断引擎已激活，主循环每帧检查介入请求，确认后新开 daemon 线程主动回应（绕过唤醒词）。
 
-Keyboard controls in the prototype:
+### 多模态图像问答（新增能力）
 
-- `q`: quit.
-- `SPACE`: manually wake J.A.C.
+`LocalBrain.think_with_image(prompt, frame)` 把当前帧编码为 JPEG base64，按 OpenAI 多模态消息格式发送：`lm_studio` / `ollama` 原生支持；`llama_cpp` 通过 `_find_mmproj()` 自动挂载 `mmproj-*.gguf` 投影。图像请求失败时降级为基于 YOLO 检测摘要的文本回答（`build_text_only_vision_reply`）。
 
-## Important Files And Directories
+### 键盘与输入控制
 
-- `main.py`: main multimodal runtime.
-- `src/capture/camera.py`: camera wrapper, Windows/macOS aware.
-- `src/analysis/detector.py`: YOLOv8 detector wrapper.
-- `src/audio/recorder.py`: PyAudio + WebRTC VAD recorder.
-- `src/audio/stt.py`: OpenAI Whisper wrapper.
-- `src/audio/tts.py`: basic cross-platform system TTS wrapper.
-- `src/audio/genie_tts.py`: Genie-TTS / GPT-SoVITS ONNX speaker with emotion/reference-audio handling and fallback.
-- `src/brain/llm.py`: llama.cpp / GGUF local model wrapper, with mock mode if the model is unavailable.
-- `src/utils/context.py`: thread-safe shared context for current visual detections and state flags.
-- `models/`: local GGUF model directory. Current expected model is `qwen1_5-1_8b-chat-q4_k_m.gguf`.
-- `GenieData/` and `genie_assets/`: Genie-TTS model/data/audio assets.
-- `temp/`: runtime temporary audio files.
-- `ffmpeg.exe`: local FFmpeg binary used by audio/media dependencies on Windows.
-- `requirements.txt`: full Python dependency snapshot.
-- `DEPLOY_GUIDE.txt`: Windows/macOS offline migration and deployment guide.
-- `codingLOG.md`: notes on current gaps from the final assistant goal.
-- `codinglog_by_awaqwq233/`: project background, expected architecture, progress notes, and research docs.
-- `build.py`: PyInstaller build helper for `JAC_Prototype`.
-- `fix_install.py`: dependency repair helper, especially PyAudio, llama-cpp-python, and VAD on Windows.
-- `setup_ffmpeg.py`: copies an `imageio-ffmpeg` binary into the project root as `ffmpeg.exe`.
-- `verify_model.py`: verifies llama-cpp-python and the local GGUF model.
+- `q`：退出。
+- `SPACE`（空格）：手动唤醒（「我在，请讲。」）。
+- **控制台 stdin 文本输入（新增，旧文档未记录）**：任意时刻回车输入文字，以 `source="控制台"`、`bypass_wake=True` 直接进入思考，绕过唤醒词。
 
-Generated or bulky local artifacts that are not usually useful to edit:
+## 重要文件与目录
 
-- `.venv/`
-- `.cache/`
-- `__pycache__/`
-- model binaries (`*.gguf`, `*.pt`, `*.onnx`, `*.bin`)
-- runtime audio under `temp/`
+- `main.py`：多模态运行主入口。
+- `src/capture/camera.py`：摄像头封装，Windows/macOS 感知。
+- `src/analysis/detector.py`：YOLOv8 检测器封装。
+- `src/audio/recorder.py`：PyAudio + WebRTC VAD 录音器。
+- `src/audio/stt.py`：OpenAI Whisper 封装。
+- `src/audio/tts.py`：跨平台系统 TTS 兜底封装。
+- `src/audio/genie_tts.py`：Genie-TTS / GPT-SoVITS ONNX 语音合成，带情绪/参考音处理与兜底降级。
+- `src/brain/llm.py`：`LocalBrain`，llama.cpp / LM Studio / Ollama / auto 多后端，含 `think_with_image`。
+- `src/judgment/judge.py`：**新增**，主动判断引擎（MiniCPM-o via LM Studio）。
+- `src/judgment/__init__.py`：**新增**。
+- `src/utils/context.py`：线程安全的共享上下文（视觉摘要、状态标志、转录缓冲、帧缓存、介入标志）。
+- `models/`：本地 GGUF 模型目录（见下）。
+- `genie_assets/` 与 `GenieData/`：Genie-TTS 模型/数据/音频资产。
+- `temp/`：运行时临时音频文件。
+- `ffmpeg.exe`：Windows 本地 FFmpeg 二进制。
+- `requirements.txt` / `requirements_fixed.txt`：依赖快照（`requirements.txt` 较新，`requirements_fixed.txt` 为旧稳定版）。
+- `DEPLOY_GUIDE.txt`：Windows/macOS 离线迁移与部署指南。
+- `Modelfile`：**新增**，Ollama 构建定义（jac-qwen3.5）。
+- `codingLOG.md`：与最终目标的差距笔记。
+- `codinglog_by_awaqwq233/`：项目背景、预期架构、进度与研究文档。
+- `build.py`：`JAC_Prototype` 的 PyInstaller 打包辅助。
+- `fix_install.py`：依赖修复辅助（PyAudio / llama-cpp-python / VAD on Windows）。
+- `setup_ffmpeg.py`：从 imageio-ffmpeg 复制二进制为项目根 `ffmpeg.exe`。
+- `verify_model.py`：校验 llama-cpp-python 与本地 GGUF 模型。
 
-## Models And Assets
+通常不参与编辑的大体积/二进制产物：
 
-Current local reasoning model:
+- `.venv/` / `.cache/` / `__pycache__/`
+- 模型二进制（`*.gguf`、`*.pt`、`*.onnx`、`*.bin`）
+- `temp/` 下的运行时音频
 
-- `models/qwen1_5-1_8b-chat-q4_k_m.gguf`
-- Recommended in `models/README.txt` as Qwen1.5-1.8B-Chat-GGUF because it is small, fast, and has good Chinese ability.
+## 模型与资产
 
-Current object detector:
+当前本地推理模型（`models/` 下 4 个 GGUF）：
 
-- `yolov8n.pt`
-- Loaded by `ObjectDetector` with confidence threshold `0.5`.
+- `Qwen3.5-9B-Q4_K_M.gguf`：当前「大脑」模型（约 5.6GB），`main.py` 默认指定，默认通过 `lm_studio` 后端加载（127.0.0.1:12345）。
+- `mmproj-Qwen3.5-9B-BF16.gguf`：Qwen3.5 的多模态投影（约 0.9GB），`llama_cpp` 后端做视觉问答时自动挂载。
+- `MiniCPM-o-4_5-Q4_K_S.gguf`：主动判断引擎模型（约 4.8GB），需在 LM Studio 加载后由 `JudgmentEngine` 使用。
+- `Qwen3.6-35B-A3B-...-IQ2_M.gguf`（约 11.6GB）：**已下载但代码/配置均未引用**，疑似备用大模型或未来云端/服务器卸载预留——勿误读为已启用。
 
-Current STT:
+> 注意：旧的 `models/qwen1_5-1_8b-chat-q4_k_m.gguf` 与 `models/README.txt` 已不存在，删去相关描述。
 
-- Whisper, currently instantiated in `main.py` with `model_size="tiny"` for speed.
+当前物体检测器：`yolov8n.pt`（`conf=0.5`）。旧架构设想的 NVIDIA LocateAnything-3B 视觉理解大模型**已移除**——`detector.py` 注释明确：视觉理解现由 JACbrain（Qwen3.5-9B）以文本方式处理，视觉只靠 YOLO 标签 + LLM 文本摘要。
 
-Current TTS:
+当前 STT：Whisper，`model_size="tiny"`，非流式。
 
-- Preferred: Genie-TTS using ONNX files in `genie_assets/onnx`.
-- Fallback: `pyttsx3`, or macOS `say`.
-- `genie_assets/prompt_wav.json` currently maps the normal reference voice to `zh_vo_Main_Linaxita_2_1_10_26.wav`.
+当前 TTS：优先 Genie-TTS（用 `genie_assets/onnx` 下 ONNX）；兜底 pyttsx3 / macOS `say`。`genie_tts.py` 相对旧版增强：按情绪映射 `ref_<emotion>.wav` 参考音、随机 `1~4.mp3` 样本（80% 概率切换）、模型版本不兼容时自动降级到系统 TTS 并标记 `available=False`。
 
-## Setup And Run
+## 设置与运行
 
-The deployment guide recommends Python 3.10 or 3.11 for best compatibility.
+部署指南推荐 Python 3.10 / 3.11 以获得最佳兼容性。
 
-Basic install:
+基础安装：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-If dependencies fail on Windows:
+依赖安装失败（Windows）：
 
 ```bash
 python fix_install.py
 ```
 
-If FFmpeg is missing:
+FFmpeg 缺失：
 
 ```bash
 python setup_ffmpeg.py
 ```
 
-Verify the GGUF model:
+校验 GGUF 模型：
 
 ```bash
 python verify_model.py
 ```
 
-Run the prototype:
+### 运行前置条件（重要变化）
+
+- **默认 `backend="lm_studio"`**，因此运行前需启动 **LM Studio** 并在 `127.0.0.1:12345` 加载 `Qwen3.5-9B`（如需主动判断，另加载 `MiniCPM-o`）。否则所有思考请求会连接失败。
+- 若想纯本地 GGUF 推理，需把 `main.py` 中 `LocalBrain(..., backend="lm_studio")` 改为 `"llama_cpp"` 或 `"auto"`（`auto` 会探测可用后端），并确保对应 GGUF 在 `models/`。
+- Ollama 用法：用附带的 `Modelfile` 构建 `jac-qwen3.5`，再把 backend 改为 `"ollama"`。
+
+运行原型：
 
 ```bash
 python main.py
 ```
 
-Required local hardware/runtime conditions:
+所需本地硬件/运行时条件：
 
-- A working camera.
-- A working microphone.
-- FFmpeg available in the project root or system PATH.
-- The GGUF model present in `models/` for real LLM replies.
-- Genie-TTS ONNX assets present for the preferred voice path, otherwise the system falls back to basic TTS.
+- 可用的摄像头、可用的麦克风。
+- 项目根或系统 PATH 中的 FFmpeg。
+- 运行中的 LM Studio（默认）或本地 GGUF 模型（改 backend 后）。
+- Genie-TTS ONNX 资产（可选，缺失则回退系统 TTS）。
 
-## Current Progress From Logs
+## 当前进度（来自日志）
 
-The project was restarted on 2026-06-23 after gaokao. Current direction from `codinglog_by_awaqwq233/当前进度.docx`:
+项目于 2026-06-23 高考后重启。方向（来自 `codinglog_by_awaqwq233/当前进度.docx`）：
 
-- Continue building with vibe coding.
-- Digitize the paper architecture diagram.
-- Reconsider the architecture using newer tools and models such as OpenClaw, Xiaomi MiLoco 2.0, and newer Qwen-family models that can run on a 48 GB MacBook-class machine.
-- Rework the voice model path because current voice clone / ONNX / response behavior has bugs.
-- Research whether a small judgment model can think while receiving streaming input.
-- Set up GitHub submission/open-source tooling.
-- Explore server connection modules after stable servers are available, including `awaqwq233.cloud` and `awaqwq233.com`.
+- 继续用 vibe coding 推进。
+- 把纸质架构图数字化。
+- 用更新的工具/模型重新审视架构：OpenClaw、小米 MiLoco 2.0、能在 48GB MacBook 级机器运行的新 Qwen 系列。
+- 重做语音模型路径（当前语音克隆/ONNX/回复行为仍有 bug）。
+- 研究小判断模型能否在流式输入时持续思考。
+- 搭建 GitHub 提交/开源工具链。
+- 在稳定服务器可用后探索服务器连接模块（含 `awaqwq233.cloud`、`awaqwq233.com`）。
 
-The root `codingLOG.md` lists the main gap from the final goal:
+**代码中已落地的进展（相对旧文档）：**
 
-- Interaction is still partly passive; the target is wake word + VAD + continuous perception.
-- There is no real function-calling / tool-execution layer yet.
-- Memory is short-term only; the target is persistent memory via JSON/vector DB with periodic summarization and pruning.
-- End-to-end latency is high; the target is streaming STT/LLM/TTS.
+- 大脑从 Qwen1.5-1.8B 升级为 Qwen3.5-9B，并抽象出多后端 `LocalBrain`。
+- 新增 `src/judgment` 主动判断引擎雏形（MiniCPM-o via LM Studio，每 4s 判断是否主动介入）——对应愿景里的「核心判断 / 持续感知」。
+- 新增多模态图像问答 `think_with_image()`（视觉问题时发送真实摄像头帧）。
+- 新增 `SLEEP`/`AWAKE` 状态机 + 20s 超时自动休眠。
+- 新增控制台文本输入实时对话（绕过唤醒词）。
+- 唤醒词扩展；Genie-TTS 情绪参考音切换与随机样本。
 
-Note: the code has already added a VAD listening loop and wake-word state machine, so `codingLOG.md` is partly older than `main.py`. Treat it as architectural gap notes, not exact implementation status.
+`codingLOG.md` 列出的与最终目标的差距中，**以下仍为未实现项**：function calling / 工具执行层、持久记忆（JSON/向量库）、agent 执行框架、MCP / OpenClaw 集成、流式 STT/LLM/TTS。注意 `codingLOG.md` 部分内容早于 `main.py`，应作为架构差距笔记而非精确实现状态。
 
-## Expected Future Architecture
+## 预期未来架构
 
-The planning docs describe a system driven by "J.A.C. Brain":
+规划文档描述了一个由「J.A.C. Brain」驱动的系统：
 
-- Input layer: device signals, realtime audio, and visual frames.
-- Perception/preprocessing: speech-to-text, CNN/vision analysis, and buffering parsed information in memory.
-- Core judgment: a "multimodal small judgment model" or judgment model cluster that continuously decides whether J.A.C. should intervene.
-- Regulation/safety module: checks whether a judgment is correct, blocks unwanted silent execution, and returns to the judgment cycle on false positives.
-- J.A.C. Brain: larger reasoning model, possibly Qwen-style or modified Xiaomi MiLoco 2.0, responsible for complex analysis and task planning.
-- Agent execution: internal skills and external APIs, potentially through OpenClaw/MCP-like integrations.
-- External model APIs: Gemini, ChatGPT, Grok, Claude, Qwen, DeepSeek, etc.
-- Output layer: app/HUD result display and emotion-aware TTS.
-- Closed loop: output feeds back to the next judgment cycle for continuous proactive service.
+- 输入层：设备信号、实时音频、视觉帧。
+- 感知/预处理：语音转写、CNN/视觉分析，把解析结果缓冲进记忆。
+- 核心判断：一个「多模态小判断模型」或判断模型集群，持续决定 J.A.C. 是否应介入。
+- 调节/安全模块：校验判断是否正确，拦截不应静默执行的操作，误报时回到判断循环。
+- J.A.C. Brain：更大的推理模型（可能 Qwen 系或改进版小米 MiLoco 2.0），负责复杂分析与任务规划。
+- Agent 执行：内部技能与外部 API，可能通过 OpenClaw/MCP 类集成。
+- 外部模型 API：Gemini、ChatGPT、Grok、Claude、Qwen、DeepSeek 等。
+- 输出层：App/HUD 结果展示 + 情绪化 TTS。
+- 闭环：输出反馈到下一轮判断，形成持续主动服务。
 
-Hardware expectations from docs:
+硬件预期（来自文档）：
 
-- Host: future MacBook Pro 14" M5 Pro-class machine, 48 GB+ unified memory, 1 TB SSD.
-- Possible peripherals: Xiaomi AI glasses, Apple Vision Pro, or portable camera/MR devices.
-- Portable power: high-output power banks in a backpack.
-- Server: LAN/public server for heavier models, with current conceptual target around dual 22 GB RTX 2080 Ti and 128 GB RAM.
+- 主机：未来的 MacBook Pro 14" M5 Pro 级，48GB+ 统一内存，1TB SSD。
+- 可能外设：小米 AI 眼镜、Apple Vision Pro，或便携相机/MR 设备。
+- 便携供电：背包内高功率充电宝。
+- 服务器：LAN/公网服务器承担更重模型，概念目标约双 22GB RTX 2080 Ti + 128GB RAM。
 
-## Engineering Guidance For Future Work
+## 工程指导（未来工作）
 
-- Preserve the local-first design. Keep wake-word detection, VAD, basic perception, and urgent interactions local whenever possible.
-- Prefer simple rules before small models, and small models before large models, especially for intervention judgment and latency-sensitive paths.
-- Avoid making a large model decide every low-level routing choice. Use task routing tables and explicit policies unless model judgment is truly needed.
-- Keep camera/audio capture and model inference loosely coupled through clear context/state objects. `SharedContext` is the current seed of that pattern.
-- Be careful with thread state in `main.py`: `context.is_speaking`, `context.is_listening`, and `conversation_running` are used to avoid feedback loops and overlapping interactions.
-- Treat `temp/` audio files as disposable runtime output.
-- Avoid committing large model/audio/build artifacts unless the project explicitly wants binary assets tracked.
-- Watch privacy and safety carefully. The vision documents explicitly want proactive always-on perception, which means future implementations should include visible consent, local filtering, logging controls, and clear boundaries before recording, identifying people, or sending data to cloud APIs.
-- For any new agent/tool execution feature, require explicit allowlists and confirmations for risky operations. The current assistant can talk and observe; executing system actions is a major trust boundary.
-- For latency improvements, prioritize streaming and pipelining: streaming ASR, incremental reasoning, and streaming/early TTS.
-- For memory, start simple with structured JSON summaries before adding vector databases.
-- If changing TTS, note that the project owner currently considers the voice stack buggy and expects a rework.
+- 坚持本地优先设计。尽量把唤醒词检测、VAD、基础感知、紧急交互留在本地。
+- 优先简单规则，其次小模型，最后大模型——尤其用于介入判断与延迟敏感路径。
+- 避免让大模型决定每个底层路由选择；用任务路由表与显式策略，除非确实需要模型判断。
+- 保持摄像头/音频采集与模型推理通过清晰的 context/state 对象松耦合。`SharedContext` 是该模式的种子。
+- 注意 `main.py` 的线程状态：`context.is_speaking`、`context.is_listening`、`context.is_thinking`、`conversation_running` 用于避免反馈循环与重叠交互。
+- **新增后端（云端/外部 API）应在 `LocalBrain` 内扩展**，而非绕过它直接发请求，以保持统一的多模态接口与 mock 兜底。
+- 把 `temp/` 音频当作可丢弃的运行时产物。
+- 不要提交大体积模型/音频/打包产物，除非项目明确要跟踪二进制资产。
+- 谨慎对待隐私与安全。愿景明确要求「主动常开感知」，未来实现必须包含可见的同意、本地过滤、日志控制，以及在录音/识别人物/向云 API 发送数据前的清晰边界。
+- 任何新的 agent/工具执行功能，对高风险操作必须显式白名单与确认。当前助手能说、能看；执行系统动作是重大信任边界。
+- 延迟优化优先做流式与流水线：流式 ASR、增量推理、流式/提前 TTS。
+- 记忆从结构化 JSON 摘要起步，再考虑向量数据库。
+- 更换 TTS 时注意：项目所有者认为语音栈仍有 bug，预期会重做。
 
-## Known Limitations
+## 已知限制
 
-- The local LLM wrapper uses a small Qwen1.5 1.8B model with `n_ctx=2048` and `n_threads=4`; quality and memory are limited.
-- The vision summary only counts YOLO object labels; it does not yet do OCR, face recognition, depth, scene graphs, or full visual-language understanding.
-- Whisper is used non-streamingly over saved WAV files, so latency remains significant.
-- Wake-word detection is currently string matching after Whisper transcription, not a dedicated low-latency wake-word model.
-- `AudioRecorder.listen_and_record()` can block waiting for VAD-triggered speech; shutdown responsiveness may need attention.
-- There is no persistent memory, tool/function calling, scheduler, cloud offload, OpenClaw/MCP integration, or agent framework in the current code.
-- There are no automated tests in the current project tree.
+- **运行强依赖 LM Studio**：`main.py` 默认 `backend="lm_studio"`，必须本地 12345 端口加载 `Qwen3.5-9B`；否则思考全部失败。纯本地 GGUF 需改 backend。
+- **双模型显存压力**：开启主动判断需 LM Studio 同时加载 `Qwen3.5-9B` + `MiniCPM-o`，资源占用大。默认 `JUDGMENT_ENGINE_ENABLED=False`，未检测到时自动进入被动模式（不报错也不主动）。
+- Genie-TTS 仍是已知 bug 区（模型版本不兼容会触发降级）。
+- VAD 录音仍可能阻塞在「等待说话」，影响关闭响应（旧限制仍在）。
+- STT/LLM/TTS **均非流式**，端到端延迟仍高。
+- 无 function calling、无持久记忆、无 agent/MCP/OpenClaw 集成（目标未实现）。
+- `Qwen3.6-35B` 大模型已下载但代码未接入，勿误以为已启用。
+- `requirements.txt` 已装 `fastapi`/`uvicorn`/`websockets` 等 web 栈，但 `src/` 下无对应 server 代码——属依赖传递或预留骨架，勿误读为「已有 API 服务」。
+- 当前项目树**没有自动化测试**。
 
-## Build Notes
+## 构建说明
 
-`build.py` uses PyInstaller:
+`build.py` 使用 PyInstaller：
 
 ```bash
 python build.py
 ```
 
-It creates an onedir console build named `JAC_Prototype` and collects `ultralytics` assets. Expect packaging to require special care for model files, FFmpeg, Genie-TTS assets, Whisper cache/model files, and platform audio permissions.
+它创建一个名为 `JAC_Prototype` 的 onedir 控制台构建，并收集 `ultralytics` 资产。模型文件、FFmpeg、Genie-TTS 资产、Whisper 缓存/模型文件、平台音频权限等需要特别处理。

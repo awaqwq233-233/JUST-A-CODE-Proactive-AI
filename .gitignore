@@ -69,3 +69,13 @@ Thumbs.db
 
 # Node (if ever added)
 node_modules/
+
+# Local AI assistant memory & config (do not commit to GitHub)
+.workbuddy/
+
+# Claude local config (do not commit)
+.claude/
+
+# Office temp/lock files (Word ~$ prefix)
+~$*.docx
+~$*.doc
