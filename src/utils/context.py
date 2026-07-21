@@ -1,73 +1,122 @@
-import threading
+﻿import threading
 import time
+from collections import deque
+
 
 class SharedContext:
     """
-    共享上下文管理器
-    用于在不同线程（视觉、音频、大脑）之间共享信息。
+    Shared context manager
+    Used for sharing information between different threads (vision, audio, brain).
     """
     def __init__(self):
         self._lock = threading.Lock()
-        
-        # 视觉记忆
-        self.current_objects = []     # 当前看到的物体列表
-        self.last_seen_time = 0       # 最后更新时间
-        
-        # 状态标志
-        self.is_listening = False     # 是否正在听
-        self.is_thinking = False      # 是否正在思考
-        self.is_speaking = False      # 是否正在说话
 
-        # 最新帧缓存 (用于多模态视觉查询)
+        # Transcription ring buffer (for judgment engine)
+        self._transcriptions = deque(maxlen=20)
+
+        # Vision memory
+        self.current_objects = []
+        self.last_seen_time = 0.0
+
+        # Status flags
+        self.is_listening = False
+        self.is_thinking = False
+        self.is_speaking = False
+
+        # Latest frame buffer
         self._current_frame = None
 
+        # Intervention state (set by judgment engine, consumed by main loop)
+        self.intervention_requested = False
+        self.intervention_reason = ""
+
     def update_vision(self, results):
-        """
-        更新视觉信息 (由 Detector 线程调用)
-        
-        Args:
-            results (list): 检测结果，格式为 [{"label": str, "confidence": float, "bbox": tuple}]
-        """
         detected = []
-        
         if results and isinstance(results, list):
             for item in results:
                 if isinstance(item, dict) and "label" in item and "confidence" in item:
                     label = item["label"]
                     confidence = item["confidence"]
                     detected.append(f"{label} ({confidence:.2f})")
-        
         with self._lock:
             self.current_objects = detected
             self.last_seen_time = time.time()
 
     def get_vision_summary(self):
-        """
-        获取当前视觉摘要 (由 Brain 调用)
-        """
         with self._lock:
             if time.time() - self.last_seen_time > 2.0:
-                return "我眼前暂时一片漆黑（无最新视觉数据）。"
-            
+                return "I currently see nothing (no recent vision data)."
             if not self.current_objects:
-                return "我没有看到特别的物体。"
-            
+                return "I don't see any particular objects."
             counts = {}
             for obj in self.current_objects:
-                name = obj.split('(')[0].strip()
+                name = obj.split("(")[0].strip()
                 counts[name] = counts.get(name, 0) + 1
-            
-            summary = ", ".join([f"{v}个{k}" for k, v in counts.items()])
-            return f"我看到了：{summary}。"
+            summary = ", ".join([f"{v}x {k}" for k, v in counts.items()])
+            return f"I can see: {summary}."
+
     def set_frame(self, frame):
-        """缓存最新帧 (由主线程设置，用于多模态查询时传递给 LLM)"""
         if frame is not None:
             with self._lock:
                 self._current_frame = frame.copy()
 
     def get_frame(self):
-        """获取缓存的帧 (由 process_response 调用)"""
         with self._lock:
             if self._current_frame is None:
                 return None
             return self._current_frame.copy()
+
+    # --- Audio transcription buffer (for judgment engine) ---
+
+    def push_transcription(self, text):
+        text = (text or "").strip()
+        if not text:
+            return
+        with self._lock:
+            self._transcriptions.append((time.time(), text))
+
+    def get_recent_transcriptions(self, window=15.0):
+        now = time.time()
+        recent = []
+        with self._lock:
+            for ts, text in self._transcriptions:
+                if now - ts <= window:
+                    recent.append(text)
+        if not recent:
+            return ""
+        return " | ".join(recent)
+
+    def push_and_get_recent(self, text, window=15.0):
+        text = (text or "").strip()
+        now = time.time()
+        recent = []
+        with self._lock:
+            if text:
+                self._transcriptions.append((now, text))
+            for ts, t in self._transcriptions:
+                if now - ts <= window:
+                    recent.append(t)
+        if not recent:
+            return ""
+        return " | ".join(recent)
+
+    # --- Intervention state ---
+
+    def request_intervention(self, reason):
+        with self._lock:
+            self.intervention_requested = True
+            self.intervention_reason = reason
+
+    def consume_intervention(self):
+        with self._lock:
+            if self.intervention_requested:
+                self.intervention_requested = False
+                reason = self.intervention_reason
+                self.intervention_reason = ""
+                return True, reason
+            return False, ""
+
+    def clear_intervention(self):
+        with self._lock:
+            self.intervention_requested = False
+            self.intervention_reason = ""

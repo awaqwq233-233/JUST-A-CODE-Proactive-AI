@@ -11,37 +11,26 @@ import cv2
 import requests
 import json
 
+
 class LocalBrain:
     """
-    本地大脑 (Local LLM)
-    支持 LM Studio / Ollama / llama.cpp 三种后端。
+    Local LLM Brain.
+    Supports LM Studio / Ollama / llama.cpp backends.
     """
-    def __init__(self, model_path="models/Qwen3.5-9B-Q4_K_M.gguf", backend="auto"):
-        """
-        初始化大脑
 
-        Args:
-            model_path (str): GGUF 模型文件的路径 (仅 llama_cpp 后端使用)
-            backend (str): 推理后端,可选 "auto" / "lm_studio" / "ollama" / "llama_cpp"
-                          - auto: 优先检测 LM Studio -> Ollama -> llama_cpp
-                          - lm_studio: 强制使用 LM Studio API
-                          - ollama: 强制使用 Ollama API
-                          - llama_cpp: 强制使用本地 llama.cpp
-        """
+    def __init__(self, model_path="models/Qwen3.5-9B-Q4_K_M.gguf", backend="auto", lm_studio_model=None):
         self.llm = None
         self.multimodal = False
         self.backend = "mock"
         self.active_model_id = None
-        
-        # LM Studio 连接参数 (OpenAI 兼容 API)
+        self._explicit_lm_model = lm_studio_model
+
         self.lm_studio_url = "http://127.0.0.1:12345/v1/chat/completions"
         self.lm_studio_check_url = "http://127.0.0.1:12345/v1/models"
-        
-        # Ollama 连接参数
+
         self.ollama_base_url = "http://localhost:11434"
         self.ollama_model_name = "qwen2.5:7b"
 
-        # 决定后端
         if backend == "lm_studio":
             self.backend = "lm_studio"
         elif backend == "ollama":
@@ -50,16 +39,16 @@ class LocalBrain:
             self.backend = "llama_cpp"
         elif backend == "auto":
             if self._check_lm_studio():
-                print("[系统] 检测到 LM Studio，使用 LM Studio 后端 (GPU 加速)")
+                print("[System] Detected LM Studio, using LM Studio backend")
                 self.backend = "lm_studio"
             elif self._check_ollama():
-                print("[系统] 检测到 Ollama，使用 Ollama 后端 (GPU 加速)")
+                print("[System] Detected Ollama, using Ollama backend")
                 self.backend = "ollama"
             elif Llama is not None:
-                print("[系统] 未检测到 API 服务，切换到 llama.cpp 后端 (CPU)")
+                print("[System] No API server found, switching to llama.cpp backend (CPU)")
                 self.backend = "llama_cpp"
             else:
-                print("[系统] 无可用后端，使用模拟模式。")
+                print("[System] No backend available, using mock mode")
                 return
 
         if self.backend == "lm_studio":
@@ -69,15 +58,18 @@ class LocalBrain:
         elif self.backend == "llama_cpp":
             self._init_llama_cpp(model_path)
 
+        if self._explicit_lm_model and self.backend in ("lm_studio",):
+            self.active_model_id = self._explicit_lm_model
+            print(f"[System] LM Studio explicit model: {self.active_model_id}")
+
     def _check_lm_studio(self):
-        """检查 LM Studio API 是否在运行"""
         try:
             r = requests.get(self.lm_studio_check_url, timeout=2)
             if r.status_code == 200:
                 models = r.json().get("data", [])
                 if models:
                     self.active_model_id = models[0].get("id", "")
-                    print(f"[系统] LM Studio 已加载模型: {self.active_model_id or 'unknown'}")
+                    print(f"[System] LM Studio loaded model: {self.active_model_id or 'unknown'}")
                 return True
             return False
         except requests.exceptions.ConnectionError:
@@ -86,26 +78,20 @@ class LocalBrain:
             return False
 
     def _init_lm_studio(self):
-        """初始化 LM Studio 后端"""
-        print(f"[系统] LM Studio 后端已就绪")
+        print(f"[System] LM Studio backend ready")
         print(f"       API: {self.lm_studio_url}")
-
         try:
             r = requests.get(self.lm_studio_check_url, timeout=2)
             if r.status_code == 200:
                 models = r.json().get("data", [])
                 if models and not self.active_model_id:
                     self.active_model_id = models[0].get("id", "")
-                # LM Studio 里的实际能力以服务端为准，不再仅靠模型名猜测。
-                # 对视觉请求先尝试走图像输入，失败后再由上层降级。
                 self.multimodal = True
-                print(f"[系统] 当前 LM Studio 模型: {self.active_model_id or 'unknown'}")
-                print("       视觉请求将直接尝试发送摄像头画面。")
+                print(f"[System] Current LM Studio model: {self.active_model_id or 'unknown'}")
         except:
             pass
 
     def _check_ollama(self):
-        """检查 Ollama 服务是否在运行"""
         try:
             r = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
             return r.status_code == 200
@@ -115,43 +101,36 @@ class LocalBrain:
             return False
 
     def _init_ollama(self):
-        print(f"[系统] Ollama 后端已就绪，模型: {self.ollama_model_name}")
+        print(f"[System] Ollama backend ready, model: {self.ollama_model_name}")
 
     def _init_llama_cpp(self, model_path):
-        """初始化 llama.cpp 后端"""
         if Llama is None:
-            print("[警告] 未安装 llama-cpp-python。")
+            print("[Warning] llama-cpp-python not installed")
             return
-
         if not os.path.exists(model_path):
-            print(f"[警告] 未找到模型文件: {model_path}")
+            print(f"[Warning] Model file not found: {model_path}")
             return
-
-        print(f"[系统] 正在加载大脑模型: {model_path} ...")
-
+        print(f"[System] Loading brain model: {model_path} ...")
         llama_args = {
             "model_path": model_path,
             "n_ctx": 2048,
             "n_threads": 4,
             "verbose": False,
         }
-
         mmproj_path = self._find_mmproj(model_path)
         if mmproj_path:
-            print(f"[系统] 检测到多模态投影文件: {mmproj_path}")
+            print(f"[System] Found multimodal projection: {mmproj_path}")
             llama_args["mmproj"] = mmproj_path
-
         if platform.system() == "Windows":
             llama_args["n_batch"] = 512
-
         try:
             self.llm = Llama(**llama_args)
             if mmproj_path:
                 self.multimodal = True
-                print("[系统] 多模态视觉模式已启用！")
-            print("[系统] 大脑加载成功！")
+                print("[System] Multimodal vision mode enabled")
+            print("[System] Brain loaded successfully")
         except Exception as e:
-            print(f"[错误] 大脑加载失败: {e}")
+            print(f"[Error] Brain loading failed: {e}")
 
     def _find_mmproj(self, model_path):
         model_dir = os.path.dirname(model_path) or "."
@@ -168,15 +147,12 @@ class LocalBrain:
         return None
 
     def think(self, prompt, system_prompt="You are J.A.C., a helpful AI assistant. J.A.C. stands for Just A Code.", temperature=0.7, max_tokens=120):
-        """思考并回答 (纯文本)"""
         if self.backend == "mock":
             return self._mock_response(prompt)
-
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt}
         ]
-
         if self.backend == "lm_studio":
             return self._query_lm_studio(messages, temperature, max_tokens)
         elif self.backend == "ollama":
@@ -185,23 +161,19 @@ class LocalBrain:
             return self._query_llama_cpp(messages, temperature, max_tokens)
 
     def think_with_image(self, prompt, frame, system_prompt="You are J.A.C., a helpful AI assistant.", temperature=0.7, max_tokens=200):
-        """思考并回答 (接收图像帧)"""
         if self.backend == "mock":
             return self._mock_response(prompt)
-
         if self.backend not in ("lm_studio", "ollama") and not self.multimodal:
-            print("[系统] 多模态不可用，降级为纯文本模式。")
+            print("[System] Multimodal not available, falling back to text mode")
             return self.think(prompt, system_prompt, temperature, max_tokens)
-
         try:
             ret, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
             if not ret:
                 return self.think(prompt, system_prompt, temperature, max_tokens)
             img_b64 = base64.b64encode(buffer).decode("utf-8")
         except Exception as e:
-            print(f"[警告] 图像处理失败: {e}")
+            print(f"[Warning] Image processing failed: {e}")
             return self.think(prompt, system_prompt, temperature, max_tokens)
-
         messages = [
             {"role": "system", "content": system_prompt},
             {
@@ -212,11 +184,9 @@ class LocalBrain:
                 ]
             }
         ]
-
         if self.backend == "lm_studio":
             return self._query_lm_studio(messages, temperature, max_tokens)
         elif self.backend == "ollama":
-            # Ollama 多模态用独立格式
             ollama_messages = [
                 {"role": "system", "content": system_prompt},
                 {
@@ -232,8 +202,6 @@ class LocalBrain:
             return self._query_llama_cpp(messages, temperature, max_tokens)
 
     def _query_lm_studio(self, messages, temperature, max_tokens):
-        """通过 LM Studio (OpenAI 兼容 API) 发送请求"""
-        # Qwen3.5 是推理模型，需要足够 token 给思考+回答
         if max_tokens < 2048:
             max_tokens = 2048
         try:
@@ -245,7 +213,6 @@ class LocalBrain:
             }
             if self.active_model_id:
                 payload["model"] = self.active_model_id
-
             resp = requests.post(
                 self.lm_studio_url,
                 json=payload,
@@ -253,27 +220,26 @@ class LocalBrain:
                 headers={"Content-Type": "application/json"}
             )
             if resp.status_code != 200:
-                print(f"[错误] LM Studio API 返回 {resp.status_code}: {resp.text}")
-                return "抱歉，大脑连接出了点问题。"
+                print(f"[Error] LM Studio API returned {resp.status_code}: {resp.text}")
+                return "Sorry, brain connection has an issue."
             data = resp.json()
             content = data["choices"][0]["message"]["content"]
             if not content:
                 reasoning = data.get("choices", [{}])[0].get("message", {}).get("reasoning_content", "")
                 if reasoning:
-                    print("[系统] content 为空，使用 reasoning_content 作为回答")
+                    print("[System] content is empty, using reasoning_content as response")
                     parts = reasoning.rsplit('\n\n', 1)
                     return parts[-1].strip() if len(parts) > 1 else reasoning
-                print(f"[调试] LM Studio 返回了空内容: {json.dumps(data, ensure_ascii=False)[:500]}")
+                print(f"[Debug] LM Studio returned empty content: {json.dumps(data, ensure_ascii=False)[:500]}")
             return content
         except requests.exceptions.ConnectionError:
-            print("[错误] 无法连接到 LM Studio (127.0.0.1:12345)")
-            print("       请确保 LM Studio 已启动并启用了 API 服务器")
-            return "抱歉，无法连接到大脑服务器。"
+            print("[Error] Cannot connect to LM Studio (127.0.0.1:12345)")
+            return "Sorry, cannot connect to brain server."
         except Exception as e:
-            print(f"[错误] LM Studio 请求失败: {e}")
-            return "我的大脑有点混乱，请稍后再试。"
+            print(f"[Error] LM Studio request failed: {e}")
+            return "My brain is having trouble, please try again later."
+
     def _query_ollama(self, messages, temperature, max_tokens):
-        """通过 Ollama API 发送请求"""
         try:
             resp = requests.post(
                 f"{self.ollama_base_url}/api/chat",
@@ -289,16 +255,16 @@ class LocalBrain:
                 timeout=120
             )
             if resp.status_code != 200:
-                print(f"[错误] Ollama API 返回 {resp.status_code}: {resp.text}")
-                return "抱歉，大脑连接出了点问题。"
+                print(f"[Error] Ollama API returned {resp.status_code}: {resp.text}")
+                return "Sorry, brain connection has an issue."
             data = resp.json()
             return data["message"]["content"]
         except requests.exceptions.ConnectionError:
-            print("[错误] 无法连接到 Ollama 服务 (127.0.0.1:11434)")
-            return "抱歉，无法连接到大脑服务器。"
+            print("[Error] Cannot connect to Ollama service (127.0.0.1:11434)")
+            return "Sorry, cannot connect to brain server."
         except Exception as e:
-            print(f"[错误] Ollama 请求失败: {e}")
-            return "我的大脑有点混乱，请稍后再试。"
+            print(f"[Error] Ollama request failed: {e}")
+            return "My brain is having trouble, please try again later."
 
     def _query_llama_cpp(self, messages, temperature, max_tokens):
         if self.llm is None:
@@ -312,21 +278,19 @@ class LocalBrain:
             )
             return output['choices'][0]['message']['content']
         except Exception as e:
-            print(f"[错误] 思考出错: {e}")
-            return "我的大脑有点混乱，请稍后再试。"
+            print(f"[Error] Thinking failed: {e}")
+            return "My brain is having trouble, please try again later."
 
     def _mock_response(self, text):
         if isinstance(text, list):
             text = " ".join(str(t) for t in text)
-        if "你好" in text:
-            return "你好！我是 J.A.C，很高兴为你服务。"
-        elif "看到" in text:
-            return "我正在观察周围的环境。"
-        elif "名字" in text:
-            return "我的名字是 J.A.C。"
+        if "hello" in text.lower():
+            return "[happy] Hello! I am J.A.C., glad to serve you."
+        elif "name" in text.lower():
+            return "[calm] My name is J.A.C."
         else:
-            return f"我听到了你说：{text}，但我还没装载真正的大脑模型。"
+            return f"[calm] I heard you say: {text}"
 
 if __name__ == "__main__":
     brain = LocalBrain(backend="auto")
-    print("J.A.C: " + brain.think("你好，介绍一下你自己"))
+    print("J.A.C: " + brain.think("hello, introduce yourself"))

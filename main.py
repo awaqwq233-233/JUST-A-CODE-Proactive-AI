@@ -6,6 +6,8 @@ import queue
 import os
 import random
 import platform
+import logging
+from src.judgment.judge import JudgmentEngine, InterventionRequest
 
 # --- 平台检测 ---
 PLATFORM = platform.system()  # 'Windows', 'Darwin' (macOS), 'Linux'
@@ -66,6 +68,12 @@ WAKE_WORDS = ["jac", "j.a.c", "杰克", "接客", "你好", "hello jac", "hi jac
 SYSTEM_STATE = "SLEEP" # SLEEP | AWAKE
 LAST_INTERACTION_TIME = 0
 AWAKE_TIMEOUT = 20 # 唤醒后维持 20 秒活跃状态
+
+# --- 前导判断引擎配置（MiniCPM-o via LM Studio）---
+JUDGMENT_ENGINE_ENABLED = False  # 启动后如检测到 MiniCPM-o 服务则自动设为 True
+JUDGMENT_MODEL_NAME = "MiniCPM-o-4_5-gguf"
+JUDGMENT_INTERVAL = 4.0           # 判断间隔（秒）
+JUDGMENT_ACTIVATED = False         # 判断引擎实际运行标记
 
 def check_wake_word(text):
     """检查文本中是否包含唤醒词"""
@@ -308,6 +316,7 @@ def audio_thread_func(speaker, recognizer, recorder, brain):
             # 2. 识别
             # print("[交互] 正在识别...")
             text = recognizer.transcribe(filename)
+            context.push_transcription(text)
             
             # 删除临时文件
             try:
@@ -366,6 +375,24 @@ def main():
         daemon=True
     )
     manual_input_thread.start()
+    
+    # --- 前导判断引擎 ---
+    judge_engine = JudgmentEngine(
+        model_name=JUDGMENT_MODEL_NAME,
+        interval=JUDGMENT_INTERVAL,
+    )
+    judge_engine.set_context(context)
+    
+    judge_thread = threading.Thread(target=judge_engine.run, daemon=True, name="judgment")
+    
+    if judge_engine.check_available():
+        JUDGMENT_ACTIVATED = True
+        print("[系统] 前导判断引擎已启用 (MiniCPM-o)")
+    else:
+        JUDGMENT_ACTIVATED = False
+        print("[系统] 前导判断引擎未就绪 (MiniCPM-o 服务不可用)，进入被动模式")
+    
+    judge_thread.start()
     
     frame_count = 0
     start_time = time.time()
@@ -431,10 +458,31 @@ def main():
                 LAST_INTERACTION_TIME = time.time()
                 if speaker:
                     speaker.speak("我在，请讲。", emotion_hint="热情")
+            
+            # --- 前导判断引擎介入检查 ---
+            if JUDGMENT_ACTIVATED:
+                intervention = judge_engine.get_intervention()
+                if intervention is not None and not conversation_running:
+                    print(f"[主动介入] 判断引擎: {intervention.reason}")
+                    context.is_listening = False
+                    context.is_thinking = False
+                    vision_info = context.get_vision_summary()
+                    transcript_context = intervention.transcript
+                    full_context = (
+                        f"[系统主动介入] {intervention.reason}\n"
+                        f"当前视觉: {vision_info}\n"
+                        f"最近音频: {transcript_context}"
+                    )
+                    threading.Thread(
+                        target=lambda ctx=full_context: process_response(ctx, brain, speaker),
+                        daemon=True
+                    ).start()
                 
     except KeyboardInterrupt:
         running = False
     finally:
+        if locals().get('judge_engine') is not None:
+            judge_engine.stop()
         camera.stop()
         cv2.destroyAllWindows()
         print("[系统] 程序已结束。")
