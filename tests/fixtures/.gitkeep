@@ -1,0 +1,4 @@
+# 保留空目录：记忆子系统黄金数据集（record_samples.jsonl）等 fixtures 将落地于此。
+# 注意：黄金数据集（§3.4）依赖已 ratify 的 RecordDecision 契约（kind 短名 / source 五值），
+# 当前实现（src/memory）与之存在漂移（见 docs/memory_test_plan.md §9.1），
+# 故 fixtures 内容待 §9.1 Reconcile 裁定后再填充，避免固化错误契约。

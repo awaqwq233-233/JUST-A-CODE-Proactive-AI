@@ -1,0 +1,12 @@
+# Test dependencies for J.A.C. (Phase 0+ test infrastructure)
+# Kept SEPARATE from requirements.txt so the runtime app stays lean.
+# All pins use >= so pip resolves the latest version compatible with the
+# active interpreter (validated on Python 3.12; also compatible with 3.10/3.11).
+# NOTE: no LM Studio / camera / microphone deps are introduced here.
+
+pytest>=8.0          # test runner + `pythonpath` ini option (>=7)
+pytest-cov>=5.0      # coverage (`--cov` / `--cov-report`)
+pytest-mock>=3.12    # `mocker` fixture for stubbing
+pytest-timeout>=2.2  # global per-test timeout guard (`timeout` ini)
+pytest-xdist>=3.5    # parallel execution (`-n auto`)
+hypothesis>=6.100    # property-based testing for data-layer fuzzing

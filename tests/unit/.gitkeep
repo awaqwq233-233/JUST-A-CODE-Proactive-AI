@@ -1,0 +1,2 @@
+# 单元测试目录：MemoryStore 存储/恢复/原子写（Phase 1）、RecordJudge 规则层 + 黄金集（Phase 2）。
+# 内容待 docs/memory_test_plan.md §9.1 实现漂移 Reconcile 裁定后再填充。

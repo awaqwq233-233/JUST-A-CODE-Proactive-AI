@@ -1,0 +1,2 @@
+# 集成测试目录：mock LocalBrain 注入 / 主循环 / 状态机 / 控制台（Phase 3）。
+# 内容待 MemoryManager.record_turn 接入 process_response 且 §9.1 漂移 Reconcile 后填充。

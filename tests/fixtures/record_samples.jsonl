@@ -1,0 +1,44 @@
+{"user": "记住我喜欢喝绿茶", "expect": "store", "kind": "preference", "reason": "user_stated"}
+{"user": "记一下我们每周三碰头", "expect": "store", "kind": "event", "reason": "explicit_convention"}
+{"user": "别忘了周五交报告", "expect": "store", "kind": "event", "reason": "user_stated"}
+{"user": "请记住用户叫张伟", "expect": "store", "kind": "profile", "reason": "user_stated"}
+{"user": "帮我记我住在北京", "expect": "store", "kind": "profile", "reason": "user_stated"}
+{"user": "我家有两只猫", "expect": "store", "kind": "profile", "reason": "derived_preference"}
+{"user": "我习惯用快捷键", "expect": "store", "kind": "preference", "reason": "derived_preference"}
+{"user": "我不吃辣", "expect": "store", "kind": "preference", "reason": "derived_preference"}
+{"user": "我是一名程序员", "expect": "store", "kind": "profile", "reason": "derived_preference"}
+{"user": "我叫李明", "expect": "store", "kind": "profile", "reason": "derived_preference"}
+{"user": "我们决定下周去旅行", "expect": "store", "kind": "event", "reason": "explicit_convention"}
+{"user": "说好每天背单词", "expect": "store", "kind": "event", "reason": "explicit_convention"}
+{"user": "我承诺会按时吃药", "expect": "store", "kind": "event", "reason": "explicit_convention"}
+{"user": "记住我的工号是 8848", "expect": "store", "kind": "profile", "reason": "user_stated"}
+{"user": "记着开会别迟到", "expect": "store", "kind": "event", "reason": "user_stated"}
+{"user": "记一下蓝色是他的最爱", "expect": "store", "kind": "preference", "reason": "user_stated"}
+{"user": "remember this: I enjoy swimming", "expect": "store", "kind": "preference", "reason": "user_stated"}
+{"user": "别忘了带伞", "expect": "store", "kind": "event", "reason": "user_stated"}
+{"user": "we decided to meet monthly", "expect": "store", "kind": "event", "reason": "explicit_convention"}
+{"user": "我打算考研", "expect": "store", "kind": "preference", "reason": "derived_preference"}
+{"user": "叫我老王就行", "expect": "store", "kind": "profile", "reason": "derived_preference"}
+{"user": "我家狗叫豆豆", "expect": "store", "kind": "profile", "reason": "derived_preference"}
+{"user": "今天天气怎么样", "expect": "skip"}
+{"user": "你好", "expect": "skip"}
+{"user": "讲个笑话听听", "expect": "skip"}
+{"user": "什么是机器学习", "expect": "skip"}
+{"user": "再见", "expect": "skip"}
+{"user": "帮我查下明天股价", "expect": "skip"}
+{"user": "这顿饭真好吃", "expect": "skip"}
+{"user": "哈哈哈哈", "expect": "skip"}
+{"user": "你觉得呢", "expect": "skip"}
+{"user": "明天是周几", "expect": "skip"}
+{"user": "小明是我儿子", "expect": "skip", "pii": true}
+{"user": "小红是我的同事", "expect": "skip", "pii": true}
+{"user": "他爸是医生", "expect": "skip"}
+{"user": "这电影真好看", "expect": "skip"}
+{"user": "怎么做蛋炒饭", "expect": "skip"}
+{"user": "你好jac", "expect": "skip"}
+{"user": "讲个故事吧", "expect": "skip"}
+{"user": "现在是几点", "expect": "skip"}
+{"user": "谢谢", "expect": "skip"}
+{"user": "按钮在右上角", "expect": "skip"}
+{"user": "以后每天多喝水", "expect": "skip"}
+{"user": "下次买牛奶", "expect": "skip"}

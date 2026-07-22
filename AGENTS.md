@@ -73,6 +73,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 - `fix_install.py`：依赖修复辅助（PyAudio / llama-cpp-python / VAD on Windows）。
 - `setup_ffmpeg.py`：从 imageio-ffmpeg 复制二进制为项目根 `ffmpeg.exe`。
 - `verify_model.py`：校验 llama-cpp-python 与本地 GGUF 模型。
+- `docs/memory/`：记忆子系统文档集合——`schema.md`（JSON 数据契约，v1.0.0 锁定）、`runbook.md`（运维/排障）、`privacy.md`（隐私细则）、`README.md`（用户指南）。记忆数据文件默认在用户目录 `~/.jac/memory/`（见 `runbook.md` §3.3），不进仓库。
 
 通常不参与编辑的大体积/二进制产物：
 
