@@ -7,7 +7,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 长期产品愿景是**智能眼镜助手**：
 
 - 眼镜 / MR 设备采集真实世界的视频与音频。
-- MacBook 级别的主机做低延迟的本地感知与推理。
+- MacBook Pro级别的主机做低延迟的本地感知与推理。
 - 云或局域网服务器承担更重的推理、长期记忆、路由到更大的模型，以及本地算力不足时的外部 API。
 - 助手最终要支持主动感知、agent 式任务执行、外部 API 调用、语音/HUD 输出，以及闭环任务循环。
 
@@ -23,7 +23,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 - VAD 麦克风录音：`src/audio/recorder.py`（PyAudio + WebRTC VAD，阈值/预热/最短时长已调优）。
 - Whisper 语音识别：`src/audio/stt.py`（默认 `model_size="tiny"`，**非流式**）。
 - 本地大脑推理：`src/brain/llm.py`（`LocalBrain`，多后端：lm_studio / ollama / llama_cpp / auto）。
-- Qwen3-TTS 语音合成：`src/audio/qwen_tts.py`（开源本地 TTS，支持情绪/语气自然语言控制与 3 秒声音克隆，默认克隆保住 J.A.C. 音色），兜底为 `src/audio/tts.py`（pyttsx3 / macOS `say`）。
+- Qwen3-TTS 语音合成：`src/audio/qwen_tts.py`（开源本地 TTS，支持情绪/语气自然语言控制与 3 秒声音克隆，默认克隆保住 J.A.C. 音色），兜底为 `src/audio/tts.py`（pyttsx3 / macOS `say`）。当前默认克隆参考音为 `voices/silverwalf_voice.wav`（旧音色 `zh_vo_Main_Linaxita_2_1_10_26.wav` 保留可回退）；参考文本与文件名见 `qwen_tts.py` 顶部的 `DEFAULT_REF_WAV` / `DEFAULT_REF_TEXT`。
 - **主动判断引擎（新增）**：`src/judgment/judge.py`（`JudgmentEngine`，连接 LM Studio 上的 MiniCPM-o，持续判断是否需要主动介入）。
 
 ### 运行流程（`main.py`）
@@ -61,7 +61,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 - `src/judgment/__init__.py`：**新增**。
 - `src/utils/context.py`：线程安全的共享上下文（视觉摘要、状态标志、转录缓冲、帧缓存、介入标志）。
 - `models/`：本地 GGUF 模型目录（见下）。
-- `voices/`：Qwen3-TTS 声音克隆参考音（J.A.C. 音色）。
+- `voices/`：Qwen3-TTS 声音克隆参考音。`silverwalf_voice.wav` 为当前默认克隆音色（对应 `ref_text` 见 `qwen_tts.py`）；`zh_vo_Main_Linaxita_2_1_10_26.wav` 为旧 J.A.C. 音色，保留作回退。两枚参考音体积小、有意保留进版本库（见 `.gitignore` 注释）。
 - `temp/`：运行时临时音频文件。
 - `ffmpeg.exe`：Windows 本地 FFmpeg 二进制。
 - `requirements.txt` / `requirements_fixed.txt`：依赖快照（`requirements.txt` 较新，`requirements_fixed.txt` 为旧稳定版）。
@@ -87,7 +87,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 
 - `Qwen3.5-9B-Q4_K_M.gguf`：当前「大脑」模型（约 5.6GB），`main.py` 默认指定，默认通过 `lm_studio` 后端加载（127.0.0.1:12345）。
 - `mmproj-Qwen3.5-9B-BF16.gguf`：Qwen3.5 的多模态投影（约 0.9GB），`llama_cpp` 后端做视觉问答时自动挂载。
-- `MiniCPM-o-4_5-Q4_K_S.gguf`：主动判断引擎模型（约 4.8GB），需在 LM Studio 加载后由 `JudgmentEngine` 使用。
+- `MiniCPM-o-4_5-Q4_K_S.gguf`：主动判断引擎模型（约 4.8GB），需在 LM Studio 加载后由 `JudgmentEngine` 使用。**注意：磁盘实际文件名可能为 `ggml-model-Q4_K_S.gguf`，与文档命名不一致，以 `ls models/` 为准（加载按模糊匹配探测，文件名差异不影响运行）。**
 - `Qwen3.6-35B-A3B-...-IQ2_M.gguf`（约 11.6GB）：**已下载但代码/配置均未引用**，疑似备用大模型或未来云端/服务器卸载预留——勿误读为已启用。
 
 > 注意：旧的 `models/qwen1_5-1_8b-chat-q4_k_m.gguf` 与 `models/README.txt` 已不存在，删去相关描述。
@@ -96,7 +96,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 
 当前 STT：Whisper，`model_size="tiny"`，非流式。
 
-当前 TTS：默认 Qwen3-TTS（`src/audio/qwen_tts.py`，开源本地 TTS，支持情绪/语气自然语言控制与 3 秒声音克隆，克隆参考音在 `voices/`）；不可用时代码自动降级到 pyttsx3 / macOS `say`。
+当前 TTS：默认 Qwen3-TTS（`src/audio/qwen_tts.py`，开源本地 TTS，支持情绪/语气自然语言控制与 3 秒声音克隆，克隆参考音在 `voices/`）；不可用时代码自动降级到 pyttsx3 / macOS `say`。默认克隆模式（`clone`）使用 `voices/silverwalf_voice.wav` 作 3 秒声音克隆，参考文本为 `qwen_tts.py` 的 `DEFAULT_REF_TEXT`；可用环境变量 `QWEN_TTS_REF` / `QWEN_TTS_REF_TEXT` 临时覆盖。
 
 ## 设置与运行
 
@@ -143,7 +143,7 @@ python main.py
 - 可用的摄像头、可用的麦克风。
 - 项目根或系统 PATH 中的 FFmpeg。
 - 运行中的 LM Studio（默认）或本地 GGUF 模型（改 backend 后）。
-- Qwen3-TTS 引擎（`pip install -U qwen-tts`）与模型权重（见 `download_models.py`，自动下载到 `models/qwen_tts/`）。
+- Qwen3-TTS 引擎（`pip install -U qwen-tts`，国内网络装包请加清华镜像 `-i http://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn`）与模型权重（见 `download_models.py`，自动下载到 `models/qwen_tts/`）。下载脚本已改用系统 `curl` 下载（绕开 Python 的 SSL 证书坑），国内网络若报证书/吊销错误见 `DEPLOY_GUIDE.txt` 排错（已默认加 `--ssl-no-revoke`，仍失败用 `--insecure`）。
 
 ## 当前进度（来自日志）
 
@@ -155,7 +155,7 @@ python main.py
 - 重做语音模型路径：TTS 后端已从 Genie-TTS（GPT-SoVITS/ONNX）全面切换为开源本地 Qwen3-TTS（情绪自然语言控制 + 声音克隆，参考音在 `voices/`），旧 Genie 代码与资产已删除。
 - 研究小判断模型能否在流式输入时持续思考。
 - 搭建 GitHub 提交/开源工具链。
-- 在稳定服务器可用后探索服务器连接模块（含 `awaqwq233.cloud`、`awaqwq233.com`）。
+- 在稳定服务器可用后探索服务器连接模块
 
 **代码中已落地的进展（相对旧文档）：**
 
@@ -198,7 +198,7 @@ python main.py
 - 注意 `main.py` 的线程状态：`context.is_speaking`、`context.is_listening`、`context.is_thinking`、`conversation_running` 用于避免反馈循环与重叠交互。
 - **新增后端（云端/外部 API）应在 `LocalBrain` 内扩展**，而非绕过它直接发请求，以保持统一的多模态接口与 mock 兜底。
 - 把 `temp/` 音频当作可丢弃的运行时产物。
-- 不要提交大体积模型/音频/打包产物，除非项目明确要跟踪二进制资产。
+- 不要提交大体积模型/音频/打包产物，除非项目明确要跟踪二进制资产。`.gitignore` 已配置忽略 `models/qwen_tts/`（约 4GB 下载权重，可经 `download_models.py` 重拉）、`.venv.bak/` 等；`voices/` 下的参考音（J.A.C. 音色，体积小）有意保留、不忽略，迁移或克隆后按需 `git add voices/` 提交。
 - 谨慎对待隐私与安全。愿景明确要求「主动常开感知」，未来实现必须包含可见的同意、本地过滤、日志控制，以及在录音/识别人物/向云 API 发送数据前的清晰边界。
 - 任何新的 agent/工具执行功能，对高风险操作必须显式白名单与确认。当前助手能说、能看；执行系统动作是重大信任边界。
 - 延迟优化优先做流式与流水线：流式 ASR、增量推理、流式/提前 TTS。

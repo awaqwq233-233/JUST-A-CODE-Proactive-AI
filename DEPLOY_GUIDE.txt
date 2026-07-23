@@ -42,10 +42,10 @@ J.A.C. - Just A Code 智能眼镜助手 - 全套离线/迁移部署指南
 
 【通用文件】
 
-1. [LLM 模型] (Qwen1.5-1.8B-Chat GGUF)
-   下载链接: https://huggingface.co/Qwen/Qwen1.5-1.8B-Chat-GGUF/resolve/main/qwen1_5-1_8b-chat-q4_k_m.gguf
-   * 将下载的文件放入: `J.A.C/models/` 文件夹中。
-   * 最终路径应为: `J.A.C/models/qwen1_5-1_8b-chat-q4_k_m.gguf`
+1. [LLM 大脑模型] (Qwen3.5-9B-Q4_K_M.gguf)
+   当前「大脑」模型 Qwen3.5-9B 的 GGUF 已随仓库提供（位于 `J.A.C/models/`），迁移时直接复制整个 `models/` 目录即可；
+   运行默认通过 LM Studio (127.0.0.1:12345) 加载，详见步骤 4，无需单独从 HuggingFace 下载。
+   * 注意：旧文档里的 Qwen1.5-1.8B-Chat GGUF 已移除，请勿再下载。
 
 2. [Qwen3-TTS 模型] (默认 TTS 语音合成引擎)
    见下方 §5 的一键预下载说明（`python download_models.py`）。模型自动下载到
@@ -56,13 +56,9 @@ J.A.C. - Just A Code 智能眼镜助手 - 全套离线/迁移部署指南
    下载链接: https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.pt
    * 将文件放入项目根目录。
 
-4. [LocateAnything-3B 模型] (视觉语言定位 - 可选)
-   * 这是 NVIDIA 开发的 3B 参数视觉语言定位模型，支持自然语言查询定位。
-   * 模型会在首次运行时自动从 HuggingFace 下载 (nvidia/LocateAnything-3B)。
-   * 手动下载地址: https://huggingface.co/nvidia/LocateAnything-3B
-   * 模型大小约 10GB+，需要足够磁盘空间。
-   * 硬件要求: 建议 NVIDIA GPU (8GB+ VRAM)，或 Apple Silicon (M2/M3/M4)。
-   * 如果 LocateAnything 不可用，系统会自动降级到 YOLOv8。
+4. [LocateAnything-3B 模型] (已移除)
+   * 原计划用作视觉语言定位的 NVIDIA 3B 模型，现已从代码中移除。
+   * 当前视觉理解仅用 YOLOv8 检测 + LLM 文本摘要，不再下载或加载此模型（约 10GB+，已无用），请勿按旧链接下载。
 
 5. [Qwen3-TTS 模型] (默认 TTS 语音合成引擎)
    J.A.C. 现已默认使用 Qwen3-TTS 进行语音合成（开源、本地优先，支持情绪/语气控制与声音克隆）。
@@ -72,8 +68,11 @@ J.A.C. - Just A Code 智能眼镜助手 - 全套离线/迁移部署指南
      python download_models.py --size 0.6B     # 更小的 0.6B（约 2GB）
      python download_models.py --mode custom   # CustomVoice（强情绪控制）
      python download_models.py --mode all      # 该尺寸下三种变体 + 分词器
-     python download_models.py --source modelscope   # 国内走 ModelScope
-   脚本默认优先 HuggingFace 国内镜像（hf-mirror.com），可用 --no-mirror 关闭。
+     python download_models.py --source modelscope   # 国内走 ModelScope（需先 pip install modelscope）
+   脚本默认优先 HuggingFace 国内镜像（hf-mirror.com），可用 --no-mirror 关闭。下载走系统 curl（绕开 Python SSL
+   证书坑）；若报证书/吊销错误：默认已加 --ssl-no-revoke（跳过 Windows CRL 吊销检查），多数国内网络可直接成功；
+   仍失败用 python download_models.py --insecure（关闭校验，仅限可信内网，有中间人风险）。装任何包请用清华镜像：
+   pip install -U 包名 -i http://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
 
    模型也会在首次运行时自动从 HuggingFace 下载（约 2~4GB）。若已用脚本预下载，
    src/audio/qwen_tts.py 会自动优先加载 models/qwen_tts/ 下的本地副本（离线即可用）。
@@ -85,7 +84,7 @@ J.A.C. - Just A Code 智能眼镜助手 - 全套离线/迁移部署指南
    HuggingFace 方式：
      huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-Base --local-dir ./models/qwen_tts/Qwen3-TTS-12Hz-1.7B-Base
 
-   默认使用 Base 模型 + voices/ 下的参考音做 3 秒声音克隆（保住 J.A.C. 音色）。
+   默认使用 Base 模型 + voices/silverwalf_voice.wav 参考音做 3 秒声音克隆（保住 J.A.C. 音色）；旧参考音 zh_vo_Main_Linaxita_2_1_10_26.wav 保留可回退。
    如需更强情绪控制，可改用 CustomVoice / VoiceDesign，通过环境变量 QWEN_TTS_MODE 与
    QWEN_TTS_MODEL 切换（详见 src/audio/qwen_tts.py 顶部说明）。离线部署时把
    QWEN_TTS_MODEL 指向本地模型目录即可。
@@ -182,15 +181,12 @@ python3 main.py
 如果一切正常，你应该能看到：
 1. 摄像头画面启动
 2. 控制台显示 "J.A.C. - Just A Code (多模态版)"
-3. 视觉检测器初始化，默认使用 hybrid 模式（YOLO + LocateAnything）
+3. 视觉检测器初始化（默认 YOLOv8 物体检测，conf=0.5）
 4. 按空格键可以开始对话
 
 【检测模式说明】
-- yolo 模式: 使用 YOLOv8 进行快速自动检测
-- locate_anything 模式: 使用 LocateAnything-3B 进行基于语言的定位
-- hybrid 模式: 默认模式，YOLO 实时检测 + LocateAnything 按需定位
-
-可以在 main.py 中修改 detector = VisionDetector(mode='hybrid') 切换模式。
+- 当前视觉理解仅用 YOLOv8 (conf=0.5) 做物体检测，检测结果 + LLM 文本摘要构成视觉理解；
+- 旧文档提到的 LocateAnything-3B / hybrid 模式已从代码中移除，请勿在 main.py 中设置 mode='hybrid'。
 
 ----------------------------------------------------------------------
 步骤 5: 权限设置 (macOS 特有)
@@ -207,6 +203,14 @@ macOS 要求明确授权应用访问摄像头和麦克风：
 ----------------------------------------------------------------------
 常见问题排查
 ----------------------------------------------------------------------
+
+【下载与证书问题（国内网络常见）】
+- Qwen3-TTS 权重下载报 CERTIFICATE_VERIFY_FAILED / CRYPT_E_REVOCATION_OFFLINE：
+  脚本已改用系统 curl 且默认加 --ssl-no-revoke（跳过 Windows 证书吊销检查），多数情况可直接成功；
+  仍失败用 python download_models.py --insecure 关闭校验（仅限可信内网，有中间人风险）。
+- pip 装包（如 qwen-tts）连接 pypi.org 被掐断（SSLEOFError / 超时）：
+  改用清华镜像：pip install -U 包名 -i http://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
+- 迁移/克隆后 models/qwen_tts/ 为空：该目录已被 .gitignore 忽略，请运行 download_models.py 重新拉取。
 
 【Windows 常见问题】
 - PyAudio 安装失败：使用 pipwin 安装
