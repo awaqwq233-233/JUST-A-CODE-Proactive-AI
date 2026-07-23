@@ -1,0 +1,60 @@
+{
+  "说明": "本文件由 setup_new_computer.py 读取，定义需要下载的模型。请在新电脑上按实际情况核实并修改 repo_id / 文件名。所有下载默认走 HuggingFace 国内镜像（hf-mirror.com）。若文件已存在于目标路径，工具会自动跳过（所以把旧机的整个 models/ 拷过来即可免下载）。",
+  "hf_mirror": "https://hf-mirror.com",
+  "models": [
+    {
+      "name": "大脑模型 Qwen3.5-9B (GGUF)",
+      "type": "hf_files",
+      "repo_id": "Qwen/Qwen3.5-9B-GGUF",
+      "target_dir": "models",
+      "files": ["Qwen3.5-9B-Q4_K_M.gguf"],
+      "required": true,
+      "note": "★ 必需：默认大脑模型。请核实 HuggingFace 仓库名与文件名是否一致；若从旧机拷贝了 models/ 可跳过。"
+    },
+    {
+      "name": "多模态投影 mmproj (GGUF)",
+      "type": "hf_files",
+      "repo_id": "Qwen/Qwen3.5-9B-GGUF",
+      "target_dir": "models",
+      "files": ["mmproj-Qwen3.5-9B-BF16.gguf"],
+      "required": false,
+      "note": "仅当使用 llama_cpp 后端做「看图问答」时需要；默认走 LM Studio 后端可跳过。请核实文件名。"
+    },
+    {
+      "name": "判断引擎 MiniCPM-o (GGUF)",
+      "type": "hf_files",
+      "repo_id": "openbmb/MiniCPM-o_2_6-gguf",
+      "target_dir": "models",
+      "files": ["MiniCPM-o-4_5-Q4_K_S.gguf"],
+      "required": false,
+      "note": "仅主动判断引擎需要。注意磁盘实际文件名可能为 ggml-model-Q4_K_S.gguf（代码按模糊匹配加载，文件名不影响运行）。请核实仓库与文件名。"
+    },
+    {
+      "name": "备用大模型 Qwen3.6-35B (GGUF, 当前代码未引用)",
+      "type": "hf_files",
+      "repo_id": "Qwen/Qwen3.6-35B-A3B-GGUF",
+      "target_dir": "models",
+      "files": ["*.gguf"],
+      "required": false,
+      "skip_by_default": true,
+      "note": "代码/配置均未引用，仅作未来云端/服务器卸载预留。默认跳过以节省约 11.6GB；用 --include-big 可下载。请核实仓库。"
+    },
+    {
+      "name": "Qwen3-TTS 语音模型",
+      "type": "tts",
+      "size": "1.7B",
+      "mode": "clone",
+      "target_dir": "models/qwen_tts",
+      "required": true,
+      "note": "★ 必需：默认语音引擎。size/mode 可由命令行 --ts-size / --ts-mode 覆盖。默认 clone 变体 + 分词器。"
+    },
+    {
+      "name": "YOLOv8n 检测模型",
+      "type": "direct",
+      "url": "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.pt",
+      "target": "yolov8n.pt",
+      "required": false,
+      "note": "首次运行 ultralytics 会自动下载，可跳过预取。若想离线预置就让它下载。"
+    }
+  ]
+}
