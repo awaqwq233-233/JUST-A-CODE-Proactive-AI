@@ -23,12 +23,12 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 - VAD 麦克风录音：`src/audio/recorder.py`（PyAudio + WebRTC VAD，阈值/预热/最短时长已调优）。
 - Whisper 语音识别：`src/audio/stt.py`（默认 `model_size="tiny"`，**非流式**）。
 - 本地大脑推理：`src/brain/llm.py`（`LocalBrain`，多后端：lm_studio / ollama / llama_cpp / auto）。
-- Genie-TTS 语音合成：`src/audio/genie_tts.py`（GPT-SoVITS ONNX，情绪参考音切换），兜底为 `src/audio/tts.py`（pyttsx3 / macOS `say`）。
+- Qwen3-TTS 语音合成：`src/audio/qwen_tts.py`（开源本地 TTS，支持情绪/语气自然语言控制与 3 秒声音克隆，默认克隆保住 J.A.C. 音色），兜底为 `src/audio/tts.py`（pyttsx3 / macOS `say`）。
 - **主动判断引擎（新增）**：`src/judgment/judge.py`（`JudgmentEngine`，连接 LM Studio 上的 MiniCPM-o，持续判断是否需要主动介入）。
 
 ### 运行流程（`main.py`）
 
-1. 初始化摄像头、YOLO 检测器、扬声器（优先 `GenieSpeaker`，不可用则回退 `Speaker`）、Whisper、`AudioRecorder`、`LocalBrain`（**默认 `backend="lm_studio"`，模型 `Qwen3.5-9B-Q4_K_M.gguf`**）。
+1. 初始化摄像头、YOLO 检测器、扬声器（`QwenTTSSpeaker`，不可用则回退 `Speaker`）、Whisper、`AudioRecorder`、`LocalBrain`（**默认 `backend="lm_studio"`，模型 `Qwen3.5-9B-Q4_K_M.gguf`**）。
 2. 启动三条线程：音频主循环（监听→识别→唤醒判断→响应）、**控制台输入线程（新增）**、判断引擎线程（daemon）。
 3. 主循环每帧：取帧 → YOLO 检测 → 更新 `SharedContext`（视觉摘要 + 缓存最新帧）→ 绘制 FPS / 状态灯（Listening/Thinking/Speaking）→ `cv2.imshow`。
 4. 唤醒词集合：`jac` / `j.a.c` / `杰克` / `接客` / `你好` / `hello jac` / `hi jac` / `你好 jac` / `hey jac`。
@@ -55,13 +55,13 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 - `src/audio/recorder.py`：PyAudio + WebRTC VAD 录音器。
 - `src/audio/stt.py`：OpenAI Whisper 封装。
 - `src/audio/tts.py`：跨平台系统 TTS 兜底封装。
-- `src/audio/genie_tts.py`：Genie-TTS / GPT-SoVITS ONNX 语音合成，带情绪/参考音处理与兜底降级。
+- `src/audio/qwen_tts.py`：Qwen3-TTS 语音合成（开源本地 TTS，支持情绪/语气控制与声音克隆），带系统 TTS 兜底降级。
 - `src/brain/llm.py`：`LocalBrain`，llama.cpp / LM Studio / Ollama / auto 多后端，含 `think_with_image`。
 - `src/judgment/judge.py`：**新增**，主动判断引擎（MiniCPM-o via LM Studio）。
 - `src/judgment/__init__.py`：**新增**。
 - `src/utils/context.py`：线程安全的共享上下文（视觉摘要、状态标志、转录缓冲、帧缓存、介入标志）。
 - `models/`：本地 GGUF 模型目录（见下）。
-- `genie_assets/` 与 `GenieData/`：Genie-TTS 模型/数据/音频资产。
+- `voices/`：Qwen3-TTS 声音克隆参考音（J.A.C. 音色）。
 - `temp/`：运行时临时音频文件。
 - `ffmpeg.exe`：Windows 本地 FFmpeg 二进制。
 - `requirements.txt` / `requirements_fixed.txt`：依赖快照（`requirements.txt` 较新，`requirements_fixed.txt` 为旧稳定版）。
@@ -78,7 +78,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 通常不参与编辑的大体积/二进制产物：
 
 - `.venv/` / `.cache/` / `__pycache__/`
-- 模型二进制（`*.gguf`、`*.pt`、`*.onnx`、`*.bin`）
+- 模型二进制（`*.gguf`、`*.pt`、`*.bin`）
 - `temp/` 下的运行时音频
 
 ## 模型与资产
@@ -96,7 +96,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 
 当前 STT：Whisper，`model_size="tiny"`，非流式。
 
-当前 TTS：优先 Genie-TTS（用 `genie_assets/onnx` 下 ONNX）；兜底 pyttsx3 / macOS `say`。`genie_tts.py` 相对旧版增强：按情绪映射 `ref_<emotion>.wav` 参考音、随机 `1~4.mp3` 样本（80% 概率切换）、模型版本不兼容时自动降级到系统 TTS 并标记 `available=False`。
+当前 TTS：默认 Qwen3-TTS（`src/audio/qwen_tts.py`，开源本地 TTS，支持情绪/语气自然语言控制与 3 秒声音克隆，克隆参考音在 `voices/`）；不可用时代码自动降级到 pyttsx3 / macOS `say`。
 
 ## 设置与运行
 
@@ -143,7 +143,7 @@ python main.py
 - 可用的摄像头、可用的麦克风。
 - 项目根或系统 PATH 中的 FFmpeg。
 - 运行中的 LM Studio（默认）或本地 GGUF 模型（改 backend 后）。
-- Genie-TTS ONNX 资产（可选，缺失则回退系统 TTS）。
+- Qwen3-TTS 引擎（`pip install -U qwen-tts`）与模型权重（见 `download_models.py`，自动下载到 `models/qwen_tts/`）。
 
 ## 当前进度（来自日志）
 
@@ -152,7 +152,7 @@ python main.py
 - 继续用 vibe coding 推进。
 - 把纸质架构图数字化。
 - 用更新的工具/模型重新审视架构：OpenClaw、小米 MiLoco 2.0、能在 48GB MacBook 级机器运行的新 Qwen 系列。
-- 重做语音模型路径（当前语音克隆/ONNX/回复行为仍有 bug）。
+- 重做语音模型路径：TTS 后端已从 Genie-TTS（GPT-SoVITS/ONNX）全面切换为开源本地 Qwen3-TTS（情绪自然语言控制 + 声音克隆，参考音在 `voices/`），旧 Genie 代码与资产已删除。
 - 研究小判断模型能否在流式输入时持续思考。
 - 搭建 GitHub 提交/开源工具链。
 - 在稳定服务器可用后探索服务器连接模块（含 `awaqwq233.cloud`、`awaqwq233.com`）。
@@ -164,7 +164,7 @@ python main.py
 - 新增多模态图像问答 `think_with_image()`（视觉问题时发送真实摄像头帧）。
 - 新增 `SLEEP`/`AWAKE` 状态机 + 20s 超时自动休眠。
 - 新增控制台文本输入实时对话（绕过唤醒词）。
-- 唤醒词扩展；Genie-TTS 情绪参考音切换与随机样本。
+- 唤醒词扩展；TTS 后端从 Genie-TTS 全面切换为开源本地 Qwen3-TTS（情绪自然语言控制 + 声音克隆）。
 
 `codingLOG.md` 列出的与最终目标的差距中，**以下仍为未实现项**：function calling / 工具执行层、持久记忆（JSON/向量库）、agent 执行框架、MCP / OpenClaw 集成、流式 STT/LLM/TTS。注意 `codingLOG.md` 部分内容早于 `main.py`，应作为架构差距笔记而非精确实现状态。
 
@@ -203,13 +203,12 @@ python main.py
 - 任何新的 agent/工具执行功能，对高风险操作必须显式白名单与确认。当前助手能说、能看；执行系统动作是重大信任边界。
 - 延迟优化优先做流式与流水线：流式 ASR、增量推理、流式/提前 TTS。
 - 记忆从结构化 JSON 摘要起步，再考虑向量数据库。
-- 更换 TTS 时注意：项目所有者认为语音栈仍有 bug，预期会重做。
+- 更换 TTS 时保持 `speak(text, emotion_hint)` 统一接口与系统 TTS 兜底不变；当前已实现为 Qwen3-TTS + 参考音克隆。
 
 ## 已知限制
 
 - **运行强依赖 LM Studio**：`main.py` 默认 `backend="lm_studio"`，必须本地 12345 端口加载 `Qwen3.5-9B`；否则思考全部失败。纯本地 GGUF 需改 backend。
 - **双模型显存压力**：开启主动判断需 LM Studio 同时加载 `Qwen3.5-9B` + `MiniCPM-o`，资源占用大。默认 `JUDGMENT_ENGINE_ENABLED=False`，未检测到时自动进入被动模式（不报错也不主动）。
-- Genie-TTS 仍是已知 bug 区（模型版本不兼容会触发降级）。
 - VAD 录音仍可能阻塞在「等待说话」，影响关闭响应（旧限制仍在）。
 - STT/LLM/TTS **均非流式**，端到端延迟仍高。
 - 无 function calling、无持久记忆、无 agent/MCP/OpenClaw 集成（目标未实现）。
@@ -225,4 +224,4 @@ python main.py
 python build.py
 ```
 
-它创建一个名为 `JAC_Prototype` 的 onedir 控制台构建，并收集 `ultralytics` 资产。模型文件、FFmpeg、Genie-TTS 资产、Whisper 缓存/模型文件、平台音频权限等需要特别处理。
+它创建一个名为 `JAC_Prototype` 的 onedir 控制台构建，并收集 `ultralytics` 资产。模型文件、FFmpeg、Qwen3-TTS 模型（`models/qwen_tts/`）、Whisper 缓存/模型文件、平台音频权限等需要特别处理。

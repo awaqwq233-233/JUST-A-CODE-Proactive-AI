@@ -23,12 +23,12 @@ The runnable entry point is `main.py`. It wires together:
 - VAD-based microphone recording through `src/audio/recorder.py` (PyAudio + WebRTC VAD, thresholds/warmup/min-duration tuned).
 - Whisper speech-to-text through `src/audio/stt.py` (default `model_size="tiny"`, **non-streaming**).
 - Local "brain" reasoning through `src/brain/llm.py` (`LocalBrain`, multi-backend: `lm_studio` / `ollama` / `llama_cpp` / `auto`).
-- Genie-TTS voice synthesis through `src/audio/genie_tts.py` (GPT-SoVITS ONNX, with emotion reference-audio switching), falling back to `src/audio/tts.py` (pyttsx3 / macOS `say`).
+- Qwen3-TTS voice synthesis through `src/audio/qwen_tts.py` (open-source local TTS, with emotion/style natural-language control and 3-second voice cloning that preserves J.A.C.'s timbre), falling back to `src/audio/tts.py` (pyttsx3 / macOS `say`).
 - **Proactive judgment engine (new)**: `src/judgment/judge.py` (`JudgmentEngine`, connects to MiniCPM-o on LM Studio and continuously decides whether to intervene).
 
 ### Runtime flow (`main.py`)
 
-1. Initialize camera, YOLO detector, speaker (prefer `GenieSpeaker`, fall back to `Speaker`), Whisper, VAD recorder, `LocalBrain` (**default `backend="lm_studio"`, model `Qwen3.5-9B-Q4_K_M.gguf`**).
+1. Initialize camera, YOLO detector, speaker (`QwenTTSSpeaker`, fall back to `Speaker`), Whisper, VAD recorder, `LocalBrain` (**default `backend="lm_studio"`, model `Qwen3.5-9B-Q4_K_M.gguf`**).
 2. Start three threads: audio main loop (listen → transcribe → wake-word check → respond), **console-input thread (new)**, and the judgment-engine thread (daemon).
 3. Main loop per frame: grab frame → YOLO detect → update `SharedContext` (vision summary + cache latest frame) → draw FPS / status light (Listening/Thinking/Speaking) → `cv2.imshow`.
 4. Wake words: `jac` / `j.a.c` / `杰克` / `接客` / `你好` / `hello jac` / `hi jac` / `你好 jac` / `hey jac`.
@@ -55,13 +55,13 @@ The runnable entry point is `main.py`. It wires together:
 - `src/audio/recorder.py`: PyAudio + WebRTC VAD recorder.
 - `src/audio/stt.py`: OpenAI Whisper wrapper.
 - `src/audio/tts.py`: basic cross-platform system TTS wrapper.
-- `src/audio/genie_tts.py`: Genie-TTS / GPT-SoVITS ONNX speaker with emotion/reference-audio handling and fallback.
+- `src/audio/qwen_tts.py`: Qwen3-TTS speaker (open-source local TTS with emotion/style control and voice cloning), with system-TTS fallback.
 - `src/brain/llm.py`: `LocalBrain`, llama.cpp / LM Studio / Ollama / auto backends, with `think_with_image`.
 - `src/judgment/judge.py`: **new**, proactive judgment engine (MiniCPM-o via LM Studio).
 - `src/judgment/__init__.py`: **new**.
 - `src/utils/context.py`: thread-safe shared context (vision summary, state flags, transcription buffer, frame cache, intervention flag).
 - `models/`: local GGUF model directory (see below).
-- `GenieData/` and `genie_assets/`: Genie-TTS model/data/audio assets.
+- `voices/`: Qwen3-TTS voice-cloning reference audio (J.A.C.'s timbre).
 - `temp/`: runtime temporary audio files.
 - `ffmpeg.exe`: local FFmpeg binary used by audio/media dependencies on Windows.
 - `requirements.txt` / `requirements_fixed.txt`: dependency snapshots (`requirements.txt` is newer, `requirements_fixed.txt` is the older stable one).
@@ -77,7 +77,7 @@ The runnable entry point is `main.py`. It wires together:
 Generated or bulky local artifacts that are not usually useful to edit:
 
 - `.venv/` / `.cache/` / `__pycache__/`
-- model binaries (`*.gguf`, `*.pt`, `*.onnx`, `*.bin`)
+- model binaries (`*.gguf`, `*.pt`, `*.bin`)
 - runtime audio under `temp/`
 
 ## Models And Assets
@@ -95,7 +95,7 @@ Current object detector: `yolov8n.pt` (`conf=0.5`). The old NVIDIA LocateAnythin
 
 Current STT: Whisper, `model_size="tiny"`, non-streaming.
 
-Current TTS: preferred Genie-TTS (ONNX under `genie_assets/onnx`); fallback pyttsx3 / macOS `say`. `genie_tts.py` is enhanced vs. the old version: it switches reference audio by emotion (`ref_<emotion>.wav`), uses random `1~4.mp3` samples (80% chance), and auto-falls back to system TTS on model incompatibility (sets `available=False`).
+Current TTS: default Qwen3-TTS (`src/audio/qwen_tts.py`, open-source local TTS with emotion/style natural-language control and 3-second voice cloning; cloning reference audio under `voices/`); on failure the code auto-falls back to pyttsx3 / macOS `say`.
 
 ## Setup And Run
 
@@ -142,7 +142,7 @@ Required local hardware/runtime conditions:
 - A working camera and a working microphone.
 - FFmpeg available in the project root or system PATH.
 - A running LM Studio (default) or a local GGUF model (after changing backend).
-- Genie-TTS ONNX assets (optional; falls back to system TTS if missing).
+- Qwen3-TTS engine (`pip install -U qwen-tts`) and model weights (see `download_models.py`, auto-downloaded to `models/qwen_tts/`).
 
 ## Current Progress From Logs
 
@@ -151,7 +151,7 @@ The project was restarted on 2026-06-23 after gaokao. Direction (from `codinglog
 - Keep building with vibe coding.
 - Digitize the paper architecture diagram.
 - Reconsider the architecture using newer tools and models such as OpenClaw, Xiaomi MiLoco 2.0, and newer Qwen-family models that can run on a 48 GB MacBook-class machine.
-- Rework the voice model path because current voice clone / ONNX / response behavior has bugs.
+- Rework the voice model path: the TTS backend has been fully switched from Genie-TTS (GPT-SoVITS/ONNX) to open-source local Qwen3-TTS (emotion natural-language control + voice cloning; reference audio under `voices/`), and the old Genie code/assets are deleted.
 - Research whether a small judgment model can think while receiving streaming input.
 - Set up GitHub submission/open-source tooling.
 - Explore server connection modules after stable servers are available, including `awaqwq233.cloud` and `awaqwq233.com`.
@@ -163,7 +163,7 @@ The project was restarted on 2026-06-23 after gaokao. Direction (from `codinglog
 - Added multimodal image Q&A `think_with_image()` (sends the real camera frame on visual queries).
 - Added `SLEEP`/`AWAKE` state machine + 20s auto-sleep timeout.
 - Added console text-input live dialogue (bypassing the wake word).
-- Expanded wake words; Genie-TTS emotion reference-audio switching and random samples.
+- Expanded wake words; TTS backend fully switched from Genie-TTS to open-source local Qwen3-TTS (emotion natural-language control + voice cloning).
 
 The `codingLOG.md` gap list is still accurate on the **unimplemented** items: function calling / tool execution, persistent memory (JSON/vector DB), agent framework, MCP / OpenClaw integration, and streaming STT/LLM/TTS. Note that `codingLOG.md` is partly older than `main.py`; treat it as architectural gap notes, not exact implementation status.
 
@@ -202,13 +202,13 @@ Hardware expectations from docs:
 - For any new agent/tool execution feature, require explicit allowlists and confirmations for risky operations. The current assistant can talk and observe; executing system actions is a major trust boundary.
 - For latency improvements, prioritize streaming and pipelining: streaming ASR, incremental reasoning, and streaming/early TTS.
 - For memory, start simple with structured JSON summaries before adding vector databases.
-- If changing TTS, note that the project owner currently considers the voice stack buggy and expects a rework.
+- When changing TTS, keep the `speak(text, emotion_hint)` interface and the system-TTS fallback intact (currently Qwen3-TTS + reference-audio voice cloning).
 
 ## Known Limitations
 
 - **Strong LM Studio dependency**: `main.py` hardcodes `backend="lm_studio"`, so LM Studio must be running locally on port 12345 with `Qwen3.5-9B` loaded; otherwise all thinking fails. Pure local GGUF requires changing the backend.
 - **Dual-model memory pressure**: enabling proactive judgment requires LM Studio to load both `Qwen3.5-9B` + `MiniCPM-o`, which is resource-heavy. `JUDGMENT_ENGINE_ENABLED=False` by default; if not detected it silently enters passive mode (no error, no intervention).
-- Genie-TTS is still a known buggy area (model-version incompatibility triggers fallback).
+- Genie-TTS has been fully removed; Qwen3-TTS is the sole TTS backend.
 - `AudioRecorder.listen_and_record()` can still block waiting for VAD-triggered speech; shutdown responsiveness may need attention.
 - STT/LLM/TTS are all non-streaming, so end-to-end latency remains high.
 - No function calling, no persistent memory, no agent/MCP/OpenClaw integration (goals unimplemented).
@@ -224,4 +224,4 @@ Hardware expectations from docs:
 python build.py
 ```
 
-It creates an onedir console build named `JAC_Prototype` and collects `ultralytics` assets. Expect packaging to require special care for model files, FFmpeg, Genie-TTS assets, Whisper cache/model files, and platform audio permissions.
+It creates an onedir console build named `JAC_Prototype` and collects `ultralytics` assets. Expect packaging to require special care for model files, FFmpeg, Qwen3-TTS models (`models/qwen_tts/`), Whisper cache/model files, and platform audio permissions.

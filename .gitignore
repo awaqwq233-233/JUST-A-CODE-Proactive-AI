@@ -8,6 +8,7 @@ build/
 
 # Virtual Environment
 .venv/
+.venv.bak/
 venv/
 ENV/
 
@@ -25,8 +26,10 @@ output/
 temp_audio.wav
 
 # Large model / media assets (do not commit to GitHub)
+# 项目内 *.gguf 大脑/判断模型随仓库提供，但一律不进 Git（见下方全局 *.gguf 等规则）。
 models/*
-!models/README.txt
+# qwen_tts 权重由 download_models.py 下载（约 4GB，可随时重拉），务必勿提交。
+models/qwen_tts/
 GenieData/
 genie_assets/onnx/
 genie_assets/*.mp3
@@ -37,6 +40,9 @@ genie_assets/*.wav
 *.bin
 *.safetensors
 ffmpeg.exe
+# voices/ 下的参考音（如 silverwalf_voice.wav、zh_vo_Main_Linaxita_2_1_10_26.wav）
+# 是 J.A.C. 音色核心资产、体积很小，有意保留、不忽略——按需 `git add voices/` 提交。
+# 若日后想把参考音也排除，加 `voices/*.wav` 即可。
 
 # PyInstaller build output
 JAC_Prototype/

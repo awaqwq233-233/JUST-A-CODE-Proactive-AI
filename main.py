@@ -74,9 +74,10 @@ from src.capture.camera import Camera
 from src.analysis.detector import VisionDetector
 from src.audio.tts import Speaker
 try:
-    from src.audio.genie_tts import GenieSpeaker
+    from src.audio.qwen_tts import QwenTTSSpeaker, QWEN_TTS_AVAILABLE
 except Exception:
-    GenieSpeaker = None
+    QwenTTSSpeaker = None
+    QWEN_TTS_AVAILABLE = False
 from src.audio.stt import SpeechRecognizer
 from src.audio.recorder import AudioRecorder
 from src.brain.llm import LocalBrain
@@ -464,11 +465,12 @@ def main():
     if not camera.start(): return
 
     detector = VisionDetector()
-    # 优先使用 Genie-TTS，如果配置不可用则回退到 pyttsx3
+    # 扬声器选择：优先 Qwen3-TTS（本地优先、开源、支持情绪/声音克隆），
+    # 不可用时回退系统 TTS（pyttsx3 / macOS say / espeak）。
     speaker = None
-    if GenieSpeaker is not None:
-        speaker = GenieSpeaker()
-    if speaker is None or getattr(speaker, "available", False) is False:
+    if QwenTTSSpeaker is not None and QWEN_TTS_AVAILABLE:
+        speaker = QwenTTSSpeaker()
+    if speaker is None or not getattr(speaker, "available", False):
         speaker = Speaker()
     
     # 根据电脑配置选择模型大小

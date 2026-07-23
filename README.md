@@ -39,7 +39,7 @@ J.A.C.核心由“J.A.C. Brain”驱动，通过“Agent”单元调度任务，
 •	DeepSeek
 输出与反馈机制：
 •	结果呈现层：结果/显卡层（APP）接收校验后的输出并展示
-•	语音合成输出：GPT TTS模块控制音色、情绪（需标签）、语速、停顿参数 
+•	语音合成输出：Qwen3-TTS 模块控制音色、情绪（自然语言指令）、语速、停顿参数
 •	闭环反馈路径：从“结果/显卡层”指向“开始判断周期”，实现持续感知与主动服务的动态循环
 硬件部署与运行环境:
 •	主机设备：MacBook Pro 14" M5PRO芯片，18+20核心，48gb统一内存
@@ -112,7 +112,7 @@ o	DeepSeek
 ________________________________________
 Output & Feedback Mechanism
 •	Result Presentation Layer: The Result/Display Layer (APP) receives validated output and presents it
-•	Speech Synthesis Output: GPT TTS module controls voice timbre, emotion (requires tags), speech rate, and pause parameters
+•	Speech Synthesis Output: Qwen3-TTS module controls voice timbre, emotion (natural-language instructions), speech rate, and pause parameters
 •	Closed-Loop Feedback Path: From the "Result/Display Layer" back to "Start Judgment Cycle," achieving continuous perception and a dynamic loop of proactive service
 ________________________________________
 Hardware Deployment & Runtime Environment

@@ -23,13 +23,13 @@
 ## 4. 响应速度 / 流式（未解决）
 
 - **目标**：流式对话——一边思考一边生成语音，大幅降低感知延迟。
-- **现状**：录音(VAD) → 识别(Whisper, `tiny`, 非流式) → 思考(`LocalBrain`, `stream: False`) → 合成(Genie-TTS, 非流式)。端到端延迟仍高；STT/LLM/TTS **均非流式**。
+- **现状**：录音(VAD) → 识别(Whisper, `tiny`, 非流式) → 思考(`LocalBrain`, `stream: False`) → 合成(Qwen3-TTS, 非流式)。端到端延迟仍高；STT/LLM/TTS **均非流式**。
 
 ## 5. 其他架构级缺口（未解决）
 
 - 无 agent 执行框架；无 MCP / OpenClaw 集成；无云端/局域网卸载（虽有 `Qwen3.6-35B` 模型已下载但未接入代码）。
 - 视觉理解仍只有 **YOLO 标签 + LLM 文本摘要**，无 OCR / 人脸识别 / 深度 / 场景图 / 视觉语言理解（旧的 LocateAnything-3B 方案已移除）。
-- Genie-TTS 语音栈仍有兼容性 bug，需重做。
+- TTS 语音栈已从 Genie-TTS（GPT-SoVITS）全面切换为开源本地 Qwen3-TTS（已删除 genie_tts.py 与 genie_assets/、GenieData/），支持情绪控制与声音克隆。
 - 当前项目树**没有自动化测试**。
 
 > 注：本文件是"差距笔记"，不是精确实现状态。已落地的进展（主动判断引擎雏形、多模态图像问答、多后端大脑）以 `AGENTS.md` 为准。

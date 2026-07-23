@@ -47,21 +47,9 @@ J.A.C. - Just A Code 智能眼镜助手 - 全套离线/迁移部署指南
    * 将下载的文件放入: `J.A.C/models/` 文件夹中。
    * 最终路径应为: `J.A.C/models/qwen1_5-1_8b-chat-q4_k_m.gguf`
 
-2. [Genie-TTS 模型文件] (重要！)
-   Genie-TTS 运行需要一组完整的 ONNX 基础模型文件。请下载以下所有文件并放入 `genie_assets/onnx` 文件夹中。
-   如果无法下载，可以搜索 HuggingFace 的 "High-Logic/Genie-TTS-Model" 仓库。
-
-   必须下载的文件列表：
-   - t2s_encoder_fp32.bin
-   - t2s_encoder_fp32.onnx
-   - t2s_first_stage_decoder_fp32.onnx
-   - t2s_shared_fp16.bin
-   - t2s_stage_decoder_fp32.onnx
-   - vits_fp16.bin
-   - vits_fp32.onnx
-   
-   下载地址示例 (High-Logic/Genie-TTS-Model/v2/base):
-   https://huggingface.co/High-Logic/Genie-TTS-Model/tree/main/v2/base
+2. [Qwen3-TTS 模型] (默认 TTS 语音合成引擎)
+   见下方 §5 的一键预下载说明（`python download_models.py`）。模型自动下载到
+   `models/qwen_tts/`，离线可用；首次运行也会自动从 HuggingFace 拉取。
 
 3. [YOLOv8 模型] (目标检测 - 默认启用)
    * 首次运行会自动下载，或者手动下载：
@@ -75,6 +63,32 @@ J.A.C. - Just A Code 智能眼镜助手 - 全套离线/迁移部署指南
    * 模型大小约 10GB+，需要足够磁盘空间。
    * 硬件要求: 建议 NVIDIA GPU (8GB+ VRAM)，或 Apple Silicon (M2/M3/M4)。
    * 如果 LocateAnything 不可用，系统会自动降级到 YOLOv8。
+
+5. [Qwen3-TTS 模型] (默认 TTS 语音合成引擎)
+   J.A.C. 现已默认使用 Qwen3-TTS 进行语音合成（开源、本地优先，支持情绪/语气控制与声音克隆）。
+
+   **一键预下载（推荐）**：运行项目根目录的脚本，自动把模型下载到 models/qwen_tts/ 并离线可用：
+     python download_models.py                 # 默认 1.7B-Base（clone 模式）+ 分词器
+     python download_models.py --size 0.6B     # 更小的 0.6B（约 2GB）
+     python download_models.py --mode custom   # CustomVoice（强情绪控制）
+     python download_models.py --mode all      # 该尺寸下三种变体 + 分词器
+     python download_models.py --source modelscope   # 国内走 ModelScope
+   脚本默认优先 HuggingFace 国内镜像（hf-mirror.com），可用 --no-mirror 关闭。
+
+   模型也会在首次运行时自动从 HuggingFace 下载（约 2~4GB）。若已用脚本预下载，
+   src/audio/qwen_tts.py 会自动优先加载 models/qwen_tts/ 下的本地副本（离线即可用）。
+
+   手动下载（备用，路径需与脚本一致以便被自动识别）：
+   国内推荐 ModelScope（需先 pip install modelscope）：
+     modelscope download --model Qwen/Qwen3-TTS-12Hz-1.7B-Base --local_dir ./models/qwen_tts/Qwen3-TTS-12Hz-1.7B-Base
+     modelscope download --model Qwen/Qwen3-TTS-Tokenizer-12Hz --local_dir ./models/qwen_tts/Qwen3-TTS-Tokenizer-12Hz
+   HuggingFace 方式：
+     huggingface-cli download Qwen/Qwen3-TTS-12Hz-1.7B-Base --local-dir ./models/qwen_tts/Qwen3-TTS-12Hz-1.7B-Base
+
+   默认使用 Base 模型 + voices/ 下的参考音做 3 秒声音克隆（保住 J.A.C. 音色）。
+   如需更强情绪控制，可改用 CustomVoice / VoiceDesign，通过环境变量 QWEN_TTS_MODE 与
+   QWEN_TTS_MODEL 切换（详见 src/audio/qwen_tts.py 顶部说明）。离线部署时把
+   QWEN_TTS_MODEL 指向本地模型目录即可。
 
 【平台特定文件】
 
@@ -114,8 +128,8 @@ python -m pip install --upgrade pip
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 pip install opencv-python ultralytics pyaudio openai-whisper sounddevice numpy transformers
 
-# 3. 安装 Genie-TTS 和依赖
-pip install genie-tts onnxruntime
+# 3. 安装 Qwen3-TTS（默认语音引擎）依赖
+pip install qwen-tts onnxruntime
 
 # 4. 安装 llama-cpp-python (使用预编译包，避免编译错误)
 pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
@@ -142,8 +156,8 @@ pip3 install opencv-python ultralytics openai-whisper sounddevice numpy transfor
 brew install portaudio
 pip3 install pyaudio
 
-# 4. 安装 Genie-TTS 和依赖
-pip3 install genie-tts onnxruntime
+# 4. 安装 Qwen3-TTS（默认语音引擎）依赖
+pip3 install qwen-tts onnxruntime
 
 # 5. 安装 llama-cpp-python
 pip3 install llama-cpp-python
