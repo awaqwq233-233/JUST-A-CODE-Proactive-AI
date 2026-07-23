@@ -54,16 +54,36 @@ class JudgmentEngine:
         "直接输出判断结果，不要输出其他内容。"
     )
 
-    def __init__(self, api_url="http://127.0.0.1:12345/v1/chat/completions", check_url="http://127.0.0.1:12345/v1/models", model_name="MiniCPM-o-4_5-gguf", interval=4.0, transcription_window=15.0):
+    def __init__(self, api_url="http://127.0.0.1:12345/v1/chat/completions", check_url="http://127.0.0.1:12345/v1/models", model_name="minicpm-v-4_5", interval=4.0, timeout=15.0, transcription_window=15.0):
         self.api_url = api_url
         self.check_url = check_url
         self.model_name = model_name
         self.interval = interval
+        self.timeout = timeout
         self.transcription_window = transcription_window
         self.running = True
         self._available = False
+        self._recheck_at = 0  # 模型不可用时，周期性重新检测的节流时间戳
+        # 视觉能力：默认尝试发图；若模型报"不支持图像输入"则自动降级为纯文本判断
+        self._vision_supported = True
         self.context = None
         self.intervention_queue = queue.Queue()
+
+    @staticmethod
+    def _normalize(name):
+        """规范化模型 ID：小写、去 -gguf 后缀、下划线转连字符，便于跨命名风格匹配。"""
+        return name.lower().replace("-gguf", "").replace(".gguf", "").replace("_", "-").strip()
+
+    def _match_model(self, loaded_ids):
+        """在已下载/加载的模型 ID 中，大小写不敏感地模糊匹配目标模型，命中返回真实 ID。"""
+        target = self._normalize(self.model_name)
+        for mid in loaded_ids:
+            if not mid:
+                continue
+            norm = self._normalize(mid)
+            if norm == target or target in norm or norm in target:
+                return mid
+        return None
 
     def check_available(self):
         try:
@@ -71,7 +91,12 @@ class JudgmentEngine:
             if resp.status_code == 200:
                 models = resp.json().get("data", [])
                 loaded_ids = [m.get("id", "") for m in models]
-                if self.model_name in loaded_ids:
+                matched = self._match_model(loaded_ids)
+                if matched:
+                    if matched != self.model_name:
+                        logger.info("判断模型 ID 匹配: 配置 '%s' -> 实际 '%s'", self.model_name, matched)
+                    # 回填真实 ID，保证后续 judge() 的 payload["model"] 用对名字
+                    self.model_name = matched
                     logger.info("检测到判断模型: %s (API: %s)", self.model_name, self.api_url)
                     self._available = True
                     return True
@@ -103,7 +128,8 @@ class JudgmentEngine:
         text_parts.append("\n请判断是否需要J.A.C.介入。")
         user_content.append({"type": "text", "text": "\n".join(text_parts)})
 
-        if frame is not None:
+        # 仅当模型支持视觉时才附带图像；不支持则走纯文本（基于音频转录）判断
+        if frame is not None and self._vision_supported:
             try:
                 ret, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 if ret:
@@ -120,9 +146,20 @@ class JudgmentEngine:
         payload = {"model": self.model_name, "messages": messages, "temperature": 0.2, "max_tokens": 64, "stream": False}
 
         try:
-            resp = requests.post(self.api_url, json=payload, timeout=15, headers={"Content-Type": "application/json"})
+            resp = requests.post(self.api_url, json=payload, timeout=self.timeout, headers={"Content-Type": "application/json"})
             if resp.status_code != 200:
-                logger.warning("判断模型 API 返回 %s: %s", resp.status_code, resp.text[:200])
+                err_text = resp.text[:300]
+                # 模型被 LM Studio 卸载（通常因显存不足被挤出）：标记为不可用，run 循环会周期性重试
+                if resp.status_code == 400 and "unloaded" in err_text.lower():
+                    logger.warning("判断模型已被 LM Studio 卸载（可能因显存不足被挤出）。请在 LM Studio 重新加载 '%s'；判断引擎将周期性自动重试。", self.model_name)
+                    self._available = False
+                    return False, ""
+                # 模型不支持图像输入：自动降级为纯文本判断，并立即用纯文本重试一次
+                if resp.status_code == 400 and self._vision_supported and "image" in err_text.lower():
+                    logger.warning("判断模型不支持图像输入，自动降级为纯文本判断（后续不再发送画面）")
+                    self._vision_supported = False
+                    return self.judge(None, transcript_text)
+                logger.warning("判断模型 API 返回 %s: %s", resp.status_code, err_text)
                 return False, ""
             content = resp.json()["choices"][0]["message"]["content"].strip()
         except Exception as exc:
@@ -146,6 +183,15 @@ class JudgmentEngine:
         logger.info("判断引擎主循环启动 (interval=%ss, available=%s)", self.interval, self._available)
 
         while self.running:
+            # 模型不可用（被卸载 / 未加载）：每隔约 20s 重新检测，恢复后自动继续，避免日志刷屏
+            if not self._available:
+                now = time.time()
+                if now >= self._recheck_at:
+                    self.check_available()
+                    self._recheck_at = now + 20
+                time.sleep(self.interval)
+                continue
+
             loop_start = time.time()
             try:
                 frame = self.context.get_frame()
@@ -182,7 +228,7 @@ class JudgmentEngine:
         return {
             "api_url": "http://127.0.0.1:12345/v1/chat/completions",
             "check_url": "http://127.0.0.1:12345/v1/models",
-            "model_name": "MiniCPM-o-4_5-gguf",
+            "model_name": "minicpm-v-4_5",
             "interval": 4.0,
             "transcription_window": 15.0,
         }

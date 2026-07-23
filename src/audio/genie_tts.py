@@ -8,6 +8,7 @@ import platform
 PLATFORM = platform.system()
 IS_WINDOWS = PLATFORM == 'Windows'
 IS_MACOS = PLATFORM == 'Darwin'
+IS_LINUX = PLATFORM == 'Linux'
 
 try:
     import genie_tts as genie
@@ -18,7 +19,7 @@ class GenieSpeaker:
     """
     使用 Genie-TTS 进行语音合成的播报器
     依赖 GPT-SoVITS 的 ONNX 推理引擎 genie_tts
-    兼容 Windows 和 macOS 平台。
+    兼容 Windows / macOS / Linux 平台（降级路径随平台自动选择）。
     """
     def __init__(self,
                  character_name=None,
@@ -233,16 +234,24 @@ class GenieSpeaker:
             return None
 
     def _fallback_speak(self, text):
-        """降级到系统 TTS"""
+        """降级到系统 TTS（跨平台兜底：macOS say / Linux espeak / 其它 pyttsx3）"""
         if IS_MACOS:
             try:
                 import subprocess
-                subprocess.run(['say', '-v', 'Tingting', text], 
+                subprocess.run(['say', '-v', 'Tingting', text],
                              capture_output=True, text=True)
                 return
             except Exception as e:
                 print(f"[错误] macOS say 命令失败: {e}")
-        
+        elif IS_LINUX:
+            try:
+                import subprocess
+                subprocess.run(['espeak', text],
+                             capture_output=True, text=True)
+                return
+            except Exception as e:
+                print(f"[错误] Linux espeak 命令失败: {e}")
+
         try:
             import pyttsx3
             engine = pyttsx3.init()

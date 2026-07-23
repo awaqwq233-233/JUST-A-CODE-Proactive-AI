@@ -5,12 +5,13 @@ import platform
 PLATFORM = platform.system()
 IS_WINDOWS = PLATFORM == 'Windows'
 IS_MACOS = PLATFORM == 'Darwin'
+IS_LINUX = PLATFORM == 'Linux'
 
 class Camera:
     """
     摄像头管理类
     负责视频流的采集、帧获取和资源释放。
-    兼容 Windows 和 macOS 平台。
+    兼容 Windows / macOS / Linux 平台（OpenCV VideoCapture 自动选择后端）。
     """
     def __init__(self, camera_id=None, width=1280, height=720):
         """

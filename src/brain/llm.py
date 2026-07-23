@@ -24,6 +24,8 @@ class LocalBrain:
         self.backend = "mock"
         self.active_model_id = None
         self._explicit_lm_model = lm_studio_model
+        # 大脑首选模型（LM Studio 中的实际模型 ID，大小写不敏感模糊匹配）；加载顺序变化时也能正确锁定
+        self.brain_model_name = "qwen/qwen3.5-9b"
 
         self.lm_studio_url = "http://127.0.0.1:12345/v1/chat/completions"
         self.lm_studio_check_url = "http://127.0.0.1:12345/v1/models"
@@ -59,8 +61,29 @@ class LocalBrain:
             self._init_llama_cpp(model_path)
 
         if self._explicit_lm_model and self.backend in ("lm_studio",):
-            self.active_model_id = self._explicit_lm_model
-            print(f"[System] LM Studio explicit model: {self.active_model_id}")
+            print(f"[System] LM Studio model hint: {self._explicit_lm_model}")
+
+    @staticmethod
+    def _normalize(name):
+        """规范化模型 ID：小写、去 -gguf/.gguf 后缀、下划线转连字符，便于跨命名风格模糊匹配。"""
+        return name.lower().replace("-gguf", "").replace(".gguf", "").replace("_", "-").strip()
+
+    def _pick_lm_model(self, models, preferred):
+        """在已加载模型 ID 中选定大脑模型：显式指定 > 模糊匹配首选名 > 第一个。"""
+        if not models:
+            return None
+        ids = [m.get("id", "") for m in models if m.get("id")]
+        if not ids:
+            return None
+        if self._explicit_lm_model and self._explicit_lm_model in ids:
+            return self._explicit_lm_model
+        if preferred:
+            t = self._normalize(preferred)
+            for mid in ids:
+                n = self._normalize(mid)
+                if n == t or t in n or n in t:
+                    return mid
+        return ids[0]
 
     def _check_lm_studio(self):
         try:
@@ -68,7 +91,7 @@ class LocalBrain:
             if r.status_code == 200:
                 models = r.json().get("data", [])
                 if models:
-                    self.active_model_id = models[0].get("id", "")
+                    self.active_model_id = self._pick_lm_model(models, self._explicit_lm_model or self.brain_model_name)
                     print(f"[System] LM Studio loaded model: {self.active_model_id or 'unknown'}")
                 return True
             return False
@@ -84,8 +107,8 @@ class LocalBrain:
             r = requests.get(self.lm_studio_check_url, timeout=2)
             if r.status_code == 200:
                 models = r.json().get("data", [])
-                if models and not self.active_model_id:
-                    self.active_model_id = models[0].get("id", "")
+                if models:
+                    self.active_model_id = self._pick_lm_model(models, self._explicit_lm_model or self.brain_model_name)
                 self.multimodal = True
                 print(f"[System] Current LM Studio model: {self.active_model_id or 'unknown'}")
         except:
@@ -114,15 +137,22 @@ class LocalBrain:
         llama_args = {
             "model_path": model_path,
             "n_ctx": 2048,
-            "n_threads": 4,
+            "n_threads": min(8, os.cpu_count() or 4),
             "verbose": False,
         }
         mmproj_path = self._find_mmproj(model_path)
         if mmproj_path:
             print(f"[System] Found multimodal projection: {mmproj_path}")
             llama_args["mmproj"] = mmproj_path
-        if platform.system() == "Windows":
+        sys_plat = platform.system()
+        if sys_plat == "Windows":
+            # Windows 上 batch 调小以兼容老显卡 / 显存碎片
             llama_args["n_batch"] = 512
+        elif sys_plat == "Darwin":
+            # Apple Silicon / M 系列：启用 Metal GPU，全量 offload 到统一内存
+            llama_args["n_gpu_layers"] = -1
+            print("[System] macOS (Metal) 已启用 GPU offload (n_gpu_layers=-1)")
+        # Linux 默认走 CPU；如有 CUDA 可在此或启动时设 n_gpu_layers 启用 GPU
         try:
             self.llm = Llama(**llama_args)
             if mmproj_path:
@@ -202,14 +232,17 @@ class LocalBrain:
             return self._query_llama_cpp(messages, temperature, max_tokens)
 
     def _query_lm_studio(self, messages, temperature, max_tokens):
-        if max_tokens < 2048:
-            max_tokens = 2048
+        # 只保证一个合理下限，尊重调用方传入值（原来强拉到 2048 会让每次生成都极慢）
+        if max_tokens < 512:
+            max_tokens = 512
         try:
             payload = {
                 "messages": messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
-                "stream": False
+                "stream": False,
+                # 禁用 Qwen3 思考链：避免模型先吐大段 thinking 占满 token，大幅降低延迟
+                "chat_template_kwargs": {"enable_thinking": False}
             }
             if self.active_model_id:
                 payload["model"] = self.active_model_id
@@ -232,6 +265,10 @@ class LocalBrain:
                     return parts[-1].strip() if len(parts) > 1 else reasoning
                 print(f"[Debug] LM Studio returned empty content: {json.dumps(data, ensure_ascii=False)[:500]}")
             return content
+        except requests.exceptions.ReadTimeout:
+            print("[Error] 大脑推理超时：模型可能仍在加载，或设备资源不足导致推理过慢。"
+                  "请确认模型已在 LM Studio 完全加载；Mac 上可检查内存压力，或调大 llm.py 的 timeout。")
+            return "My brain is thinking too slowly. Please try again later."
         except requests.exceptions.ConnectionError:
             print("[Error] Cannot connect to LM Studio (127.0.0.1:12345)")
             return "Sorry, cannot connect to brain server."

@@ -11,13 +11,14 @@ import platform
 PLATFORM = platform.system()
 IS_WINDOWS = PLATFORM == 'Windows'
 IS_MACOS = PLATFORM == 'Darwin'
+IS_LINUX = PLATFORM == 'Linux'
 
 class AudioRecorder:
     """
     录音机类
     负责从麦克风录制音频并保存为临时文件。
     支持 VAD (语音活动检测) 以实现自动停止录音。
-    兼容 Windows 和 macOS 平台。
+    兼容 Windows / macOS / Linux 平台（PyAudio 自动选择音频后端）。
     """
     def __init__(self, chunk=480, format=pyaudio.paInt16, channels=1, rate=16000, vad_aggressiveness=1):
         """

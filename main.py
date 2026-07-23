@@ -17,26 +17,54 @@ IS_LINUX = PLATFORM == 'Linux'
 
 print(f"[系统] 检测到平台: {PLATFORM}")
 
-# --- 自动配置 FFmpeg (解决 WinError 2) ---
-# 我们已经通过 setup_ffmpeg.py 将 ffmpeg.exe 复制到了项目根目录
-# 现在需要确保项目根目录在 PATH 环境变量中
+# --- 自动配置 FFmpeg (跨平台) ---
+# 只要能找到 ffmpeg，就把其所在目录加入 PATH，避免下游调用找不到。
+#   Windows: 项目根目录的 ffmpeg.exe（由 setup_ffmpeg.py 复制）
+#   macOS:   Homebrew 安装（Apple Silicon /opt/homebrew/bin，Intel /usr/local/bin）
+#   Linux:   系统 /usr/bin/ffmpeg 或用户安装路径
+#   兜底:     用 shutil.which 在系统 PATH 中查找
 try:
+    import shutil
     project_root = os.path.dirname(os.path.abspath(__file__))
-    
+
+    ffmpeg_candidates = []
     if IS_WINDOWS:
-        ffmpeg_path = os.path.join(project_root, "ffmpeg.exe")
+        ffmpeg_candidates.append(os.path.join(project_root, "ffmpeg.exe"))
     else:
-        ffmpeg_path = os.path.join(project_root, "ffmpeg")
-    
-    if os.path.exists(ffmpeg_path):
-        print(f"[系统] 检测到本地 ffmpeg: {ffmpeg_path}")
-        if project_root not in os.environ["PATH"]:
-            os.environ["PATH"] = project_root + os.pathsep + os.environ["PATH"]
-            print(f"[系统] 已将项目根目录添加到 PATH")
+        # 项目本地（若有）
+        ffmpeg_candidates.append(os.path.join(project_root, "ffmpeg"))
+        # macOS Homebrew 常见位置
+        ffmpeg_candidates.append("/opt/homebrew/bin/ffmpeg")
+        ffmpeg_candidates.append("/usr/local/bin/ffmpeg")
+        # Linux 常见位置
+        ffmpeg_candidates.append("/usr/bin/ffmpeg")
+        ffmpeg_candidates.append("/usr/local/bin/ffmpeg")
+
+    ffmpeg_dir = None
+    for cand in ffmpeg_candidates:
+        if os.path.exists(cand):
+            ffmpeg_dir = os.path.dirname(cand)
+            print(f"[系统] 检测到本地 ffmpeg: {cand}")
+            break
+
+    if ffmpeg_dir is None:
+        path_ff = shutil.which("ffmpeg")
+        if path_ff:
+            ffmpeg_dir = os.path.dirname(path_ff)
+            print(f"[系统] 在系统 PATH 中找到 ffmpeg: {path_ff}")
+
+    if ffmpeg_dir:
+        if ffmpeg_dir not in os.environ["PATH"].split(os.pathsep):
+            os.environ["PATH"] = ffmpeg_dir + os.pathsep + os.environ["PATH"]
+            print(f"[系统] 已将 ffmpeg 目录加入 PATH: {ffmpeg_dir}")
     else:
-        print("[警告] 未找到 ffmpeg，尝试使用系统安装的 ffmpeg...")
+        print("[警告] 未找到 ffmpeg（项目目录、常见安装路径与系统 PATH 均未发现）。")
         if IS_MACOS:
-            os.system("which ffmpeg")
+            print("        macOS:  brew install ffmpeg")
+        elif IS_LINUX:
+            print("        Linux:   sudo apt install ffmpeg  (或对应发行版包管理器)")
+        else:
+            print("        Windows: 运行  python setup_ffmpeg.py")
 except Exception as e:
     print(f"[警告] FFmpeg 配置异常: {e}")
 # -----------------------------------------
@@ -70,10 +98,20 @@ SYSTEM_STATE = "SLEEP" # SLEEP | AWAKE
 LAST_INTERACTION_TIME = 0
 AWAKE_TIMEOUT = 20 # 唤醒后维持 20 秒活跃状态
 
-# --- 前导判断引擎配置（MiniCPM-o via LM Studio）---
-JUDGMENT_ENGINE_ENABLED = False  # 启动后如检测到 MiniCPM-o 服务则自动设为 True
-JUDGMENT_MODEL_NAME = "MiniCPM-o-4_5-gguf"
-JUDGMENT_INTERVAL = 4.0           # 判断间隔（秒）
+# --- 前导判断引擎配置（MiniCPM-o 视觉版，真机默认开启主动感知）---
+# 真机（Mac 48GB 统一内存）：默认开启主动判断。启动时检测到判断模型即自动激活；
+# 若未加载判断模型则自动降级为被动模式（仍可控制台/唤醒词交互）。设为 False 可手动关闭。
+JUDGMENT_ENGINE_ENABLED = True
+JUDGMENT_MODEL_NAME = "minicpm-v-4_5"  # LM Studio / llama_cpp 中 MiniCPM-o(视觉版) 的实际模型 ID（大小写不敏感模糊匹配）
+# 判断间隔（秒）。真机默认 4.0，主动感知更及时；如需更省资源可用 JUDGMENT_INTERVAL 调大。
+JUDGMENT_INTERVAL = float(os.environ.get("JUDGMENT_INTERVAL", "4.0"))
+# 判断请求超时（秒）。真机默认 15.0；若判断模型加载中或资源紧张偶发超时，可调大 JUDGMENT_TIMEOUT。
+JUDGMENT_TIMEOUT = float(os.environ.get("JUDGMENT_TIMEOUT", "15.0"))
+
+# --- 大脑推理后端 ---
+# 默认 lm_studio（需 LM Studio 在 127.0.0.1:12345 加载 qwen3.5-9b）。
+# Mac 本地优先也可设为 llama_cpp（直接加载 GGUF，无需 LM Studio，更适合眼镜主机）；或 ollama。
+BRAIN_BACKEND = os.environ.get("JAC_BRAIN_BACKEND", "lm_studio")
 JUDGMENT_ACTIVATED = False         # 判断引擎实际运行标记
 
 # --- 记忆子系统配置（J.A.C. 长期记忆）---
@@ -438,7 +476,7 @@ def main():
     recognizer = SpeechRecognizer(model_size="tiny") 
     
     recorder = AudioRecorder()
-    brain = LocalBrain(model_path="models/Qwen3.5-9B-Q4_K_M.gguf", backend="lm_studio")
+    brain = LocalBrain(model_path="models/Qwen3.5-9B-Q4_K_M.gguf", backend=BRAIN_BACKEND, lm_studio_model="qwen/qwen3.5-9b")
 
     # --- 记忆子系统（长期记忆）---
     global memory
@@ -472,23 +510,29 @@ def main():
     )
     manual_input_thread.start()
     
-    # --- 前导判断引擎 ---
-    judge_engine = JudgmentEngine(
-        model_name=JUDGMENT_MODEL_NAME,
-        interval=JUDGMENT_INTERVAL,
-    )
-    judge_engine.set_context(context)
-    
-    judge_thread = threading.Thread(target=judge_engine.run, daemon=True, name="judgment")
-    
-    if judge_engine.check_available():
-        JUDGMENT_ACTIVATED = True
-        print("[系统] 前导判断引擎已启用 (MiniCPM-o)")
+    # --- 前导判断引擎（真机默认开启主动感知）---
+    judge_engine = None
+    if JUDGMENT_ENGINE_ENABLED:
+        judge_engine = JudgmentEngine(
+            model_name=JUDGMENT_MODEL_NAME,
+            interval=JUDGMENT_INTERVAL,
+            timeout=JUDGMENT_TIMEOUT,
+        )
+        judge_engine.set_context(context)
+
+        judge_thread = threading.Thread(target=judge_engine.run, daemon=True, name="judgment")
+
+        if judge_engine.check_available():
+            JUDGMENT_ACTIVATED = True
+            print("[系统] 前导判断引擎已启用 (MiniCPM-o)")
+        else:
+            JUDGMENT_ACTIVATED = False
+            print("[系统] 前导判断引擎未就绪（未检测到判断模型），进入被动模式")
+
+        judge_thread.start()
     else:
         JUDGMENT_ACTIVATED = False
-        print("[系统] 前导判断引擎未就绪 (MiniCPM-o 服务不可用)，进入被动模式")
-    
-    judge_thread.start()
+        print("[系统] 前导判断引擎已手动禁用（JUDGMENT_ENGINE_ENABLED=False）")
     
     frame_count = 0
     start_time = time.time()

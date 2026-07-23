@@ -4,19 +4,25 @@ import platform
 PLATFORM = platform.system()
 IS_WINDOWS = PLATFORM == 'Windows'
 IS_MACOS = PLATFORM == 'Darwin'
+IS_LINUX = PLATFORM == 'Linux'
 
 class Speaker:
     """
     文本转语音 (TTS) 类
     负责让 J.A.C. 说话。
-    兼容 Windows 和 macOS 平台。
+    兼容 Windows / macOS / Linux 三平台：
+      - macOS:   pyttsx3（中文嗓色）+ 系统 say 命令兜底
+      - Windows: pyttsx3
+      - Linux:   pyttsx3（需 espeak/speech-dispatcher）+ espeak 命令兜底
     """
     def __init__(self):
         try:
             self.engine = None
-            
+
             if IS_MACOS:
                 self._init_macos_tts()
+            elif IS_LINUX:
+                self._init_linux_tts()
             else:
                 self._init_windows_tts()
                 
@@ -53,6 +59,24 @@ class Speaker:
             print("[提示] 将使用系统自带的 say 命令")
             self.engine = 'say_command'
 
+    def _init_linux_tts(self):
+        """Linux 平台 TTS 初始化（优先 pyttsx3 + espeak/speech-dispatcher 兜底）"""
+        try:
+            import pyttsx3
+            self.engine = pyttsx3.init()
+            self.engine.setProperty('rate', 150)
+            voices = self.engine.getProperty('voices')
+            for voice in voices:
+                # Linux 下 espeak 的中文嗓色通常含 'chinese' / 'zh' / 'yue'
+                if 'chinese' in voice.name.lower() or 'zh' in voice.id.lower() \
+                        or 'yue' in voice.id.lower():
+                    self.engine.setProperty('voice', voice.id)
+                    break
+        except Exception as e:
+            print(f"[警告] Linux 上 pyttsx3 初始化失败（通常需要 espeak 或 speech-dispatcher）: {e}")
+            print("[提示] 将使用系统 espeak 命令")
+            self.engine = 'espeak_command'
+
     def speak(self, text, emotion_hint=None):
         """
         朗读文字 (非阻塞模式)
@@ -66,9 +90,11 @@ class Speaker:
             return
 
         print(f"[J.A.C. 说] {text}")
-        
+
         if self.engine == 'say_command':
             threading.Thread(target=self._macos_say_command, args=(text,)).start()
+        elif self.engine == 'espeak_command':
+            threading.Thread(target=self._linux_espeak_command, args=(text,)).start()
         else:
             threading.Thread(target=self._speak_thread, args=(text,)).start()
 
@@ -111,6 +137,16 @@ class Speaker:
                          capture_output=True, text=True)
         except Exception as e:
             print(f"[错误] macOS say 命令失败: {e}")
+
+    def _linux_espeak_command(self, text):
+        """
+        使用 Linux 系统自带的 espeak 命令进行语音合成
+        """
+        try:
+            import subprocess
+            subprocess.run(['espeak', text], capture_output=True, text=True)
+        except Exception as e:
+            print(f"[错误] Linux espeak 命令失败: {e}")
 
 if __name__ == "__main__":
     speaker = Speaker()
