@@ -6,6 +6,7 @@ import collections
 import webrtcvad
 import numpy as np
 import platform
+import sys
 
 # 平台检测
 PLATFORM = platform.system()
@@ -96,7 +97,7 @@ class AudioRecorder:
         
         return output_filename
 
-    def listen_and_record(self, output_filename="temp_audio.wav", silence_timeout=1.2, max_duration=15.0, min_duration=0.5, stop_event=None):
+    def listen_and_record(self, output_filename="temp_audio.wav", silence_timeout=1.2, max_duration=15.0, min_duration=0.5, stop_event=None, context=None):
         """
         监听并自动录制说话片段 (VAD + Energy)
         
@@ -121,8 +122,9 @@ class AudioRecorder:
         warmup_chunks = 5  # 跳过前面几个可能有噪音的chunks，让设备稳定下来
         warmup_done = False
         
-        print("[耳朵] 正在聆听...", end="\r")
-        
+        self._emit_status("[耳朵] 正在聆听...", context)
+        last_status_time = 0.0  # 限频：聆听状态最多每 1 秒更新一次，避免刷屏
+
         while True:
             try:
                 data = self.stream.read(self.chunk, exception_on_overflow=False)
@@ -155,9 +157,17 @@ class AudioRecorder:
                     is_speech = False
             
             # 调试信息：第一次运行时显示 RMS 和 VAD 状态，方便用户确认麦克风正常
+            # 限频打印（每 1 秒一次），否则会以音频帧率刷屏、挤占 GUI 主线程
             if not speech_detected and warmup_done:
                 speech_count = sum(1 for _, s in trigger_window if s)
-                print(f"[耳朵] 正在聆听 (RMS:{rms}, VAD:{is_speech}, 语音块:{speech_count}/{trigger_threshold})", end="\r")
+                now = time.time()
+                if now - last_status_time >= 1.0:
+                    # GUI 下推到状态栏（不进控制台）；真实终端下原地覆盖打印
+                    self._emit_status(
+                        f"[耳朵] 正在聆听 (RMS:{rms}, VAD:{is_speech}, 语音块:{speech_count}/{trigger_threshold})",
+                        context,
+                    )
+                    last_status_time = now
             
             if not speech_detected:
                 trigger_window.append((data, is_speech))
@@ -186,17 +196,33 @@ class AudioRecorder:
                             self.frames = []
                             trigger_window.clear()
                             silence_start_time = None
-                            print("[耳朵] 正在聆听...", end="\r")
+                            self._emit_status("[耳朵] 正在聆听...", context)
                             continue
                         else:
                             print(f"[耳朵] 说话结束 (时长: {current_duration:.2f}s)。")
                             break
                         
                 if time.time() - start_time > max_duration:
-                    print("[耳朵] 达到最大录音时长。")
-                    break
+                        print("[耳朵] 达到最大录音时长。")
+                        break
         
         return self.stop_recording(output_filename)
+
+    def _emit_status(self, text, context):
+        """
+        把实时聆听状态推送到共享上下文（GUI 状态栏显示）。
+        仅在真实终端（TTY）下才打印到 stdout，避免 GUI 控制台被刷屏。
+        """
+        if context is not None:
+            try:
+                context.set_listening_status(text)
+            except Exception:
+                pass
+        try:
+            if sys.stdout.isatty():
+                print(text, end="\r")
+        except Exception:
+            pass
 
     def record_chunk(self):
         """

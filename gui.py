@@ -88,6 +88,15 @@ QScrollBar:vertical, QScrollBar:horizontal {
 }
 QCheckBox { background: transparent; border: none; padding: 4px; }
 QToolButton { padding: 6px; }
+
+QStatusBar {
+    background: #16181d;
+    color: #c8ccd4;
+    border-top: 1px solid #2a2e36;
+    padding: 2px 8px;
+}
+QStatusBar QLabel { color: #c8ccd4; }
+QStatusBar::item { border: none; }
 """
 
 
@@ -134,6 +143,10 @@ class _GuiStream:
 
     def flush(self):
         pass
+
+    def isatty(self):
+        # GUI 模式下不是真实终端，状态行不应打印到 stdout（交给状态栏）
+        return False
 
 
 class _QtLogHandler(logging.Handler):
@@ -230,6 +243,7 @@ class MainWindow(QMainWindow):
         self.console.setObjectName("console")
         self.console.setReadOnly(True)
         self.console.setMinimumWidth(320)
+        self.console.setMaximumBlockCount(4000)  # 限制缓冲，防止无限增长卡顿
         self.console.setFont(QFont("Consolas", 11))
         self.console.appendPlainText("J.A.C.Prototype 控制台已就绪。点击「启动」开始。")
         mid.addWidget(self.console, 3)
@@ -294,6 +308,17 @@ class MainWindow(QMainWindow):
         self.expand_btn.hide()
         root.addWidget(self.expand_btn)
 
+        self._init_status_bar()
+
+    def _init_status_bar(self):
+        self.status_listen = QLabel("就绪")
+        self.status_listen.setObjectName("statusListen")
+        self.status_sys = QLabel("● 已停止")
+        self.status_sys.setObjectName("statusSys")
+        bar = self.statusBar()
+        bar.addWidget(self.status_listen)
+        bar.addPermanentWidget(self.status_sys)
+
     def _make_interval_slider(self):
         s = QSlider(Qt.Horizontal)
         s.setRange(2, 40)              # 半秒步进 -> 1.0s ~ 20.0s
@@ -328,6 +353,10 @@ class MainWindow(QMainWindow):
         self.frame_timer.timeout.connect(self._pull_frame)
         self.frame_timer.start(33)
 
+        self.status_timer = QTimer(self)
+        self.status_timer.timeout.connect(self._update_status)
+        self.status_timer.start(250)
+
     # ----------------------------------------------------- 日志重定向
     def _redirect_logging(self):
         self.log_q = queue.Queue()
@@ -353,13 +382,26 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------- 取日志
     def _pull_logs(self):
+        # 仅当用户已滚动到底部时才自动跟随，否则保留其阅读/复制位置
+        sb = self.console.verticalScrollBar()
+        at_bottom = sb.value() >= sb.maximum() - 2
         while True:
             try:
                 msg = self.log_q.get_nowait()
             except queue.Empty:
                 break
-            self.console.appendPlainText(msg.rstrip())
-        self.console.moveCursor(QTextCursor.End)
+            # 把 stdout 的 \r（原地覆盖）净化成换行，避免把状态行当成新行疯狂堆叠
+            clean = msg.replace("\r", "\n").rstrip("\n")
+            if clean:
+                self.console.appendPlainText(clean)
+        if at_bottom:
+            self.console.moveCursor(QTextCursor.End)
+
+    # ----------------------------------------------------- 状态栏
+    def _update_status(self):
+        s = self.context.get_listening_status()
+        self.status_listen.setText(s or "就绪")
+        self.status_sys.setText("● 运行中" if self.runtime.running else "● 已停止")
 
     # ----------------------------------------------------- 启动/停止
     def _toggle_run(self):

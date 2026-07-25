@@ -32,6 +32,11 @@ class SharedContext:
         # query always gets the un-annotated frame.
         self._annotated_frame = None
 
+        # Live listening status string (RMS / VAD / trigger count),
+        # written by the audio recorder, shown on the GUI status bar
+        # instead of spamming the console.
+        self._listening_status = ""
+
         # Intervention state (set by judgment engine, consumed by main loop)
         self.intervention_requested = False
         self.intervention_reason = ""
@@ -83,6 +88,15 @@ class SharedContext:
             if self._annotated_frame is None:
                 return None
             return self._annotated_frame.copy()
+
+    def set_listening_status(self, text):
+        """更新实时聆听状态（一行字符串，供 GUI 状态栏显示）。"""
+        with self._lock:
+            self._listening_status = text or ""
+
+    def get_listening_status(self):
+        with self._lock:
+            return self._listening_status
 
     # --- Audio transcription buffer (for judgment engine) ---
 

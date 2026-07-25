@@ -431,7 +431,7 @@ def audio_thread_func(speaker, recognizer, recorder, brain, stop_event=None):
             # 为了避免一直卡住无法退出，内部最好有超时或定期检查 running
             # 但目前的实现依赖于有人说话。
             # 如果没人说话，它会一直在这里等待 VAD 触发
-            recorder.listen_and_record(output_filename=filename, silence_timeout=1.0, stop_event=stop_event)
+            recorder.listen_and_record(output_filename=filename, silence_timeout=1.0, stop_event=stop_event, context=context)
             
             context.is_listening = False
             
