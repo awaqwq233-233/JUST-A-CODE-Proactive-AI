@@ -96,7 +96,7 @@ class AudioRecorder:
         
         return output_filename
 
-    def listen_and_record(self, output_filename="temp_audio.wav", silence_timeout=1.2, max_duration=15.0, min_duration=0.5):
+    def listen_and_record(self, output_filename="temp_audio.wav", silence_timeout=1.2, max_duration=15.0, min_duration=0.5, stop_event=None):
         """
         监听并自动录制说话片段 (VAD + Energy)
         
@@ -128,6 +128,10 @@ class AudioRecorder:
                 data = self.stream.read(self.chunk, exception_on_overflow=False)
             except Exception as e:
                 print(f"\n[错误] 录音异常: {e}")
+                break
+            
+            # 退出信号：程序请求停止时立即打断阻塞的录音循环
+            if stop_event is not None and stop_event.is_set():
                 break
             
             # 预热期：跳过前几个chunks，避免设备刚启动的空/低质量数据

@@ -402,7 +402,7 @@ def manual_input_thread_func(speaker, brain):
 
         handle_user_text(text, speaker, brain, source="控制台", bypass_wake=True)
 
-def audio_thread_func(speaker, recognizer, recorder, brain):
+def audio_thread_func(speaker, recognizer, recorder, brain, stop_event=None):
     """
     音频主循环：监听 -> 识别 -> (唤醒判断) -> 响应
     """
@@ -429,7 +429,7 @@ def audio_thread_func(speaker, recognizer, recorder, brain):
             # 为了避免一直卡住无法退出，内部最好有超时或定期检查 running
             # 但目前的实现依赖于有人说话。
             # 如果没人说话，它会一直在这里等待 VAD 触发
-            recorder.listen_and_record(output_filename=filename, silence_timeout=1.0)
+            recorder.listen_and_record(output_filename=filename, silence_timeout=1.0, stop_event=stop_event)
             
             context.is_listening = False
             
@@ -472,6 +472,10 @@ def main():
         speaker = QwenTTSSpeaker()
     if speaker is None or not getattr(speaker, "available", False):
         speaker = Speaker()
+
+    # 预加载 Qwen3-TTS 模型（后台线程）：避免首次发声才加载导致慢一截
+    if getattr(speaker, "_ensure_model", None) is not None and getattr(speaker, "available", False):
+        threading.Thread(target=speaker._ensure_model, daemon=True, name="tts-preload").start()
     
     # 根据电脑配置选择模型大小
     # recognizer = SpeechRecognizer(model_size="base") 
@@ -501,8 +505,10 @@ def main():
     print("  - 在控制台直接输入文字并回车: 作为你说的话进入思考")
     print("==========================================\n")
 
-    audio_thread = threading.Thread(target=audio_thread_func, 
-                                    args=(speaker, recognizer, recorder, brain))
+    audio_stop = threading.Event()
+    audio_thread = threading.Thread(target=audio_thread_func,
+                                    args=(speaker, recognizer, recorder, brain, audio_stop),
+                                    daemon=True)
     audio_thread.start()
 
     manual_input_thread = threading.Thread(
@@ -592,6 +598,7 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 running = False
+                audio_stop.set()
                 break
             elif key == 32: # Space 键
                 # 手动唤醒
@@ -623,6 +630,7 @@ def main():
     except KeyboardInterrupt:
         running = False
     finally:
+        audio_stop.set()
         if locals().get('judge_engine') is not None:
             judge_engine.stop()
         if memory is not None:
@@ -632,6 +640,15 @@ def main():
                 pass
         camera.stop()
         cv2.destroyAllWindows()
+        # 等待音频线程退出（stop_event 已置位，录音循环会在一个 chunk 内退出），再关闭 PyAudio
+        try:
+            audio_thread.join(timeout=2)
+        except Exception:
+            pass
+        try:
+            recorder.p.terminate()
+        except Exception:
+            pass
         print("[系统] 程序已结束。")
 
 if __name__ == "__main__":
