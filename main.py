@@ -7,7 +7,9 @@ import os
 import random
 import platform
 import logging
+import argparse
 from src.judgment.judge import JudgmentEngine, InterventionRequest
+from src.utils.config import Config
 
 # --- 平台检测 ---
 PLATFORM = platform.system()  # 'Windows', 'Darwin' (macOS), 'Linux'
@@ -652,4 +654,13 @@ def main():
         print("[系统] 程序已结束。")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="J.A.C. 多模态助手")
+    parser.add_argument("--headless", action="store_true",
+                        help="不使用 GUI，改用旧版 cv2 窗口回退（无显示器环境）")
+    args = parser.parse_args()
+    config = Config.load()
+    if args.headless:
+        main()
+    else:
+        from gui import run_gui
+        run_gui(config)

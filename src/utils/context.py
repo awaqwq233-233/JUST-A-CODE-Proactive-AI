@@ -26,6 +26,12 @@ class SharedContext:
         # Latest frame buffer
         self._current_frame = None
 
+        # Latest annotated frame buffer (camera frame + YOLO boxes),
+        # written by the runtime vision loop, read by the GUI for display.
+        # Kept separate from _current_frame (raw) so the brain's visual
+        # query always gets the un-annotated frame.
+        self._annotated_frame = None
+
         # Intervention state (set by judgment engine, consumed by main loop)
         self.intervention_requested = False
         self.intervention_reason = ""
@@ -65,6 +71,18 @@ class SharedContext:
             if self._current_frame is None:
                 return None
             return self._current_frame.copy()
+
+    def set_annotated_frame(self, frame):
+        """缓存带 YOLO 检测框的画面（供 GUI 显示）。不影响原始帧缓存。"""
+        if frame is not None:
+            with self._lock:
+                self._annotated_frame = frame.copy()
+
+    def get_annotated_frame(self):
+        with self._lock:
+            if self._annotated_frame is None:
+                return None
+            return self._annotated_frame.copy()
 
     # --- Audio transcription buffer (for judgment engine) ---
 

@@ -25,6 +25,8 @@ J.A.C. 一键模型预下载脚本（当前覆盖 Qwen3-TTS 语音模型）
     `python download_models.py` 直接成功；Windows 上若报 CRYPT_E_REVOCATION_OFFLINE（连不上
     吊销服务器），脚本已默认加 --ssl-no-revoke 跳过吊销检查（证书链仍校验）。仍报证书错再加
     --insecure（curl -k 跳过校验，有中间人风险）。
+  - 每个文件下载前会检查本地是否已存在且非空，已存在则自动跳过；因此可反复运行本脚本，
+    只增量补全缺失的部分（中途失败重跑不会从头再来）。
   - 国内网络访问 pypi.org 常被掐断，装任何包请用清华镜像：
     pip install -U 包名 -i http://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn
 """
@@ -177,6 +179,10 @@ def download_hf(repo_id, local_dir, use_mirror):
         base = f"{mirror}/{repo_id}/resolve/main"
         for fn in files:
             dst = os.path.join(local_dir, *fn.split("/"))
+            # 已存在且非空则跳过（只下载缺少的部分，支持断点续传/重复运行）
+            if os.path.exists(dst) and os.path.getsize(dst) > 0:
+                print(f"      [已存在] 跳过 {fn}")
+                continue
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             url = f"{base}/{fn}"
             cmd = ["curl", "-L", "--ssl-no-revoke", "--retry", "3", "--retry-delay", "2",

@@ -9,7 +9,8 @@ J.A.C. 新电脑「一键依赖补全」工具
 把 J.A.C. 项目迁移到一台全新的电脑（Windows / macOS / Linux 均可）后，
 运行本工具即可把项目补全到「能直接跑 main.py」的状态：
 
-  1. Python 包依赖（按当前平台自动过滤，避免 Windows 专属包在 Mac/Linux 上装失败）
+  1. Python 包依赖（按当前平台自动过滤，避免 Windows 专属包在 Mac/Linux 上装失败；
+     已安装的包会自动跳过，只下载/安装缺失项；含 GUI 依赖 PySide6）
   2. 系统级依赖（portaudio 麦克风录音库、ffmpeg 音视频库）
   3. ffmpeg 可执行文件（跨平台放到项目根目录，main.py 能直接找到）
   4. 大模型权重（Qwen3.5-9B 大脑 / mmproj 投影 / MiniCPM-o 判断引擎 / Qwen3-TTS / YOLOv8）
@@ -40,9 +41,13 @@ J.A.C. 新电脑「一键依赖补全」工具
   * 默认会在项目根目录建一个 .venv 虚拟环境并安装进去（避免污染系统 Python / 免 sudo）；
     若你已自己建好 venv 并激活，加 --no-venv 即可直接装进当前解释器。
   * 若已把旧机器的整个 models/ 目录拷过来，工具会自动检测到文件已存在并跳过下载。
+  * 每个 Python 包安装前会先探测是否能 import 成功，已装的自动跳过、只装缺失项，
+    既省时间也省流量（PySide6 等 GUI 依赖也在其中）。
 """
 
 import argparse
+import importlib
+import importlib.util  # 显式导入，供 _package_installed 的 find_spec 使用
 import json
 import os
 import platform
@@ -90,6 +95,8 @@ BASE_PACKAGES = [
     "requests",
     "tqdm",
     "pyaudio",
+    # 现代化 GUI（PySide6 桌面界面）依赖，全平台通用
+    "PySide6",
 ]
 # 仅 Windows 需要的包（在 macOS/Linux 上会安装失败，必须排除）
 WINDOWS_ONLY = [
@@ -104,6 +111,47 @@ WINDOWS_ONLY = [
 MAC_ONLY = []
 # 构建/打包专用，运行不需要，排除
 BUILD_ONLY = ["pyinstaller", "pyinstaller-hooks-contrib", "mlx-vlm"]
+
+# pip 包名 -> 可 import 的模块名（部分包名与 import 名不一致）
+IMPORT_OVERRIDES = {
+    "opencv-python": "cv2",
+    "openai-whisper": "whisper",
+    "qwen-tts": "qwen_tts",
+    "llama-cpp-python": "llama_cpp",
+    "webrtcvad-wheels": "webrtcvad",
+    "imageio-ffmpeg": "imageio_ffmpeg",
+    "pywin32": "win32api",
+    # PySide6 / 其余包：import 名 == pip 名（中划线转下划线即可）
+}
+
+
+def _import_name_for(pip_spec):
+    """把 pip 安装名（可能带 ==/>= 版本约束）映射到可 import 的模块名。"""
+    base = pip_spec.split("==")[0].split("<")[0].split(">")[0].split("~")[0].strip()
+    return IMPORT_OVERRIDES.get(base, base.replace("-", "_"))
+
+
+def _package_installed(pip_spec):
+    """检测某个 pip 包是否已安装（仅判断存在性，不校验版本）。"""
+    try:
+        return importlib.util.find_spec(_import_name_for(pip_spec)) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _filter_missing(pkgs):
+    """拆成 (缺失待装, 已安装跳过) 两个列表，并打印逐项检测结论。
+
+    用于实现「只下载/安装缺少的部分」：已 import 成功的包直接跳过。
+    """
+    missing, present = [], []
+    for p in pkgs:
+        if _package_installed(p):
+            present.append(p)
+            log(f"   [已安装] {p}（跳过）")
+        else:
+            missing.append(p)
+    return missing, present
 
 
 # ----------------------------------------------------------------------------
@@ -322,33 +370,50 @@ def step_pip(args):
                     "--trusted-host", trusted or "pypi.org"],
                    capture_output=True)
     if args.dry_run:
-        log("  [dry-run] 将安装（含镜像）：" + ", ".join(BASE_PACKAGES))
+        all_pkgs = list(BASE_PACKAGES)
         if IS_WINDOWS:
-            log("  [dry-run] Windows 专属包：" + ", ".join(WINDOWS_ONLY))
+            all_pkgs += WINDOWS_ONLY
+        if IS_MACOS:
+            all_pkgs += MAC_ONLY
+        missing, present = _filter_missing(all_pkgs)
+        log("  [dry-run] 已安装（将跳过）：" + (", ".join(present) if present else "无"))
+        log("  [dry-run] 缺失（将安装，含镜像）：" + (", ".join(missing) if missing else "无（无需下载）"))
+        if not missing:
+            log("  [dry-run] 结论：所有 Python 包已就绪，本次不会下载任何内容。")
         return True
 
     # torch 特殊处理：macOS 用默认 wheel（支持 MPS）；Linux/Windows 默认装 CPU 版省空间
     torch_pkgs = ["torch", "torchvision", "torchaudio"]
     if IS_MACOS:
-        log("[pip] 安装 torch（macOS / Apple Silicon MPS）…")
+        log("[pip] torch 目标：macOS / Apple Silicon MPS（默认 wheel）")
         torch_index = None
     else:
         if args.torch == "cuda":
-            log("[pip] 安装 torch（CUDA 版）…")
+            log("[pip] torch 目标：CUDA 版")
             torch_index = None
         else:
-            log("[pip] 安装 torch（CPU 版，省空间；如需 GPU 用 --torch cuda）…")
+            log("[pip] torch 目标：CPU 版（省空间；如需 GPU 用 --torch cuda）")
             torch_index = "https://download.pytorch.org/whl/cpu"
-    _pip_install(torch_pkgs, pip_base, torch_index)
+    torch_missing, _ = _filter_missing(torch_pkgs)
+    if torch_missing:
+        log(f"[pip] 安装缺失的 torch 组件：{torch_missing}")
+        _pip_install(torch_missing, pip_base, torch_index)
+    else:
+        log("[pip] torch 已全部安装，跳过")
 
     # 基础包
-    log("[pip] 安装基础运行时包…")
+    log("[pip] 检测基础运行时包（仅安装缺失项）…")
     pkgs = list(BASE_PACKAGES)
     if IS_WINDOWS:
         pkgs += WINDOWS_ONLY
     if IS_MACOS:
         pkgs += MAC_ONLY
-    failed = _pip_install(pkgs, pip_base, None)
+    pkgs_missing, _ = _filter_missing(pkgs)
+    if not pkgs_missing:
+        log("[pip] 基础包已全部安装，无需下载 ✅")
+        return True
+    log(f"[pip] 需安装的缺失包（共 {len(pkgs_missing)} 个）：{pkgs_missing}")
+    failed = _pip_install(pkgs_missing, pip_base, None)
 
     if failed:
         log("\n[警告] 以下包安装失败，可稍后手动安装或参考部署指南排错：")
@@ -584,7 +649,8 @@ def step_verify(args):
     import importlib
     modules = ["torch", "cv2", "ultralytics", "whisper", "pyaudio",
                "qwen_tts", "llama_cpp", "transformers", "sounddevice",
-               "webrtcvad", "pyttsx3", "huggingface_hub", "imageio_ffmpeg"]
+               "webrtcvad", "pyttsx3", "huggingface_hub", "imageio_ffmpeg",
+               "PySide6"]
     missing = []
     for mod in modules:
         try:
