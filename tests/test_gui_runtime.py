@@ -117,7 +117,10 @@ def fake_runtime(monkeypatch):
     monkeypatch.setattr(rt, "Camera", FakeCamera)
     monkeypatch.setattr(rt, "VisionDetector", FakeDetector)
     monkeypatch.setattr(rt, "Speaker", FakeSpeaker)
-    monkeypatch.setattr(rt, "QwenTTSSpeaker", None)
+    # qwen_tts 现为运行时懒加载；通过打桩 src.audio.qwen_tts 模块属性强制回退系统 TTS
+    import src.audio.qwen_tts as _qwen_tts_mod
+    monkeypatch.setattr(_qwen_tts_mod, "QWEN_TTS_AVAILABLE", False)
+    monkeypatch.setattr(_qwen_tts_mod, "QwenTTSSpeaker", None)
     monkeypatch.setattr(rt, "SpeechRecognizer", FakeRecognizer)
     monkeypatch.setattr(rt, "AudioRecorder", FakeRecorder)
     monkeypatch.setattr(rt, "LocalBrain", FakeBrain)

@@ -75,16 +75,28 @@ except Exception as e:
 from src.capture.camera import Camera
 from src.analysis.detector import VisionDetector
 from src.audio.tts import Speaker
-try:
-    from src.audio.qwen_tts import QwenTTSSpeaker, QWEN_TTS_AVAILABLE
-except Exception:
-    QwenTTSSpeaker = None
-    QWEN_TTS_AVAILABLE = False
+# qwen_tts 不在顶层 import：见下方 _load_qwen_tts（懒加载，避免阻塞 GUI 启动）
 from src.audio.stt import SpeechRecognizer
 from src.audio.recorder import AudioRecorder
 from src.brain.llm import LocalBrain
 from src.utils.context import SharedContext
 from src.memory import MemoryManager
+
+
+def _load_qwen_tts():
+    """懒加载 Qwen3-TTS。
+
+    qwen_tts 会拉起沉重的 transformers / huggingface_hub 导入链（首次可能耗时数十秒），
+    若放在模块顶层 import，会阻塞 GUI 窗口弹出与控制台交互。故改为在真正创建扬声器时才加载，
+    且仅加载一次（之后由 sys.modules 缓存）。返回 (QwenTTSSpeaker, available)。
+    """
+    try:
+        from src.audio.qwen_tts import QwenTTSSpeaker, QWEN_TTS_AVAILABLE
+        return QwenTTSSpeaker, QWEN_TTS_AVAILABLE
+    except Exception as e:
+        print(f"[TTS] Qwen3-TTS 不可用（{e}），将回退系统 TTS。")
+        return None, False
+
 
 # 全局状态
 running = True
@@ -470,6 +482,7 @@ def main():
     # 扬声器选择：优先 Qwen3-TTS（本地优先、开源、支持情绪/声音克隆），
     # 不可用时回退系统 TTS（pyttsx3 / macOS say / espeak）。
     speaker = None
+    QwenTTSSpeaker, QWEN_TTS_AVAILABLE = _load_qwen_tts()
     if QwenTTSSpeaker is not None and QWEN_TTS_AVAILABLE:
         speaker = QwenTTSSpeaker()
     if speaker is None or not getattr(speaker, "available", False):

@@ -22,7 +22,6 @@ from src.analysis.detector import VisionDetector
 from src.audio.tts import Speaker
 from src.audio.stt import SpeechRecognizer
 from src.audio.recorder import AudioRecorder
-from src.audio.qwen_tts import QwenTTSSpeaker, QWEN_TTS_AVAILABLE
 from src.brain.llm import LocalBrain
 from src.memory import MemoryManager
 from src.judgment.judge import JudgmentEngine
@@ -72,8 +71,16 @@ class JACRuntime:
         detector = VisionDetector()
 
         # 2) 扬声器：use_qwen_tts 开关决定（覆盖原隐式回退）
+        # Qwen3-TTS 延迟加载：避免 GUI 启动时就拉起沉重的 transformers/huggingface_hub 导入链
         speaker = None
-        if config.use_qwen_tts and QwenTTSSpeaker is not None and QWEN_TTS_AVAILABLE:
+        QwenTTSSpeaker = None
+        QWEN_TTS_AVAILABLE = False
+        if config.use_qwen_tts:
+            try:
+                from src.audio.qwen_tts import QwenTTSSpeaker, QWEN_TTS_AVAILABLE
+            except Exception as e:
+                print(f"[TTS] Qwen3-TTS 不可用（{e}），将回退系统 TTS。")
+        if QwenTTSSpeaker is not None and QWEN_TTS_AVAILABLE:
             speaker = QwenTTSSpeaker()
         if speaker is None or not getattr(speaker, "available", False):
             speaker = Speaker()
