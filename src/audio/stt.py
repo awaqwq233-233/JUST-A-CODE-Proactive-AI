@@ -6,6 +6,17 @@ import warnings
 # 忽略 Whisper 可能产生的一些非关键警告
 warnings.filterwarnings("ignore")
 
+
+def _pick_device():
+    """选择推理加速设备：cuda > mps(Mac GPU) > cpu，保持跨平台兼容。"""
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 class SpeechRecognizer:
     """
     语音识别类 (STT)
@@ -21,8 +32,8 @@ class SpeechRecognizer:
         """
         print(f"[系统] 正在加载 Whisper 模型 ({model_size})... 这可能需要几分钟...")
         try:
-            # 检查是否有 GPU 加速
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            # 选择加速设备：cuda > mps(Mac GPU) > cpu
+            device = _pick_device()
             print(f"[系统] 运行设备: {device}")
             
             # 加载模型
