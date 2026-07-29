@@ -148,7 +148,7 @@ python download_models.py --source modelscope
 ## 5. 网络问题排查（国内网络常见）
 
 - **Qwen3-TTS / 模型下载报 `CERTIFICATE_VERIFY_FAILED` / `CRYPT_E_REVOCATION_OFFLINE`**
-  - 工具默认用系统 `curl` 并加 `--ssl-no-revoke`（跳过 Windows 证书吊销检查），多数情况直接成功。
+  - 工具默认用系统 `curl`；**仅 Windows** 加 `--ssl-no-revoke`（跳过 Windows 证书吊销检查），macOS/Linux 自动省略该 Windows 专属选项，多数情况直接成功。
   - 仍失败：`bash run.sh --insecure`（关闭 SSL 校验，**仅限可信内网**，有中间人风险）。
 - **pip 装包连接 pypi.org 被掐断（`SSLEOFError` / 超时）**
   - 工具默认走清华镜像；手动时加 `-i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn`。

@@ -118,6 +118,24 @@ class MemoryRecorder:
             else:
                 base = RecordDecision(False, "low_confidence", None, 0.3)
 
+        # PII 混合检测：规则未拦截、但判定为应存储且大脑可用时，用 LLM 复核
+        # 是否泄露具体人物身份（覆盖正则漏判的复杂表述）。LLM 不可用时保守放行。
+        if base.should_store and brain is not None and not base.pii:
+            try:
+                if self._pii_llm_check(user_text, brain):
+                    base = RecordDecision(
+                        should_store=False,
+                        reason="pii_blocked",
+                        kind=None,
+                        confidence=0.9,
+                        content=base.content,
+                        tags=base.tags,
+                        source=base.source,
+                        pii=True,
+                    )
+            except Exception:
+                pass  # 复核失败不阻断存储（避免误杀正常偏好）
+
         # pii 双层门控：无论规则结论如何，检测到具体人物身份都必须先过此关
         base = self._apply_pii_gate(base, user_text)
 
@@ -295,8 +313,8 @@ class MemoryRecorder:
     # ------------------------- pii 门控 -------------------------
 
     def _apply_pii_gate(self, decision: RecordDecision, user_text: str) -> RecordDecision:
-        # 无论规则结论如何，只要检测到具体人物身份就先过此关
-        if not self._detect_pii(user_text):
+        # 无论规则结论如何，只要（正则检测到 或 LLM 复核标记为）具体人物身份就先过此关
+        if not (self._detect_pii(user_text) or decision.pii):
             return decision
         # 显式要求且开启捕获 → 允许落库并标 pii=true
         if self.capture_person_id and decision.source == MemorySource.explicit and decision.should_store:
@@ -317,6 +335,29 @@ class MemoryRecorder:
     @staticmethod
     def _detect_pii(text: str) -> bool:
         return bool(_PII_RELATIONSHIP_RE.search(text or ""))
+
+    def _pii_llm_check(self, text: str, brain) -> bool:
+        """用 LLM 复核文本是否泄露具体人物身份（真实姓名 / 与说话人的亲属·社交关系指向的具体个体）。
+
+        返回 True 表示疑似泄露。异常/解析失败返回 False（保守不拦截，避免误杀正常偏好）。
+        """
+        from .prompts import PII_CHECK_PROMPT
+        prompt = PII_CHECK_PROMPT.format(text=text)
+        try:
+            raw = brain.think(prompt)
+        except Exception:
+            return False
+        s = (raw or "").strip().lower()
+        if "{" in s:
+            try:
+                import json
+                start, end = s.find("{"), s.rfind("}")
+                d = json.loads(s[start:end + 1])
+                return bool(d.get("pii", False))
+            except Exception:
+                pass
+        # 容错：直接出现 yes/是/true 也视为命中
+        return ("yes" in s) or ("是" in s) or ("true" in s)
 
     # ------------------------- 文本工具 -------------------------
 

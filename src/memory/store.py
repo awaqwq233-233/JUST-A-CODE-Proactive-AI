@@ -498,6 +498,98 @@ class MemoryStore:
             self._request_flush()
         return top
 
+    # ------------------------- 向量 / 混合检索 -------------------------
+
+    @staticmethod
+    def _cosine(a, b) -> float:
+        """余弦相似度（输入为等长方列表/array）。任一为零向量返回 0.0。
+
+        优先 numpy；缺失 numpy 时退化为纯 Python 点积/范数，保证可用。
+        """
+        try:
+            import numpy as np
+            a = np.asarray(a, dtype=float)
+            b = np.asarray(b, dtype=float)
+            na = float(np.linalg.norm(a))
+            nb = float(np.linalg.norm(b))
+            if na == 0 or nb == 0:
+                return 0.0
+            return float(np.dot(a, b) / (na * nb))
+        except Exception:
+            dot = sum(x * y for x, y in zip(a, b))
+            na = sum(x * x for x in a) ** 0.5
+            nb = sum(y * y for y in b) ** 0.5
+            if na == 0 or nb == 0:
+                return 0.0
+            return dot / (na * nb)
+
+    def query_by_vector(self, vec, k: int = 5) -> list[RetrievalResult]:
+        """向量检索（v1 启用 embedding 后）：与内存中已编码 fact 算余弦，top-k。
+
+        ``vec`` 为查询向量（list[float] / np.ndarray）。仅 ``embedding`` 非 None
+        的 fact 参与；空结果返回 ``[]``。命中 bump ``updated_at``（heat）。
+        """
+        if vec is None:
+            return []
+        with self._lock:
+            candidates = [f for f in self._facts.values() if f.embedding]
+        if not candidates:
+            return []
+        results: list[RetrievalResult] = []
+        for fact in candidates:
+            sim = self._cosine(vec, fact.embedding)
+            results.append(RetrievalResult(fact=fact, score=round(float(sim), 4)))
+        results.sort(key=lambda r: r.score, reverse=True)
+        top = results[:k]
+        if top:
+            now_iso = _now_iso()
+            with self._lock:
+                for r in top:
+                    r.fact.updated_at = now_iso
+                self._dirty = True
+            self._request_flush()
+        return top
+
+    @staticmethod
+    def _minmax_norm(scores: list[float]) -> list[float]:
+        if not scores:
+            return []
+        lo, hi = min(scores), max(scores)
+        if hi <= lo:
+            return [1.0 for _ in scores]
+        return [(s - lo) / (hi - lo) for s in scores]
+
+    def query_hybrid(self, text: str, query_vec=None, k: int = 5,
+                     vec_weight: float = 0.6, kw_weight: float = 0.4) -> list[RetrievalResult]:
+        """混合检索：关键词分数 + 向量余弦分数加权融合，返回 top-k。
+
+        - ``query_vec`` 为 None（embedder 不可用）→ 退化为纯关键词检索。
+        - 两种结果各自 min-max 归一化到 [0,1] 后按权重融合，避免量纲差异。
+        - 命中项 heat 已在各自子检索内 bump，这里不再重复。
+        """
+        kw_results = self.query_by_keywords(text, k=max(k * 2, 5)) if text else []
+        vec_results = self.query_by_vector(query_vec, k=max(k * 2, 5)) if query_vec is not None else []
+
+        if not vec_results:
+            return kw_results[:k]
+        if not kw_results:
+            return vec_results[:k]
+
+        kw_score = {r.fact.id: r.score for r in kw_results}
+        vec_score = {r.fact.id: r.score for r in vec_results}
+        all_ids = set(kw_score) | set(vec_score)
+
+        kw_map = dict(zip(kw_score.keys(), self._minmax_norm(list(kw_score.values()))))
+        vec_map = dict(zip(vec_score.keys(), self._minmax_norm(list(vec_score.values()))))
+
+        fact_by_id = {r.fact.id: r.fact for r in (kw_results + vec_results)}
+        merged: list[RetrievalResult] = []
+        for fid in all_ids:
+            s = kw_weight * kw_map.get(fid, 0.0) + vec_weight * vec_map.get(fid, 0.0)
+            merged.append(RetrievalResult(fact=fact_by_id[fid], score=round(float(s), 4)))
+        merged.sort(key=lambda r: r.score, reverse=True)
+        return merged[:k]
+
     def query_by_tags(self, tags: list[str], k: int = 5) -> list[RetrievalResult]:
         """按标签检索：统计命中标签数，叠加 weight / recency 权重，返回 top-K。"""
         if not tags:

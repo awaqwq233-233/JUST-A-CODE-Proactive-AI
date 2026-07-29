@@ -14,11 +14,14 @@ J.A.C. 新电脑「一键依赖补全」工具
   2. 系统级依赖（portaudio 麦克风录音库、ffmpeg 音视频库）
   3. ffmpeg 可执行文件（跨平台放到项目根目录，main.py 能直接找到）
   4. 大模型权重（Qwen3.5-9B 大脑 / mmproj 投影 / MiniCPM-o 判断引擎 / Qwen3-TTS / YOLOv8）
+  5. 记忆向量检索的 embedding 模型权重（fastembed + 默认 paraphrase-multilingual-MiniLM-L12-v2，
+     用于记忆的语义向量召回；国内走 HF 镜像下载，下载失败自动降级关键词检索，不影响主功能）
 
 网络问题应对（针对国内网络 / 弱网）
 ------------------------------
   * pip 默认走清华镜像，安装失败自动重试。
-  * 模型下载优先用系统 curl，带 --ssl-no-revoke（绕过 Windows 证书吊销检查）、
+  * 模型下载优先用系统 curl；仅 Windows 加 --ssl-no-revoke（绕过证书吊销检查），
+    macOS/Linux 自动省略该 Windows 专属选项，避免 "unknown option" 报错、
     --retry 重试、 -C - 断点续传（中断后可继续，不从头再来）。
   * 默认走 HuggingFace 国内镜像 hf-mirror.com；证书仍报错可用 --insecure 关校验。
   * 每个模型独立下载，单个失败不影响其余，最后汇总报告。
@@ -30,6 +33,8 @@ J.A.C. 新电脑「一键依赖补全」工具
   python setup_new_computer.py --only models   # 只下模型
   python setup_new_computer.py --skip-models   # 跳过模型（假设已从旧机拷贝 models/）
   python setup_new_computer.py --include-big   # 连 35B 备用大模型也下（默认跳过，省 ~11.6GB）
+  python setup_new_computer.py --only embed    # 只预下载记忆 embedding 模型
+  python setup_new_computer.py --skip-embed    # 跳过 embedding 模型（首次运行 main.py 时自动联网下）
   python setup_new_computer.py --torch cuda    # Linux/Windows 装带 CUDA 的 torch
   python setup_new_computer.py --no-venv       # 不建虚拟环境，直接装到当前 Python
   python setup_new_computer.py --insecure      # 模型下载关闭 SSL 校验（仅可信内网，有中间人风险）
@@ -88,6 +93,7 @@ BASE_PACKAGES = [
     "huggingface_hub",
     "qwen-tts",
     "onnxruntime",
+    "fastembed",  # 记忆向量检索的轻量 embedding 生成（基于 ONNX Runtime，CPU 可跑，跨平台）
     "llama-cpp-python==0.3.26",
     "webrtcvad-wheels",
     "pyttsx3",
@@ -194,9 +200,10 @@ def download_file(url, dest, insecure, retries=3, timeout=60, quiet=False):
         os.makedirs(parent, exist_ok=True)
 
     if curl_available():
-        base = ["curl", "-L", "--ssl-no-revoke", "--retry", str(retries),
-                "--retry-delay", "2", "-C", "-", "--connect-timeout", str(timeout),
-                "-o", dest, url]
+        base = ["curl", "-L"] + (["--ssl-no-revoke"] if IS_WINDOWS else []) + [
+            "--retry", str(retries),
+            "--retry-delay", "2", "-C", "-", "--connect-timeout", str(timeout),
+            "-o", dest, url]
         if insecure:
             base.append("-k")
         if quiet:
@@ -206,9 +213,10 @@ def download_file(url, dest, insecure, retries=3, timeout=60, quiet=False):
             return True
         # 部分服务器对不存在的文件拒绝 -C -，去掉续传参数再试一次
         if rc != 0 and not os.path.exists(dest):
-            retry = ["curl", "-L", "--ssl-no-revoke", "--retry", str(retries),
-                     "--retry-delay", "2", "--connect-timeout", str(timeout),
-                     "-o", dest, url]
+            retry = ["curl", "-L"] + (["--ssl-no-revoke"] if IS_WINDOWS else []) + [
+                "--retry", str(retries),
+                "--retry-delay", "2", "--connect-timeout", str(timeout),
+                "-o", dest, url]
             if insecure:
                 retry.append("-k")
             if quiet:
@@ -245,14 +253,15 @@ def hf_list_files(repo_id, host, insecure):
     """列出 HF 仓库文件；主镜像失败自动切官方。返回 (文件列表, 实际使用的 host)。"""
     import json
     api = f"{host}/api/models/{repo_id}"
-    cmd = ["curl", "-fsSL", "--ssl-no-revoke", "--connect-timeout", "30", api]
+    ssl_flag = ["--ssl-no-revoke"] if IS_WINDOWS else []
+    cmd = ["curl", "-fsSL"] + ssl_flag + ["--connect-timeout", "30", api]
     if insecure:
         cmd.append("-k")
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         alt = HF_OFFICIAL if host != HF_OFFICIAL else HF_MIRROR
         api2 = f"{alt}/api/models/{repo_id}"
-        cmd2 = ["curl", "-fsSL", "--ssl-no-revoke", "--connect-timeout", "30", api2]
+        cmd2 = ["curl", "-fsSL"] + ssl_flag + ["--connect-timeout", "30", api2]
         if insecure:
             cmd2.append("-k")
         r = subprocess.run(cmd2, capture_output=True, text=True)
@@ -356,7 +365,7 @@ def ensure_venv(args):
 # 步骤 1：Python 包
 # ----------------------------------------------------------------------------
 def step_pip(args):
-    hr("步骤 1/4  安装 Python 包依赖")
+    hr("步骤 1/6  安装 Python 包依赖")
     index = None if args.no_mirror else (args.mirror or DEFAULT_PIP_INDEX)
     trusted = None if args.no_mirror else DEFAULT_PIP_TRUSTED
     pip_base = [sys.executable, "-m", "pip", "install"]
@@ -448,7 +457,7 @@ def _pip_install(pkgs, pip_base, index_url):
 # 步骤 2：系统级依赖
 # ----------------------------------------------------------------------------
 def step_system(args):
-    hr("步骤 2/4  安装系统级依赖（portaudio / ffmpeg）")
+    hr("步骤 2/6  安装系统级依赖（portaudio / ffmpeg）")
     if args.dry_run:
         if IS_MACOS:
             log("  [dry-run] macOS: brew install portaudio ffmpeg")
@@ -489,7 +498,7 @@ def step_system(args):
 # 步骤 3：ffmpeg 可执行文件（跨平台放到项目根，main.py 能直接找到）
 # ----------------------------------------------------------------------------
 def step_ffmpeg(args):
-    hr("步骤 3/4  配置 ffmpeg 可执行文件")
+    hr("步骤 3/6  配置 ffmpeg 可执行文件")
     if args.dry_run:
         log(f"  [dry-run] 用 imageio-ffmpeg 复制 ffmpeg 到项目根（Windows: ffmpeg.exe，其他: ffmpeg）")
         return True
@@ -546,7 +555,7 @@ def _already_has(target_dir, files):
 
 
 def step_models(args):
-    hr("步骤 4/4  下载模型权重")
+    hr("步骤 4/6  下载模型权重")
     if args.skip_models:
         log("[models] 已指定 --skip-models，跳过所有模型下载（假设已从旧机拷贝 models/）。")
         return True
@@ -638,10 +647,52 @@ def _download_tts(m, tdir, insecure, use_mirror, args):
 
 
 # ----------------------------------------------------------------------------
-# 步骤 5（可选）：自检
+# 步骤（记忆向量模型）：预下载 embedding 模型权重
+# ----------------------------------------------------------------------------
+# 与 embedder.py 的默认模型保持一致；可用 MEMORY_EMBED_MODEL 环境变量覆盖
+EMBED_MODEL_DEFAULT = "paraphrase-multilingual-MiniLM-L12-v2"
+
+
+def step_embed_model(args):
+    hr("步骤 5/6  预下载记忆 embedding 模型权重")
+    if args.skip_embed:
+        log("[embed] 已指定 --skip-embed，跳过 embedding 模型下载。")
+        log("        说明：首次运行 main.py 时会自动联网下载；若持续失败，记忆自动降级为关键词检索，不影响主功能。")
+        return True
+    if not _package_installed("fastembed"):
+        log("[embed] fastembed 尚未安装，跳过 embedding 模型预下载。请先运行步骤 1（pip）后再执行本步。")
+        return False
+
+    model = os.environ.get("MEMORY_EMBED_MODEL") or EMBED_MODEL_DEFAULT
+    if args.dry_run:
+        log(f"  [dry-run] 将预下载 embedding 模型：{model}")
+        log(f"  [dry-run] 国内走镜像 HF_ENDPOINT={HF_MIRROR}；权重落到 HF 缓存目录（跨平台默认 ~/.cache/huggingface/hub）")
+        return True
+
+    # 国内网络：未显式设置镜像时自动切到 hf-mirror.com，确保权重可下载
+    if not args.no_mirror and "HF_ENDPOINT" not in os.environ:
+        os.environ["HF_ENDPOINT"] = HF_MIRROR
+        log(f"[embed] 已设置 HF 镜像：{HF_MIRROR}")
+
+    try:
+        from fastembed import TextEmbedding
+        log(f"[embed] 实例化并预热 embedding 模型：{model}（首次会联网下载 ONNX 权重）")
+        emb = TextEmbedding(model_name=model)
+        # 触发实际下载 + 维度探测（warmup）
+        list(emb.embed(["warmup 预热"]))
+        log("[embed] embedding 模型已就绪 ✅（记忆向量语义检索可用）")
+        return True
+    except Exception as e:  # noqa: BLE001
+        log(f"[embed] embedding 模型下载/加载失败（非致命）：{e}")
+        log("        仍可正常运行：首次运行 main.py 会自动重试下载；若持续失败，记忆自动降级为关键词检索。")
+        return False
+
+
+# ----------------------------------------------------------------------------
+# 步骤 6（可选）：自检
 # ----------------------------------------------------------------------------
 def step_verify(args):
-    hr("自检：关键模块 / 工具 / 模型")
+    hr("步骤 6/6  自检：关键模块 / 工具 / 模型")
     if args.dry_run:
         log("  [dry-run] 将检查关键 Python 模块导入、ffmpeg、模型文件。")
         return True
@@ -650,7 +701,7 @@ def step_verify(args):
     modules = ["torch", "cv2", "ultralytics", "whisper", "pyaudio",
                "qwen_tts", "llama_cpp", "transformers", "sounddevice",
                "webrtcvad", "pyttsx3", "huggingface_hub", "imageio_ffmpeg",
-               "PySide6"]
+               "fastembed", "PySide6"]
     missing = []
     for mod in modules:
         try:
@@ -694,9 +745,10 @@ def parse_args():
         description="J.A.C. 新电脑一键依赖补全工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "models", "verify"],
+    p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "models", "embed", "verify"],
                    default="all", help="只运行指定阶段（默认 all）")
-    p.add_argument("--skip-models", action="store_true", help="跳过所有模型下载（假设已从旧机拷贝）")
+    p.add_argument("--skip-models", action="store_true", help="跳过所有大模型下载（假设已从旧机拷贝）")
+    p.add_argument("--skip-embed", action="store_true", help="跳过记忆 embedding 模型预下载（首次运行 main.py 时自动联网下）")
     p.add_argument("--include-big", action="store_true", help="连 35B 备用大模型也下载（默认跳过）")
     p.add_argument("--torch", choices=["auto", "cpu", "cuda"], default="auto",
                    help="torch 安装变体（auto: macOS=MPS, 其他=CPU）")
@@ -733,10 +785,11 @@ def main():
         "system": step_system,
         "ffmpeg": step_ffmpeg,
         "models": step_models,
+        "embed": step_embed_model,
         "verify": step_verify,
     }
     if args.only == "all":
-        order = ["pip", "system", "ffmpeg", "models", "verify"]
+        order = ["pip", "system", "ffmpeg", "models", "embed", "verify"]
     else:
         order = [args.only]
 

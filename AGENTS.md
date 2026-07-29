@@ -166,7 +166,9 @@ python main.py
 - 新增控制台文本输入实时对话（绕过唤醒词）。
 - 唤醒词扩展；TTS 后端从 Genie-TTS 全面切换为开源本地 Qwen3-TTS（情绪自然语言控制 + 声音克隆）。
 
-`codingLOG.md` 列出的与最终目标的差距中，**以下仍为未实现项**：function calling / 工具执行层、持久记忆（JSON/向量库）、agent 执行框架、MCP / OpenClaw 集成、流式 STT/LLM/TTS。注意 `codingLOG.md` 部分内容早于 `main.py`，应作为架构差距笔记而非精确实现状态。
+`codingLOG.md` 列出的与最终目标的差距中，**以下仍为未实现项**：function calling / 工具执行层、agent 执行框架、MCP / OpenClaw 集成、流式 STT/LLM/TTS。注意 `codingLOG.md` 部分内容早于 `main.py`，应作为架构差距笔记而非精确实现状态。
+
+> **已落地（曾列于未实现项，现已实现并集成）**：持久记忆（JSON 长期记忆 + 轻量本地向量检索，见 `src/memory/` 与 `docs/memory/`）。`codingLOG.md` 中「记忆功能待验证」指端到端未在真机跑过，并非代码空缺。
 
 ## 预期未来架构
 
@@ -211,7 +213,7 @@ python main.py
 - **双模型显存压力**：开启主动判断需 LM Studio 同时加载 `Qwen3.5-9B` + `MiniCPM-o`，资源占用大。默认 `JUDGMENT_ENGINE_ENABLED=False`，未检测到时自动进入被动模式（不报错也不主动）。
 - VAD 录音仍可能阻塞在「等待说话」，影响关闭响应（旧限制仍在）。
 - STT/LLM/TTS **均非流式**，端到端延迟仍高。
-- 无 function calling、无持久记忆、无 agent/MCP/OpenClaw 集成（目标未实现）。
+- 无 function calling、无 agent/MCP/OpenClaw 集成（目标未实现）；持久记忆（JSON 长期记忆 + 轻量向量检索）已实现，见 `src/memory/` 与 `docs/memory/`。
 - `Qwen3.6-35B` 大模型已下载但代码未接入，勿误以为已启用。
 - `requirements.txt` 已装 `fastapi`/`uvicorn`/`websockets` 等 web 栈，但 `src/` 下无对应 server 代码——属依赖传递或预留骨架，勿误读为「已有 API 服务」。
 - 当前项目树**没有自动化测试**。

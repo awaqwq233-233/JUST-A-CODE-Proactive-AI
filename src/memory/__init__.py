@@ -19,6 +19,8 @@ from .store import (
 )
 from .recorder import MemoryRecorder, RecordDecision
 from .manager import MemoryManager
+from .embedder import MemoryEmbedder
+from .seed import BASE_MEMORIES, seed_base_memories
 from . import prompts
 
 __all__ = [
@@ -33,5 +35,8 @@ __all__ = [
     "MemoryRecorder",
     "RecordDecision",
     "MemoryManager",
+    "MemoryEmbedder",
+    "BASE_MEMORIES",
+    "seed_base_memories",
     "prompts",
 ]

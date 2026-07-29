@@ -54,7 +54,7 @@
 | `tags` | array<string> | `[]` | 检索精度用；v1 可空，由 `content` 分词兜底 |
 | `pii` | boolean | `false` | 敏感标记（见 §6）；解析时若缺失 → 按 `false`（非 PII） |
 | `ttl` | string\|null (ISO8601) | `null` | 易失类过期时间，供压缩逻辑使用 |
-| `embedding` | array<number>\|null | `null` | **保留字段**，未来向量库衔接点（ADR-001）；v1 恒 `null` |
+| `embedding` | array<number>\|null | `null` | **向量字段**：轻量本地 embedding（fastembed）填充的语义向量，供混合检索余弦打分；v1.1 起由 `MemoryEmbedder` 在写入时填充，未启用时为 `null` |
 
 > **折并说明（architect）**：原**整型权重字段**已并入 `weight`(number[0,1])；原 recency / heat **独立字段** → 并入单一 `updated_at`；`occurrences`→**不持久化**，由 recorder 运行时维护 `topic_key→count` 计数器，跨阈值才落 `kind=topic`；`consent_scoped`→`pii`；`type`→`kind`。
 
@@ -226,6 +226,7 @@ loader 返回结果对象含两个字段：
 score = 0.7 * weight + 0.3 * recency_norm(updated_at)
 ```
 
+> **混合检索（v1.1）**：启用 embedding 后，`MemoryManager.retrieve_for_prompt` 走 `query_hybrid`——关键词分（上表公式）与向量余弦分各自 min-max 归一化后加权融合（`0.6*vec + 0.4*kw`，权重可调）。embedder 不可用时自动退化为纯关键词检索，`embedding` 为 `null` 也不影响。
 `recency_norm` 为 `updated_at` 到当前的衰减归一（如指数衰减或线性分桶），值域 [0,1]。
 
 **`recurring` 晋升（C 路径 → 落 `kind=topic`）**：

@@ -23,6 +23,7 @@ from .models import MemoryFact, MemoryKind, MemorySource
 from .recorder import MemoryRecorder, RecordDecision
 from .store import MemoryStore
 from .prompts import format_injection
+from .embedder import MemoryEmbedder
 
 
 class MemoryManager:
@@ -34,6 +35,7 @@ class MemoryManager:
         store: Optional[MemoryStore] = None,
         brain=None,
         recorder: Optional[MemoryRecorder] = None,
+        embedder: Optional[MemoryEmbedder] = None,
         enabled: bool = True,
         capture_person_id: bool = False,
         recurrence_threshold: int = 3,
@@ -46,6 +48,7 @@ class MemoryManager:
         self.inject_max_chars = inject_max_chars
         self.top_k = top_k
         self.min_classify_interval = min_classify_interval
+        self.embedder = None
 
         if not enabled:
             self.store = None
@@ -58,6 +61,8 @@ class MemoryManager:
             capture_person_id=capture_person_id,
             recurrence_threshold=recurrence_threshold,
         )
+        # 向量检索：未显式传入 embedder 时尝试默认轻量模型（lazy 加载，失败自动降级）
+        self.embedder = embedder if embedder is not None else MemoryEmbedder()
 
         self._queue: "queue.Queue[Optional[tuple]]" = queue.Queue()
         self._last_classify_ts = 0.0
@@ -71,7 +76,12 @@ class MemoryManager:
         if not self.enabled or self.store is None:
             return ""
         query = f"{user_text} {vision_info}".strip()
-        results = self.store.query_by_keywords(query, k=self.top_k)
+        query_vec = None
+        if self.embedder is not None:
+            vecs = self.embedder.embed_texts([query], mode="query")
+            if vecs is not None:
+                query_vec = vecs[0].tolist()
+        results = self.store.query_hybrid(query, query_vec, k=self.top_k)
         if not results:
             return ""
         lines = [r.to_prompt_line() for r in results]
@@ -127,6 +137,14 @@ class MemoryManager:
         if decision.should_store and decision.kind is not None:
             fact = self._decision_to_fact(decision, user_text)
             if fact is not None and self.store is not None:
+                # 若 embedder 可用，填充 embedding 使该事实可被向量检索命中
+                if self.embedder is not None and fact.content:
+                    try:
+                        vecs = self.embedder.embed_texts([fact.content], mode="passage")
+                        if vecs is not None:
+                            fact.embedding = vecs[0].tolist()
+                    except Exception as e:
+                        print(f"[MemoryManager] embedding 生成失败（跳过向量）: {e}")
                 self.store.upsert(fact)
 
     @staticmethod

@@ -103,3 +103,4 @@ uvicorn==0.40.0
 watchfiles==1.1.1
 webrtcvad-wheels==2.0.14
 websockets==15.0.1
+fastembed  # 轻量本地 embedding 生成（基于 ONNX Runtime，无需 torch），用于记忆向量检索；首次使用需联网下载模型权重

@@ -23,7 +23,8 @@ J.A.C. 一键模型预下载脚本（当前覆盖 Qwen3-TTS 语音模型）
   - 下载的是 Qwen3-TTS 模型；项目内的 *.gguf 大脑/判断模型已随仓库提供，不在此脚本范围。
   - 下载走系统 curl（绕开 Python 的 SSL 证书坑，跨平台可用）。正常情况下
     `python download_models.py` 直接成功；Windows 上若报 CRYPT_E_REVOCATION_OFFLINE（连不上
-    吊销服务器），脚本已默认加 --ssl-no-revoke 跳过吊销检查（证书链仍校验）。仍报证书错再加
+    吊销服务器），脚本在 Windows 上默认加 --ssl-no-revoke 跳过吊销检查（证书链仍校验；
+    macOS/Linux 自动省略该 Windows 专属选项以免 "unknown option" 报错）。仍报证书错再加
     --insecure（curl -k 跳过校验，有中间人风险）。
   - 每个文件下载前会检查本地是否已存在且非空，已存在则自动跳过；因此可反复运行本脚本，
     只增量补全缺失的部分（中途失败重跑不会从头再来）。
@@ -156,7 +157,8 @@ def _hf_list_files(repo_id, mirror, insecure):
     # --ssl-no-revoke: 关闭 Windows Schannel 的 CRL/吊销检查。
     # 在连不上吊销服务器的离线/受限网络下，证书链已信任但吊销检查会失败
     # （CRYPT_E_REVOCATION_OFFLINE），加此选项即可正常建立 TLS。
-    cmd = ["curl", "-fsSL", "--ssl-no-revoke", "--connect-timeout", "30", api]
+    ssl_flag = ["--ssl-no-revoke"] if platform.system() == "Windows" else []
+    cmd = ["curl", "-fsSL"] + ssl_flag + ["--connect-timeout", "30", api]
     if insecure:
         cmd.append("-k")
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -185,8 +187,9 @@ def download_hf(repo_id, local_dir, use_mirror):
                 continue
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             url = f"{base}/{fn}"
-            cmd = ["curl", "-L", "--ssl-no-revoke", "--retry", "3", "--retry-delay", "2",
-                   "-C", "-", "-o", dst, url]
+            cmd = ["curl", "-L"] + (["--ssl-no-revoke"] if platform.system() == "Windows" else []) + [
+                "--retry", "3", "--retry-delay", "2",
+                "-C", "-", "-o", dst, url]
             if INSECURE:
                 cmd.append("-k")
             print(f"      └ {fn}")

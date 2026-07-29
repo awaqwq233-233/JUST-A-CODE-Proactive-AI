@@ -80,7 +80,7 @@ from src.audio.stt import SpeechRecognizer
 from src.audio.recorder import AudioRecorder
 from src.brain.llm import LocalBrain
 from src.utils.context import SharedContext
-from src.memory import MemoryManager
+from src.memory import MemoryManager, seed_base_memories
 
 
 def _load_qwen_tts():
@@ -352,7 +352,7 @@ def handle_memory_command(text):
         return
     parts = text.strip().split()
     if len(parts) < 2:
-        print("[记忆] 可用命令：记忆 列表 / 记忆 导出 <路径> / 记忆 清除 全部 / 记忆 清除 <id>")
+        print("[记忆] 可用命令：记忆 列表 / 记忆 导出 <路径> / 记忆 路径 / 记忆 清除 全部 / 记忆 清除 <id>")
         return
     cmd = parts[1]
     if cmd == "列表":
@@ -370,6 +370,9 @@ def handle_memory_command(text):
             print(f"[记忆] 已导出到：{path}")
         except Exception as e:
             print(f"[记忆] 导出失败：{e}")
+    elif cmd == "路径":
+        print(f"[记忆] 存储目录：{memory.store.base_dir}")
+        print(f"[记忆] 主文件：{memory.store.base_dir}/memory.json")
     elif cmd == "清除":
         if len(parts) > 2 and parts[2] != "全部":
             fid = parts[2]
@@ -383,7 +386,7 @@ def handle_memory_command(text):
             else:
                 print("[记忆] 已取消清除。")
     else:
-        print("[记忆] 未知命令。可用：记忆 列表 / 导出 <路径> / 清除 全部 / 清除 <id>")
+        print("[记忆] 未知命令。可用：记忆 列表 / 导出 <路径> / 路径 / 清除 全部 / 清除 <id>")
 
 
 def manual_input_thread_func(speaker, brain):
@@ -508,8 +511,19 @@ def main():
             capture_person_id=MEMORY_CAPTURE_PERSON_ID,
         )
         if MEMORY_ENABLED:
-            print("[记忆] 长期记忆已启用：记忆仅保存在你本机 (~/.jac/memory/)，不会上传；")
-            print("       可用控制台命令「记忆 列表 / 记忆 导出 <路径> / 记忆 清除 全部」管理。")
+            if memory is not None:
+                try:
+                    seeded = seed_base_memories(memory)
+                except Exception as e:
+                    seeded = 0
+                    print(f"[记忆] 基础记忆 seed 失败（可忽略）: {e}")
+                path = memory.store.base_dir
+                count = (memory.store.stats() or {}).get("count", 0)
+                print(f"[记忆] 长期记忆已启用：已加载 {count} 条记忆 @ {path}（本次 seed 基础记忆 {seeded} 条）")
+            else:
+                print("[记忆] 长期记忆初始化失败，本次未启用。")
+            print("       记忆仅保存在你本机，不会上传；")
+            print("       可用控制台命令「记忆 列表 / 记忆 导出 <路径> / 记忆 路径 / 记忆 清除 全部」管理。")
     except Exception as e:
         memory = None
         print(f"[记忆] 初始化失败，已临时禁用长期记忆: {e}")

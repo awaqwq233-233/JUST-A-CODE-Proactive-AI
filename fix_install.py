@@ -120,6 +120,15 @@ def install_ffmpeg_helper():
         print(f"[失败] imageio-ffmpeg 安装失败: {e}")
 
 if __name__ == "__main__":
+    # 本工具专用于修复 Windows 上的 PyAudio / llama-cpp-python 编译问题
+    # （pipwin、Visual Studio 生成工具等均为 Windows 专属）。
+    # macOS / Linux 请改用 new_computer_download/setup_new_computer.py 完成依赖安装。
+    if platform.system() != "Windows":
+        print("=== J.A.C 环境修复工具 ===")
+        print("[跳过] 本脚本仅适用于 Windows 依赖修复（pipwin / VS 生成工具等）。")
+        print("       macOS / Linux 用户请改用：new_computer_download/setup_new_computer.py")
+        print("=== 已完成（未做任何改动）===")
+        sys.exit(0)
     print("=== J.A.C 环境修复工具 ===")
     fix_install() # 调用主修复流程
     # install_pyaudio_wheel() # 已经包含在 fix_install 中
