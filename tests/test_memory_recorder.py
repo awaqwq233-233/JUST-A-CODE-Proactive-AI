@@ -25,6 +25,7 @@ FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "record_samples.js
 
 
 def _load_samples():
+    """加载样本"""
     out = []
     with open(FIXTURE, encoding="utf-8") as f:
         for line in f:
@@ -41,6 +42,7 @@ NEGATIVES = [s for s in SAMPLES if s["expect"] == "skip"]
 
 def test_golden_coverage():
     # 数据完整性：正负各 >= 20
+    """测试：goldencoverage"""
     assert len(POSITIVES) >= 20, len(POSITIVES)
     assert len(NEGATIVES) >= 20, len(NEGATIVES)
 
@@ -49,6 +51,7 @@ def test_positive_100pct_store():
     # DoD#1：A 类（含显式保存/偏好/决策/画像）必须 100% 落库，
     # 且 kind 同态（落库则 kind 必非空）。精确 kind 由 recorder 内部
     # 映射决定，不在黄金数据集里逐条约束（避免与实现细节过耦合）。
+    """测试：positive100pct存储"""
     rec = MemoryRecorder()
     for s in POSITIVES:
         d = rec.classify(s["user"])
@@ -57,6 +60,7 @@ def test_positive_100pct_store():
 
 
 def test_negative_100pct_skip():
+    """测试：negative100pctskip"""
     rec = MemoryRecorder()
     for s in NEGATIVES:
         d = rec.classify(s["user"])
@@ -69,6 +73,7 @@ def test_negative_100pct_skip():
 
 
 def test_explicit_save_always_stores():
+    """测试：explicit保存alwaysstores"""
     rec = MemoryRecorder()
     for phrase in ("记住我喜欢喝茶", "记一下开会", "别忘了交税", "请记住密码", "帮我记住址", "记着关灯"):
         d = rec.classify(phrase)
@@ -76,12 +81,14 @@ def test_explicit_save_always_stores():
 
 
 def test_smalltalk_excluded():
+    """测试：smalltalkexcluded"""
     rec = MemoryRecorder()
     for phrase in ("你好", "讲个笑话", "再见", "谢谢"):
         assert not rec.classify(phrase).should_store, phrase
 
 
 def test_question_excluded():
+    """测试：问题excluded"""
     rec = MemoryRecorder()
     assert not rec.classify("今天天气怎么样？").should_store
     assert not rec.classify("什么是 transformer").should_store
@@ -89,6 +96,7 @@ def test_question_excluded():
 
 def test_weak_intent_needs_llm():
     # 无 LLM → 保守不记（纯弱意图，无显式保存词）
+    """测试：weakintentneeds大模型"""
     rec = MemoryRecorder()
     d = rec.classify("以后每天多喝水")
     assert not d.should_store
@@ -96,6 +104,7 @@ def test_weak_intent_needs_llm():
 
 
 def test_recurrence_threshold_2_vs_3():
+    """测试：recurrencethreshold2vs3"""
     rec = MemoryRecorder(recurrence_threshold=3)
     assert rec.classify("去公园散步").should_store is False   # 1
     assert rec.classify("去公园散步").should_store is False   # 2
@@ -104,6 +113,7 @@ def test_recurrence_threshold_2_vs_3():
 
 
 def test_recurrence_no_double_promote():
+    """测试：recurrencenodoublepromote"""
     rec = MemoryRecorder(recurrence_threshold=3)
     outs = [rec.classify("并发主题测试语句") for _ in range(3)]
     promoted = [o for o in outs if o.should_store and o.kind == MemoryKind.topic]
@@ -111,18 +121,21 @@ def test_recurrence_no_double_promote():
 
 
 def test_pii_default_blocked():
+    """测试：pii默认blocked"""
     rec = MemoryRecorder(capture_person_id=False)
     d = rec.classify("小明是我儿子")
     assert d.should_store is False and d.pii is True
 
 
 def test_pii_capture_explicit_allowed():
+    """测试：piicaptureexplicitallowed"""
     rec = MemoryRecorder(capture_person_id=True)
     d = rec.classify("记住小明是我儿子")
     assert d.should_store and d.pii is True
 
 
 def test_reason_nonempty():
+    """测试：reasonnonempty"""
     rec = MemoryRecorder()
     for s in SAMPLES:
         d = rec.classify(s["user"])
@@ -130,6 +143,7 @@ def test_reason_nonempty():
 
 
 def test_normalize_topic_idempotent():
+    """测试：规范化topicidempotent"""
     rec = MemoryRecorder()
     x = "以后 每天 提醒 我 喝水！！"
     once = rec.normalize_topic(x)
@@ -139,6 +153,7 @@ def test_normalize_topic_idempotent():
 
 
 def test_parse_llm_json_balanced_braces():
+    """测试：解析大模型JSONbalancedbraces"""
     raw = '这是前置文字 {"should_store": true, "kind": "topic", "reason": "x"} 后续文字 {"其它": 1}'
     out = MemoryRecorder._parse_llm_json(raw)
     assert out is not None
@@ -148,6 +163,7 @@ def test_parse_llm_json_balanced_braces():
 
 def test_parse_llm_json_nested_braces():
     # 值内含大括号（如内容里写了 { }）也应正确成对
+    """测试：解析大模型JSONnestedbraces"""
     raw = '{"should_store": true, "kind": "topic", "content": "a {b} c", "tags": ["t"]}'
     out = MemoryRecorder._parse_llm_json(raw)
     assert out is not None
@@ -155,6 +171,7 @@ def test_parse_llm_json_nested_braces():
 
 
 def test_parse_llm_json_length_cap():
+    """测试：解析大模型JSONlengthcap"""
     huge = "{" + "x" * 50000 + "}"
     out = MemoryRecorder._parse_llm_json(huge)
     # 超过 20000 截断后仍尝试解析（截断版本非法 JSON → None，不崩溃）

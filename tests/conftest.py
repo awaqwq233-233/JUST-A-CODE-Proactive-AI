@@ -49,6 +49,7 @@ if _HAVE_BRAIN:
         """
 
         def __init__(self, default_should_store=False, **default_fields):
+            """初始化实例"""
             super().__init__(backend="mock")  # guaranteed offline, no model/network
             self.default_should_store = default_should_store
             self.default_fields = default_fields
@@ -56,14 +57,14 @@ if _HAVE_BRAIN:
 
         # -- test-control helpers -------------------------------------------------
         def queue_response(self, raw_text):
-            """Queue a raw string to be returned by the next think() call."""
+            """队列响应"""
             self._queue.append(raw_text)
 
         def queue_decision(
             self, should_store, *, kind=None, reason="user_stated",
             content="", tags=None, confidence=0.5,
         ):
-            """Queue a JSON decision string (recorder-compatible shape) for next call."""
+            """队列决策"""
             self.queue_response(json.dumps(
                 {
                     "should_store": should_store,
@@ -98,6 +99,7 @@ if _HAVE_BRAIN:
         def think_with_image(
             self, prompt, frame=None, system_prompt="", temperature=0.7, max_tokens=200
         ):
+            """推理带图像"""
             if self._queue:
                 return self._queue.pop(0)
             return self._default_json()
@@ -121,7 +123,7 @@ def mock_brain():
 
 @pytest.fixture
 def tmp_memory_dir(tmp_path):
-    """Isolated temp dir (str) for memory-store tests; never touches ~/.jac."""
+    """临时记忆目录"""
     d = tmp_path / "memory"
     d.mkdir(parents=True, exist_ok=True)
     return str(d)

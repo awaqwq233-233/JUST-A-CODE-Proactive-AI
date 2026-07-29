@@ -29,6 +29,7 @@ def test_config_load_defaults():
 
 
 def test_config_use_qwen_tts_env(monkeypatch):
+    """测试：配置useqwen语音合成环境"""
     monkeypatch.setenv("USE_QWEN_TTS", "false")
     c = Config.load()
     assert c.use_qwen_tts is False
@@ -52,20 +53,25 @@ def test_annotated_frame_buffer_independent():
 # ----------------------------- fake components -----------------------------
 class FakeCamera:
     def __init__(self, *a, **k):
+        """初始化实例"""
         self.stopped = False
 
     def start(self):
+        """启动"""
         return True
 
     def get_frame(self):
+        """获取画面帧"""
         return True, np.zeros((200, 300, 3), dtype=np.uint8)
 
     def stop(self):
+        """停止"""
         self.stopped = True
 
 
 class FakeDetector:
     def detect(self, frame):
+        """检测"""
         return np.ones((200, 300, 3), dtype=np.uint8) * 128, [
             {"label": "person", "confidence": 0.9}
         ]
@@ -76,44 +82,54 @@ class FakeSpeaker:
     _ensure_model = None
 
     def speak(self, *a, **k):
+        """朗读"""
         pass
 
 
 class FakeRecognizer:
     def __init__(self, *a, **k):
+        """初始化实例"""
         pass
 
     def transcribe(self, *a, **k):
+        """转写"""
         return ""
 
 
 class FakeRecorder:
     def __init__(self, *a, **k):
+        """初始化实例"""
         pass
 
     def listen_and_record(self, *a, **k):
+        """监听与录音"""
         time.sleep(0.02)
 
     def __getattr__(self, name):
         # p.terminate 等兜底
+        """属性读取"""
         return lambda *a, **k: None
 
 
 class FakeBrain:
     def __init__(self, *a, **k):
+        """初始化实例"""
         pass
 
 
 class FakeMemory:
     def __init__(self, *a, **k):
+        """初始化实例"""
         pass
 
     def close(self):
+        """关闭"""
         pass
 
 
 @pytest.fixture
 def fake_runtime(monkeypatch):
+    """伪运行时"""
     monkeypatch.setattr(rt, "Camera", FakeCamera)
     monkeypatch.setattr(rt, "VisionDetector", FakeDetector)
     monkeypatch.setattr(rt, "Speaker", FakeSpeaker)
@@ -150,10 +166,12 @@ def test_manual_input_routing(monkeypatch):
     calls = {}
 
     def fake_handle(text, speaker, brain, source="控制台", bypass_wake=True):
+        """伪处理"""
         calls["text"] = text
         calls["source"] = source
 
     def fake_memory(text):
+        """伪记忆"""
         calls["memory"] = text
 
     monkeypatch.setattr(main, "handle_user_text", fake_handle)

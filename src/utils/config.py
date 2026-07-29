@@ -39,8 +39,9 @@ class Config:
 
     @classmethod
     def load(cls) -> "Config":
-        """从环境变量迁移旧 main.py 常量（保持向后兼容）。"""
+        """加载"""
         def truthy(key: str, default: bool = True) -> bool:
+            """真值判断"""
             v = os.environ.get(key)
             if v is None:
                 return default

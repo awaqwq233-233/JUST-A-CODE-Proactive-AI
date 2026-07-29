@@ -111,6 +111,7 @@ class MemoryStore:
         max_bytes: int = DEFAULT_MAX_BYTES,
         flush_interval: float = DEFAULT_FLUSH_INTERVAL,
     ) -> None:
+        """初始化实例"""
         self.base_dir: str = self._resolve_dir(base_dir)
         self._store_path: str = os.path.join(self.base_dir, _STORE_FILENAME)
         self.max_facts = max_facts
@@ -170,7 +171,7 @@ class MemoryStore:
 
     @staticmethod
     def _parse_version(v: str) -> tuple[int, int, int]:
-        """把 semver 字符串解析为 (major, minor, patch) 整数三元组。"""
+        """解析版本"""
         parts = (v or "0.0.0").split(".")
         while len(parts) < 3:
             parts.append("0")
@@ -233,7 +234,7 @@ class MemoryStore:
 
     @staticmethod
     def _read_envelope(path: str) -> dict:
-        """读取并校验顶层信封。非 dict / 缺 facts / facts 非 list 均视为损坏，抛 MemoryFileCorrupt。"""
+        """读取封装"""
         try:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -272,7 +273,7 @@ class MemoryStore:
 
     @staticmethod
     def _quarantine_corrupt(path: str) -> None:
-        """把损坏文件隔离为 ``<name>.corrupt.<timestamp>``，避免静默丢弃。"""
+        """隔离损坏"""
         try:
             ts = datetime.now().strftime("%Y%m%d%H%M%S")
             os.replace(path, path + _CORRUPT_PREFIX + ts)
@@ -281,7 +282,7 @@ class MemoryStore:
             print(f"[MemoryStore] 无法隔离损坏文件: {e}")
 
     def _serialize(self, facts: list[MemoryFact]) -> dict:
-        """构造顶层信封 dict（v1.0.0：仅 version + facts）。"""
+        """序列化"""
         return {
             "version": CURRENT_VERSION,
             "facts": [f.to_dict() for f in facts],
@@ -315,7 +316,7 @@ class MemoryStore:
             pass
 
     def _write_atomic_no_backup(self, path: str, data: dict) -> None:
-        """原子写但不产生 ``.bak`` 副本（用于 .bak 自身重写、归档重写）。"""
+        """写入原子无备份"""
         tmp_path = path + _TMP_SUFFIX
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -329,7 +330,7 @@ class MemoryStore:
 
     @staticmethod
     def _copy_file(src: str, dst: str) -> None:
-        """标准库内的文件复制（避免引入 shutil）。"""
+        """复制文件"""
         with open(src, "rb") as fin, open(dst, "wb") as fout:
             while True:
                 chunk = fin.read(65536)
@@ -372,7 +373,7 @@ class MemoryStore:
             pass
 
     def _do_flush(self) -> None:
-        """唯一的「序列化 → 写盘」路径，由 ``_flush_lock`` 串行化。"""
+        """刷新"""
         with self._flush_lock:
             with self._lock:
                 if not self._dirty:
@@ -434,12 +435,12 @@ class MemoryStore:
         return fact
 
     def get(self, id: str) -> Optional[MemoryFact]:
-        """按 id 读取（纯读，不 bump heat）。未命中返回 None。"""
+        """获取"""
         with self._lock:
             return self._facts.get(id)
 
     def delete(self, id: str) -> bool:
-        """按 id 删除（内存 + 磁盘 + 副本一致性清除，防复活）。成功返回 True。"""
+        """删除"""
         with self._lock:
             if id in self._facts:
                 del self._facts[id]
@@ -552,6 +553,7 @@ class MemoryStore:
 
     @staticmethod
     def _minmax_norm(scores: list[float]) -> list[float]:
+        """最小最大归一化"""
         if not scores:
             return []
         lo, hi = min(scores), max(scores)
@@ -591,7 +593,7 @@ class MemoryStore:
         return merged[:k]
 
     def query_by_tags(self, tags: list[str], k: int = 5) -> list[RetrievalResult]:
-        """按标签检索：统计命中标签数，叠加 weight / recency 权重，返回 top-K。"""
+        """查询标签"""
         if not tags:
             return []
         wanted = set(tags)
@@ -688,7 +690,7 @@ class MemoryStore:
         return True
 
     def _write_archive(self, facts: list[MemoryFact]) -> None:
-        """把归档项写入 ``memory_archive_YYYYMM.json``（与现有归档按 id 合并）。"""
+        """写入归档"""
         month = datetime.now().strftime("%Y%m")
         archive_path = os.path.join(self.base_dir, f"memory_archive_{month}.json")
         existing: dict[str, MemoryFact] = {}
@@ -752,7 +754,7 @@ class MemoryStore:
             total -= size
 
     def export(self, path: str) -> str:
-        """把当前内存库导出为一份 JSON（供隐私命令 / 迁移）。不影响 dirty 与磁盘主库。"""
+        """导出"""
         with self._lock:
             facts = list(self._facts.values())
         data = self._serialize(facts)
@@ -783,6 +785,7 @@ class MemoryStore:
         取证保证（明文 v1 仅尽力；加密才有硬保证）。
         """
         def matches(fact: MemoryFact) -> bool:
+            """匹配"""
             if id is not None and fact.id != id:
                 return False
             if source is not None and fact.source != source:
@@ -830,7 +833,7 @@ class MemoryStore:
             self._safe_remove(bak_path)
 
     def _rewrite_replica_without(self, path: str, matched_ids: set[str]) -> None:
-        """读取副本（若合法），剔除 matched_ids 后 no-backup 原子重写；损坏/缺失则跳过。"""
+        """重写副本不带"""
         if not os.path.exists(path):
             return
         try:
@@ -852,6 +855,7 @@ class MemoryStore:
             pass
 
     def _list_archive_paths(self) -> list[str]:
+        """列出归档路径"""
         out: list[str] = []
         if not os.path.isdir(self.base_dir):
             return out
@@ -862,7 +866,7 @@ class MemoryStore:
 
     @staticmethod
     def _secure_delete_file(path: str) -> None:
-        """best-effort 安全删除：3 遍覆盖写 + 删除（SSD 残留归 best-effort）。"""
+        """安全删除文件"""
         if not os.path.exists(path):
             return
         try:
@@ -887,7 +891,7 @@ class MemoryStore:
 
     @staticmethod
     def _safe_remove(path: str) -> None:
-        """删除文件，吞掉沙箱 / 回收站不可用导致的 OSError（不崩溃）。"""
+        """安全移除"""
         try:
             os.remove(path)
         except OSError:
@@ -896,15 +900,15 @@ class MemoryStore:
     # ------------------------- 测试 / 运维对齐 API（oracle 方法名） -------------------------
 
     def add(self, fact: MemoryFact) -> MemoryFact:
-        """oracle 别名：等价于 upsert。"""
+        """添加"""
         return self.upsert(fact)
 
     def save(self) -> bool:
-        """oracle 别名：等价于 flush（强制落盘）。"""
+        """保存"""
         return self.flush()
 
     def get_recent(self, limit: Optional[int] = None, query: Optional[str] = None) -> list[MemoryFact]:
-        """oracle 别名：有 query 走关键词检索；否则按 updated_at 倒序返回近期事实。"""
+        """获取近期"""
         with self._lock:
             facts = list(self._facts.values())
         if query:
@@ -915,7 +919,7 @@ class MemoryStore:
         return facts
 
     def update(self, id: str, patch: dict) -> bool:
-        """对指定 fact 打补丁（仅更新 patch 中给出的字段），成功返回 True。"""
+        """更新"""
         with self._lock:
             fact = self._facts.get(id)
             if fact is None:
@@ -929,7 +933,7 @@ class MemoryStore:
         return True
 
     def stats(self) -> dict:
-        """返回存储统计（oracle：测试 / 运维可见性）。"""
+        """统计"""
         with self._lock:
             facts = list(self._facts.values())
         by_source: dict[str, int] = {}
@@ -948,7 +952,7 @@ class MemoryStore:
         }
 
     def clear_all(self) -> bool:
-        """清空全部记忆（Tier1 逻辑删除）。调用方如需保留应先 ``export()``。"""
+        """清空全部"""
         self.clear()
         return True
 
@@ -969,7 +973,7 @@ class MemoryStore:
 
     @staticmethod
     def _recency_score(fact: MemoryFact) -> float:
-        """新鲜度 0~1：updated_at 越近分越高；从未设置 / 无法解析返回 0.2 兜底。"""
+        """近期分数"""
         if not fact.updated_at:
             return 0.0
         try:
@@ -981,6 +985,7 @@ class MemoryStore:
 
     @staticmethod
     def _age_days(iso: str, now: datetime) -> float:
+        """age天"""
         try:
             return (now - datetime.fromisoformat(iso.replace("Z", "+00:00"))).total_seconds() / 86400.0
         except ValueError:

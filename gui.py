@@ -104,6 +104,7 @@ QStatusBar::item { border: none; }
 class RoundedVideoLabel(QLabel):
     """把 pixmap 裁剪为圆角绘制，配合 #video 的圆角边框。"""
     def paintEvent(self, event):
+        """绘制事件"""
         pix = self.pixmap()
         if pix is None:
             super().paintEvent(event)
@@ -123,6 +124,7 @@ class InputBox(QPlainTextEdit):
     sendRequested = Signal()
 
     def keyPressEvent(self, event):
+        """键按键事件"""
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) and \
                 (event.modifiers() & Qt.ControlModifier):
             self.sendRequested.emit()
@@ -134,29 +136,35 @@ class InputBox(QPlainTextEdit):
 class _GuiStream:
     """替换 sys.stdout / sys.stderr，把文本推入线程安全队列。"""
     def __init__(self, q: queue.Queue):
+        """初始化实例"""
         self.q = q
 
     def write(self, s):
+        """写入"""
         if s:
             self.q.put(s)
         return len(s)
 
     def flush(self):
+        """刷新"""
         pass
 
     def isatty(self):
         # GUI 模式下不是真实终端，状态行不应打印到 stdout（交给状态栏）
+        """终端判断"""
         return False
 
 
 class _QtLogHandler(logging.Handler):
     """把 logging 记录推入同一队列，供 GUI 控制台显示。"""
     def __init__(self, q: queue.Queue):
+        """初始化实例"""
         super().__init__()
         self.q = q
         self.setFormatter(logging.Formatter("%(message)s"))
 
     def emit(self, record):
+        """发出"""
         try:
             self.q.put(self.format(record) + "\n")
         except Exception:
@@ -166,6 +174,7 @@ class _QtLogHandler(logging.Handler):
 # ----------------------------- 主窗口 -----------------------------
 class MainWindow(QMainWindow):
     def __init__(self, config: Config):
+        """初始化实例"""
         super().__init__()
         self.config = config
         self.context = main.context
@@ -311,6 +320,7 @@ class MainWindow(QMainWindow):
         self._init_status_bar()
 
     def _init_status_bar(self):
+        """初始化状态栏"""
         self.status_listen = QLabel("就绪")
         self.status_listen.setObjectName("statusListen")
         self.status_sys = QLabel("● 已停止")
@@ -320,6 +330,7 @@ class MainWindow(QMainWindow):
         bar.addPermanentWidget(self.status_sys)
 
     def _make_interval_slider(self):
+        """生成间隔滑块"""
         s = QSlider(Qt.Horizontal)
         s.setRange(2, 40)              # 半秒步进 -> 1.0s ~ 20.0s
         s.setValue(int(self.config.judgment_interval * 2))
@@ -329,6 +340,7 @@ class MainWindow(QMainWindow):
         return s
 
     def _make_timeout_slider(self):
+        """生成超时滑块"""
         s = QSlider(Qt.Horizontal)
         s.setRange(6, 120)             # 半秒步进 -> 3.0s ~ 60.0s
         s.setValue(int(self.config.judgment_timeout * 2))
@@ -338,6 +350,7 @@ class MainWindow(QMainWindow):
         return s
 
     def _labeled_slider(self, title, slider, label):
+        """带标签滑块"""
         box = QVBoxLayout()
         box.setSpacing(4)
         box.addWidget(QLabel(title))
@@ -420,14 +433,17 @@ class MainWindow(QMainWindow):
             self.runtime.stop()
 
     def _on_state_change(self, running):
+        """当状态变化"""
         self.start_btn.setText("停止" if running else "启动")
         self._set_options_enabled(not running)
 
     def _set_options_enabled(self, en):
+        """设置选项已启用"""
         for w in (self.judge_chk, self.tts_chk, self.interval_slider, self.timeout_slider):
             w.setEnabled(en)
 
     def _collect_config(self):
+        """收集配置"""
         return Config(
             judgment_engine_enabled=self.judge_chk.isChecked(),
             judgment_interval=self.interval_slider.value() / 2.0,
@@ -464,6 +480,7 @@ class MainWindow(QMainWindow):
                 pass
 
     def _apply_zoom(self, value):
+        """应用缩放"""
         self.zoom_label.setText(f"{value}%")
         z = value / 100.0
         # 改变视频面板的最小尺寸，让画面整体放大/缩小（不影响采集/模型）

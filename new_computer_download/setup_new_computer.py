@@ -132,13 +132,13 @@ IMPORT_OVERRIDES = {
 
 
 def _import_name_for(pip_spec):
-    """把 pip 安装名（可能带 ==/>= 版本约束）映射到可 import 的模块名。"""
+    """导入名称"""
     base = pip_spec.split("==")[0].split("<")[0].split(">")[0].split("~")[0].strip()
     return IMPORT_OVERRIDES.get(base, base.replace("-", "_"))
 
 
 def _package_installed(pip_spec):
-    """检测某个 pip 包是否已安装（仅判断存在性，不校验版本）。"""
+    """包installed"""
     try:
         return importlib.util.find_spec(_import_name_for(pip_spec)) is not None
     except Exception:  # noqa: BLE001
@@ -168,6 +168,7 @@ def log(msg):
 
 
 def hr(title=""):
+    """分隔线"""
     if title:
         log(f"\n===== {title} =====")
     else:
@@ -175,17 +176,19 @@ def hr(title=""):
 
 
 def curl_available():
+    """curl可用"""
     return shutil.which("curl") is not None
 
 
 def sudo_prefix():
-    """Linux 非 root 时返回 ['sudo']，否则返回空列表。"""
+    """sudoprefix"""
     if IS_LINUX and os.geteuid() != 0:
         return ["sudo"]
     return []
 
 
 def run_cmd(cmd, check=True, capture=False, **kw):
+    """运行命令"""
     log("  $ " + " ".join(str(c) for c in cmd))
     if capture:
         return subprocess.run(cmd, capture_output=True, text=True, **kw)
@@ -193,7 +196,7 @@ def run_cmd(cmd, check=True, capture=False, **kw):
 
 
 def download_file(url, dest, insecure, retries=3, timeout=60, quiet=False):
-    """用 curl 下载（断点续传 + 重试 + 跳过证书吊销检查）；无 curl 时回退 urllib。"""
+    """下载文件"""
     dest = os.path.abspath(dest)
     parent = os.path.dirname(dest)
     if parent:
@@ -250,7 +253,7 @@ def download_file(url, dest, insecure, retries=3, timeout=60, quiet=False):
 
 
 def hf_list_files(repo_id, host, insecure):
-    """列出 HF 仓库文件；主镜像失败自动切官方。返回 (文件列表, 实际使用的 host)。"""
+    """HuggingFace列出文件"""
     import json
     api = f"{host}/api/models/{repo_id}"
     ssl_flag = ["--ssl-no-revoke"] if IS_WINDOWS else []
@@ -274,7 +277,7 @@ def hf_list_files(repo_id, host, insecure):
 
 
 def download_hf_files(repo_id, target_dir, wanted, insecure, use_mirror):
-    """从 HF 仓库下载 wanted 中列出的文件（支持 *.gguf 通配）。返回是否全部成功。"""
+    """下载HuggingFace文件"""
     host = HF_MIRROR if use_mirror else HF_OFFICIAL
     try:
         all_files, host = hf_list_files(repo_id, host, insecure)
@@ -315,7 +318,7 @@ def download_hf_files(repo_id, target_dir, wanted, insecure, use_mirror):
 
 
 def download_hf_repo_all(repo_id, target_dir, insecure, use_mirror):
-    """下载整个 HF 仓库（用于 Qwen3-TTS 各变体）。"""
+    """下载HuggingFace仓库全部"""
     host = HF_MIRROR if use_mirror else HF_OFFICIAL
     try:
         all_files, host = hf_list_files(repo_id, host, insecure)
@@ -549,12 +552,14 @@ def load_models_config(args):
 
 
 def _already_has(target_dir, files):
+    """已是否有"""
     if not files:
         return False
     return all(os.path.exists(os.path.join(target_dir, *fn.split("/"))) for fn in files)
 
 
 def step_models(args):
+    """step模型"""
     hr("步骤 4/6  下载模型权重")
     if args.skip_models:
         log("[models] 已指定 --skip-models，跳过所有模型下载（假设已从旧机拷贝 models/）。")
@@ -625,6 +630,7 @@ def step_models(args):
 
 
 def _download_tts(m, tdir, insecure, use_mirror, args):
+    """下载语音合成"""
     size = m.get("size") or args.ts_size
     mode = m.get("mode") or args.ts_mode
     repos = []
@@ -654,6 +660,7 @@ EMBED_MODEL_DEFAULT = "paraphrase-multilingual-MiniLM-L12-v2"
 
 
 def step_embed_model(args):
+    """step嵌入模型"""
     hr("步骤 5/6  预下载记忆 embedding 模型权重")
     if args.skip_embed:
         log("[embed] 已指定 --skip-embed，跳过 embedding 模型下载。")
@@ -765,6 +772,7 @@ def parse_args():
 
 
 def main():
+    """主"""
     args = parse_args()
     # torch auto 映射到 cpu/cuda 语义
     if args.torch == "auto":

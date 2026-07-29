@@ -88,6 +88,7 @@ class MemoryRecorder:
         recurrence_threshold: int = RECURRENCE_THRESHOLD,
         capture_person_id: bool = False,
     ) -> None:
+        """初始化实例"""
         self.recurrence_threshold = recurrence_threshold
         self.capture_person_id = capture_person_id
         self._lock = threading.Lock()
@@ -168,6 +169,7 @@ class MemoryRecorder:
     # ------------------------- 规则阶段 -------------------------
 
     def _rule_stage(self, user_text: str) -> Optional[RecordDecision]:
+        """规则阶段"""
         text = (user_text or "").strip()
         if not text:
             return RecordDecision(False, "not_factual", None, 0.9)
@@ -231,6 +233,7 @@ class MemoryRecorder:
     # ------------------------- LLM 辅助阶段 -------------------------
 
     def _llm_stage(self, user_text: str, response: str, window: str, brain) -> RecordDecision:
+        """大模型阶段"""
         from .prompts import CLASSIFY_PROMPT
 
         prompt = CLASSIFY_PROMPT.format(user_text=user_text, response=response)
@@ -269,6 +272,7 @@ class MemoryRecorder:
 
     @staticmethod
     def _parse_llm_json(raw: str) -> Optional[dict]:
+        """解析大模型JSON"""
         if not raw:
             return None
         # 防止异常大的输入拖垮解析
@@ -314,6 +318,7 @@ class MemoryRecorder:
 
     def _apply_pii_gate(self, decision: RecordDecision, user_text: str) -> RecordDecision:
         # 无论规则结论如何，只要（正则检测到 或 LLM 复核标记为）具体人物身份就先过此关
+        """应用隐私信息gate"""
         if not (self._detect_pii(user_text) or decision.pii):
             return decision
         # 显式要求且开启捕获 → 允许落库并标 pii=true
@@ -334,6 +339,7 @@ class MemoryRecorder:
 
     @staticmethod
     def _detect_pii(text: str) -> bool:
+        """检测隐私信息"""
         return bool(_PII_RELATIONSHIP_RE.search(text or ""))
 
     def _pii_llm_check(self, text: str, brain) -> bool:
@@ -379,10 +385,12 @@ class MemoryRecorder:
 
     @staticmethod
     def _looks_like_profile(text: str) -> bool:
+        """判断是否像画像"""
         return bool(re.search(r"(我叫|我的名字|我是.*(工程师|学生|医生|老师|程序员|设计师)|我的职业|我的工作)", text, re.IGNORECASE))
 
     @staticmethod
     def _detect_kind(text: str) -> MemoryKind:
+        """检测种类"""
         if DECISION_RE.search(text):
             return MemoryKind.event
         if MemoryRecorder._looks_like_profile(text):
@@ -393,7 +401,7 @@ class MemoryRecorder:
 
     @staticmethod
     def normalize_topic(text: str) -> str:
-        """确定性归一化（同输入 → 同 key），用于频次计数。"""
+        """规范化主题"""
         if not text:
             return ""
         t = text.lower()

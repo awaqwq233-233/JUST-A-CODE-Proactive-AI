@@ -69,6 +69,7 @@ def project_root():
 
 
 def ensure_hf_lib():
+    """确保HuggingFacelib"""
     try:
         import huggingface_hub  # noqa: F401
         return "huggingface_hub"
@@ -113,6 +114,7 @@ def setup_ssl(insecure):
             import requests
             _orig = requests.Session.__init__
             def _patched(self, *a, **k):
+                """已打补丁"""
                 _orig(self, *a, **k)
                 self.verify = False
             requests.Session.__init__ = _patched
@@ -145,6 +147,7 @@ def setup_ssl(insecure):
 
 
 def _curl_present():
+    """curl存在"""
     import shutil
     return shutil.which("curl") is not None
 
@@ -205,6 +208,7 @@ def download_hf(repo_id, local_dir, use_mirror):
 
 
 def download_modelscope(repo_id, local_dir):
+    """下载ModelScope"""
     from modelscope.hub.snapshot_download import snapshot_download as ms_snapshot  # type: ignore
     cache_dir = os.path.dirname(local_dir)
     name = os.path.basename(local_dir)
@@ -212,7 +216,7 @@ def download_modelscope(repo_id, local_dir):
 
 
 def resolve_source(preferred):
-    """返回 ('huggingface'|'modelscope', use_mirror)。"""
+    """resolvesource"""
     if preferred == "modelscope":
         return "modelscope", False
     # 默认优先 HuggingFace（国内走镜像）
@@ -238,6 +242,7 @@ def resolve_source(preferred):
 
 
 def main():
+    """主"""
     parser = argparse.ArgumentParser(description="J.A.C. 模型预下载（Qwen3-TTS）")
     parser.add_argument("--size", choices=["1.7B", "0.6B"], default="1.7B",
                         help="模型尺寸（默认 1.7B，约 4GB；0.6B 约 2GB）")

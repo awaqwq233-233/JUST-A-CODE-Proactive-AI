@@ -1,4 +1,4 @@
-﻿import threading
+import threading
 import time
 from collections import deque
 
@@ -9,6 +9,7 @@ class SharedContext:
     Used for sharing information between different threads (vision, audio, brain).
     """
     def __init__(self):
+        """初始化实例"""
         self._lock = threading.Lock()
 
         # Transcription ring buffer (for judgment engine)
@@ -42,6 +43,7 @@ class SharedContext:
         self.intervention_reason = ""
 
     def update_vision(self, results):
+        """更新视觉"""
         detected = []
         if results and isinstance(results, list):
             for item in results:
@@ -54,6 +56,7 @@ class SharedContext:
             self.last_seen_time = time.time()
 
     def get_vision_summary(self):
+        """获取视觉摘要"""
         with self._lock:
             if time.time() - self.last_seen_time > 2.0:
                 return "I currently see nothing (no recent vision data)."
@@ -67,11 +70,13 @@ class SharedContext:
             return f"I can see: {summary}."
 
     def set_frame(self, frame):
+        """设置画面帧"""
         if frame is not None:
             with self._lock:
                 self._current_frame = frame.copy()
 
     def get_frame(self):
+        """获取画面帧"""
         with self._lock:
             if self._current_frame is None:
                 return None
@@ -84,6 +89,7 @@ class SharedContext:
                 self._annotated_frame = frame.copy()
 
     def get_annotated_frame(self):
+        """获取标注画面帧"""
         with self._lock:
             if self._annotated_frame is None:
                 return None
@@ -95,12 +101,14 @@ class SharedContext:
             self._listening_status = text or ""
 
     def get_listening_status(self):
+        """获取聆听状态"""
         with self._lock:
             return self._listening_status
 
     # --- Audio transcription buffer (for judgment engine) ---
 
     def push_transcription(self, text):
+        """压入转录"""
         text = (text or "").strip()
         if not text:
             return
@@ -108,6 +116,7 @@ class SharedContext:
             self._transcriptions.append((time.time(), text))
 
     def get_recent_transcriptions(self, window=15.0):
+        """获取近期transcriptions"""
         now = time.time()
         recent = []
         with self._lock:
@@ -119,6 +128,7 @@ class SharedContext:
         return " | ".join(recent)
 
     def push_and_get_recent(self, text, window=15.0):
+        """压入与获取近期"""
         text = (text or "").strip()
         now = time.time()
         recent = []
@@ -135,11 +145,13 @@ class SharedContext:
     # --- Intervention state ---
 
     def request_intervention(self, reason):
+        """请求介入"""
         with self._lock:
             self.intervention_requested = True
             self.intervention_reason = reason
 
     def consume_intervention(self):
+        """取出介入"""
         with self._lock:
             if self.intervention_requested:
                 self.intervention_requested = False
@@ -149,6 +161,7 @@ class SharedContext:
             return False, ""
 
     def clear_intervention(self):
+        """清空介入"""
         with self._lock:
             self.intervention_requested = False
             self.intervention_reason = ""

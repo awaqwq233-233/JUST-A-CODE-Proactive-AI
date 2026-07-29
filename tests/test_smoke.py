@@ -15,12 +15,12 @@ import json
 
 
 def test_smoke_baseline():
-    """The absolute minimum: pytest can collect and run a test."""
+    """测试：smokebaseline"""
     assert 1 == 1
 
 
 def test_mock_brain_fixture(mock_brain):
-    """mock_brain is offline and returns deterministic, parseable JSON."""
+    """测试：mock大脑fixture"""
     # Offline: never tried to talk to LM Studio / Ollama / llama.cpp.
     assert mock_brain.backend == "mock"
 
@@ -35,7 +35,7 @@ def test_mock_brain_fixture(mock_brain):
 
 
 def test_mock_brain_can_be_scripted(mock_brain):
-    """Later-phase tests can force specific decisions via the queue helpers."""
+    """测试：mock大脑能否bescripted"""
     mock_brain.queue_decision("TASK", type="todo", content="buy milk", tags=["errand"])
     parsed = json.loads(mock_brain.think("remember to buy milk"))
     assert parsed["decision"] == "TASK"

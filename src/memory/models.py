@@ -22,7 +22,7 @@ from typing import Optional
 
 
 def _now_iso() -> str:
-    """UTC ISO8601，带 ``Z`` 后缀（对齐 schema.md 示例 ``2026-07-01T04:00:00Z``）。"""
+    """nowiso"""
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
@@ -92,7 +92,7 @@ class MemoryFact:
     embedding: Optional[list[float]] = None
 
     def to_dict(self) -> dict:
-        """序列化为可 JSON 化的字典（枚举转 value / bool 保持 / float 保持）。"""
+        """dict"""
         return {
             "id": self.id,
             "content": self.content,
@@ -162,6 +162,6 @@ class RetrievalResult:
     score: float
 
     def to_prompt_line(self) -> str:
-        """返回注入 ``system_prompt`` 用的单行文本，形如 ``[偏好] 内容``。"""
+        """提示词line"""
         label = _MEMORY_KIND_LABELS.get(self.fact.kind, self.fact.kind.value)
         return f"[{label}] {self.fact.content}"

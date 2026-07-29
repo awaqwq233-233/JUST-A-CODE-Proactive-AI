@@ -20,12 +20,14 @@ from memory.models import MemoryFact, MemoryKind, MemorySource
 
 
 def _fact(content, kind=MemoryKind.preference, source=MemorySource.inferred, **kw):
+    """事实"""
     return MemoryFact(content=content, kind=kind, source=source, **kw)
 
 
 # ---- envelope 形状 + 往返 ----
 
 def test_add_reload_roundtrip(tmp_memory_dir):
+    """测试：添加重新加载roundtrip"""
     s = MemoryStore(base_dir=tmp_memory_dir)
     s.upsert(_fact("我喜欢喝茶"))
     s.flush()
@@ -45,6 +47,7 @@ def test_add_reload_roundtrip(tmp_memory_dir):
 # ---- 版本策略（Cody #3） ----
 
 def test_missing_version_lenient(tmp_memory_dir):
+    """测试：missing版本lenient"""
     with open(os.path.join(tmp_memory_dir, "memory.json"), "w", encoding="utf-8") as f:
         json.dump({"facts": [_fact("x").to_dict()]}, f)
     s = MemoryStore(base_dir=tmp_memory_dir)
@@ -53,6 +56,7 @@ def test_missing_version_lenient(tmp_memory_dir):
 
 
 def test_v0_0_0_lenient(tmp_memory_dir):
+    """测试：v000lenient"""
     with open(os.path.join(tmp_memory_dir, "memory.json"), "w", encoding="utf-8") as f:
         json.dump({"version": "0.0.0", "facts": [_fact("x").to_dict()]}, f)
     s = MemoryStore(base_dir=tmp_memory_dir)
@@ -61,6 +65,7 @@ def test_v0_0_0_lenient(tmp_memory_dir):
 
 
 def test_major_mismatch_raises(tmp_memory_dir):
+    """测试：majormismatchraises"""
     with open(os.path.join(tmp_memory_dir, "memory.json"), "w", encoding="utf-8") as f:
         json.dump({"version": "9.0.0", "facts": []}, f)
     with pytest.raises(MemoryVersionIncompatible):
@@ -70,6 +75,7 @@ def test_major_mismatch_raises(tmp_memory_dir):
 # ---- invalid_facts ----
 
 def test_invalid_facts_reported(tmp_memory_dir):
+    """测试：invalidfactsreported"""
     with open(os.path.join(tmp_memory_dir, "memory.json"), "w", encoding="utf-8") as f:
         json.dump({
             "version": "1.0.0",
@@ -92,6 +98,7 @@ def test_corrupt_main_recovers_from_bak(tmp_memory_dir):
     # .bak 语义：永远是「上一次合法主文件」的副本。
     # 因此先写 first 并 flush（main=first, .bak=空），
     # 再写 second 并 flush（main=first+second, .bak=first）。
+    """测试：corrupt主程序recoversfrombak"""
     good = MemoryStore(base_dir=tmp_memory_dir)
     good.upsert(_fact("first"))
     good.flush()
@@ -109,6 +116,7 @@ def test_corrupt_main_recovers_from_bak(tmp_memory_dir):
 
 
 def test_corrupt_main_no_bak_raises(tmp_memory_dir):
+    """测试：corrupt主程序nobakraises"""
     with open(os.path.join(tmp_memory_dir, "memory.json"), "w", encoding="utf-8") as f:
         f.write("broken")
     with pytest.raises(MemoryFileCorrupt):
@@ -116,6 +124,7 @@ def test_corrupt_main_no_bak_raises(tmp_memory_dir):
 
 
 def test_no_stray_tmp_after_flush(tmp_memory_dir):
+    """测试：nostraytmpafter刷新"""
     s = MemoryStore(base_dir=tmp_memory_dir)
     s.upsert(_fact("x"))
     s.flush()
@@ -127,6 +136,7 @@ def test_no_stray_tmp_after_flush(tmp_memory_dir):
 # ---- 两级清空 + 防复活（Cody #2/#4） ----
 
 def _seed_four(tmp_memory_dir):
+    """种子四"""
     s = MemoryStore(base_dir=tmp_memory_dir)
     ex = _fact("explicit fact", kind=MemoryKind.preference, source=MemorySource.explicit, tags=["t"])
     inf = _fact("inferred fact", kind=MemoryKind.profile, source=MemorySource.inferred, tags=["t"])
@@ -141,6 +151,7 @@ def _seed_four(tmp_memory_dir):
 
 
 def test_clear_source_inferred_purges_replicas(tmp_memory_dir):
+    """测试：清空sourceinferredpurgesreplicas"""
     s = _seed_four(tmp_memory_dir)
     n = s.clear(source=MemorySource.inferred)
     assert n == 1
@@ -166,6 +177,7 @@ def test_clear_source_inferred_purges_replicas(tmp_memory_dir):
 
 
 def test_clear_pii(tmp_memory_dir):
+    """测试：清空pii"""
     s = _seed_four(tmp_memory_dir)
     n = s.clear(pii=True)
     assert n == 1
@@ -175,6 +187,7 @@ def test_clear_pii(tmp_memory_dir):
 
 
 def test_clear_kind_topic(tmp_memory_dir):
+    """测试：清空种类topic"""
     s = _seed_four(tmp_memory_dir)
     n = s.clear(kind=MemoryKind.topic)
     assert n == 1
@@ -184,6 +197,7 @@ def test_clear_kind_topic(tmp_memory_dir):
 
 
 def test_clear_all(tmp_memory_dir):
+    """测试：清空all"""
     s = _seed_four(tmp_memory_dir)
     n = s.clear()
     assert n == 4
@@ -193,6 +207,7 @@ def test_clear_all(tmp_memory_dir):
 
 
 def test_delete_purges_bak(tmp_memory_dir):
+    """测试：删除purgesbak"""
     s = _seed_four(tmp_memory_dir)
     target = next(f for f in s.get_recent() if f.source == MemorySource.inferred)
     ok = s.delete(target.id)
@@ -206,6 +221,7 @@ def test_delete_purges_bak(tmp_memory_dir):
 # ---- 归档留存 ----
 
 def test_archive_retention_drops_old(tmp_memory_dir):
+    """测试：archiveretentiondropsold"""
     s = MemoryStore(base_dir=tmp_memory_dir)
     # 制造一个很旧的归档月份
     import shutil
@@ -225,6 +241,7 @@ def test_archive_retention_drops_old(tmp_memory_dir):
 # ---- stats ----
 
 def test_stats(tmp_memory_dir):
+    """测试：统计"""
     s = _seed_four(tmp_memory_dir)
     st = s.stats()
     assert st["count"] == 4

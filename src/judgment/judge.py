@@ -1,4 +1,4 @@
-﻿# J.A.C. 环境判断引擎
+# J.A.C. 环境判断引擎
 # 连接 LM Studio 中运行的 MiniCPM-o，持续监测摄像头画面+音频转录，
 # 决定是否需要 J.A.C. 大模型介入
 
@@ -55,6 +55,7 @@ class JudgmentEngine:
     )
 
     def __init__(self, api_url="http://127.0.0.1:12345/v1/chat/completions", check_url="http://127.0.0.1:12345/v1/models", model_name="minicpm-v-4_5", interval=4.0, timeout=15.0, transcription_window=15.0):
+        """初始化实例"""
         self.api_url = api_url
         self.check_url = check_url
         self.model_name = model_name
@@ -71,7 +72,7 @@ class JudgmentEngine:
 
     @staticmethod
     def _normalize(name):
-        """规范化模型 ID：小写、去 -gguf 后缀、下划线转连字符，便于跨命名风格匹配。"""
+        """规范化模型名：转小写、去掉 .gguf 后缀、下划线转连字符，便于跨命名风格匹配。"""
         return name.lower().replace("-gguf", "").replace(".gguf", "").replace("_", "-").strip()
 
     def _match_model(self, loaded_ids):
@@ -86,6 +87,7 @@ class JudgmentEngine:
         return None
 
     def check_available(self):
+        """检查可用"""
         try:
             resp = requests.get(self.check_url, timeout=3)
             if resp.status_code == 200:
@@ -113,9 +115,11 @@ class JudgmentEngine:
 
     @property
     def available(self):
+        """可用"""
         return self._available
 
     def judge(self, frame, transcript_text):
+        """判断引擎"""
         if not self._available:
             return False, ""
 
@@ -175,6 +179,7 @@ class JudgmentEngine:
             return False, ""
 
     def run(self):
+        """运行"""
         if self.context is None:
             logger.error("判断引擎未注入 SharedContext，无法启动")
             return
@@ -212,12 +217,15 @@ class JudgmentEngine:
         logger.info("判断引擎主循环已停止")
 
     def stop(self):
+        """停止"""
         self.running = False
 
     def set_context(self, context):
+        """设置上下文"""
         self.context = context
 
     def get_intervention(self, timeout=0.1):
+        """获取介入"""
         try:
             return self.intervention_queue.get_nowait()
         except queue.Empty:
@@ -225,6 +233,7 @@ class JudgmentEngine:
 
     @staticmethod
     def default_config():
+        """默认配置"""
         return {
             "api_url": "http://127.0.0.1:12345/v1/chat/completions",
             "check_url": "http://127.0.0.1:12345/v1/models",

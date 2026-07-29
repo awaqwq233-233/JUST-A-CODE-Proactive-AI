@@ -19,6 +19,7 @@ class LocalBrain:
     """
 
     def __init__(self, model_path="models/Qwen3.5-9B-Q4_K_M.gguf", backend="auto", lm_studio_model=None):
+        """初始化实例"""
         self.llm = None
         self.multimodal = False
         self.backend = "mock"
@@ -65,7 +66,7 @@ class LocalBrain:
 
     @staticmethod
     def _normalize(name):
-        """规范化模型 ID：小写、去 -gguf/.gguf 后缀、下划线转连字符，便于跨命名风格模糊匹配。"""
+        """规范化"""
         return name.lower().replace("-gguf", "").replace(".gguf", "").replace("_", "-").strip()
 
     def _pick_lm_model(self, models, preferred):
@@ -86,6 +87,7 @@ class LocalBrain:
         return ids[0]
 
     def _check_lm_studio(self):
+        """检查lmstudio"""
         try:
             r = requests.get(self.lm_studio_check_url, timeout=2)
             if r.status_code == 200:
@@ -101,6 +103,7 @@ class LocalBrain:
             return False
 
     def _init_lm_studio(self):
+        """初始化lmstudio"""
         print(f"[System] LM Studio backend ready")
         print(f"       API: {self.lm_studio_url}")
         try:
@@ -115,6 +118,7 @@ class LocalBrain:
             pass
 
     def _check_ollama(self):
+        """检查Ollama"""
         try:
             r = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
             return r.status_code == 200
@@ -124,9 +128,11 @@ class LocalBrain:
             return False
 
     def _init_ollama(self):
+        """初始化Ollama"""
         print(f"[System] Ollama backend ready, model: {self.ollama_model_name}")
 
     def _init_llama_cpp(self, model_path):
+        """初始化llamacpp"""
         if Llama is None:
             print("[Warning] llama-cpp-python not installed")
             return
@@ -163,6 +169,7 @@ class LocalBrain:
             print(f"[Error] Brain loading failed: {e}")
 
     def _find_mmproj(self, model_path):
+        """查找多模态投影"""
         model_dir = os.path.dirname(model_path) or "."
         base_name = os.path.basename(model_path)
         model_prefix = base_name.rsplit("-", 1)[0]
@@ -177,6 +184,7 @@ class LocalBrain:
         return None
 
     def think(self, prompt, system_prompt="You are J.A.C., a helpful AI assistant. J.A.C. stands for Just A Code.", temperature=0.7, max_tokens=120):
+        """推理"""
         if self.backend == "mock":
             return self._mock_response(prompt)
         messages = [
@@ -191,6 +199,7 @@ class LocalBrain:
             return self._query_llama_cpp(messages, temperature, max_tokens)
 
     def think_with_image(self, prompt, frame, system_prompt="You are J.A.C., a helpful AI assistant.", temperature=0.7, max_tokens=200):
+        """推理带图像"""
         if self.backend == "mock":
             return self._mock_response(prompt)
         if self.backend not in ("lm_studio", "ollama") and not self.multimodal:
@@ -233,6 +242,7 @@ class LocalBrain:
 
     def _query_lm_studio(self, messages, temperature, max_tokens):
         # 只保证一个合理下限，尊重调用方传入值（原来强拉到 2048 会让每次生成都极慢）
+        """查询lmstudio"""
         if max_tokens < 512:
             max_tokens = 512
         try:
@@ -277,6 +287,7 @@ class LocalBrain:
             return "My brain is having trouble, please try again later."
 
     def _query_ollama(self, messages, temperature, max_tokens):
+        """查询Ollama"""
         try:
             resp = requests.post(
                 f"{self.ollama_base_url}/api/chat",
@@ -304,6 +315,7 @@ class LocalBrain:
             return "My brain is having trouble, please try again later."
 
     def _query_llama_cpp(self, messages, temperature, max_tokens):
+        """查询llamacpp"""
         if self.llm is None:
             text = "".join(m.get("content","") for m in messages if m.get("role")=="user")
             if isinstance(text, list):
@@ -319,6 +331,7 @@ class LocalBrain:
             return "My brain is having trouble, please try again later."
 
     def _mock_response(self, text):
+        """模拟响应"""
         if isinstance(text, list):
             text = " ".join(str(t) for t in text)
         if "hello" in text.lower():

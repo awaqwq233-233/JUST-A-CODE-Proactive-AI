@@ -1,4 +1,4 @@
-﻿import cv2
+import cv2
 import sys
 import time
 import threading
@@ -471,6 +471,7 @@ def audio_thread_func(speaker, recognizer, recorder, brain, stop_event=None):
             time.sleep(1)
 
 def main():
+    """主"""
     global running
     global conversation_running
     print("==========================================")

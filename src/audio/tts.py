@@ -16,6 +16,7 @@ class Speaker:
       - Linux:   pyttsx3（需 espeak/speech-dispatcher）+ espeak 命令兜底
     """
     def __init__(self):
+        """初始化实例"""
         try:
             self.engine = None
 
@@ -31,7 +32,7 @@ class Speaker:
             self.engine = None
 
     def _init_windows_tts(self):
-        """Windows 平台 TTS 初始化"""
+        """初始化Windows语音合成"""
         import pyttsx3
         self.engine = pyttsx3.init()
         self.engine.setProperty('rate', 150)
@@ -43,7 +44,7 @@ class Speaker:
                 break
 
     def _init_macos_tts(self):
-        """macOS 平台 TTS 初始化"""
+        """初始化macOS语音合成"""
         try:
             import pyttsx3
             self.engine = pyttsx3.init()
@@ -60,7 +61,7 @@ class Speaker:
             self.engine = 'say_command'
 
     def _init_linux_tts(self):
-        """Linux 平台 TTS 初始化（优先 pyttsx3 + espeak/speech-dispatcher 兜底）"""
+        """初始化Linux语音合成"""
         try:
             import pyttsx3
             self.engine = pyttsx3.init()

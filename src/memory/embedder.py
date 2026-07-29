@@ -28,6 +28,7 @@ class MemoryEmbedder:
     """轻量文本向量生成器（lazy、可降级）。"""
 
     def __init__(self, model_name: Optional[str] = None) -> None:
+        """初始化实例"""
         self.model_name = (model_name or os.environ.get("MEMORY_EMBED_MODEL") or _DEFAULT_MODEL).strip()
         # bge / e5 系列需要 query: / passage: 前缀才能发挥检索效果
         self._needs_prefix = ("bge" in self.model_name.lower()) or ("e5" in self.model_name.lower())
@@ -38,6 +39,7 @@ class MemoryEmbedder:
     # ------------------------- lazy load -------------------------
 
     def _ensure_loaded(self) -> bool:
+        """确保已加载"""
         if self._model is not None:
             return self.available
         try:
@@ -89,6 +91,7 @@ class MemoryEmbedder:
 
     @property
     def dim(self) -> Optional[int]:
+        """维度"""
         if self._dim is None:
             self._ensure_loaded()
         return self._dim

@@ -66,6 +66,7 @@ class QwenTTSSpeaker:
                  device=None,
                  dtype=None,
                  output_dir="temp/voice"):
+        """初始化实例"""
         self.mode = (mode or os.getenv("QWEN_TTS_MODE", "clone")).lower()
         if self.mode not in MODEL_FOR_MODE:
             self.mode = "clone"
@@ -116,6 +117,7 @@ class QwenTTSSpeaker:
         return name
 
     def _ensure_model(self):
+        """确保模型"""
         if self._model is not None:
             return True
         with self._lock:
@@ -170,6 +172,7 @@ class QwenTTSSpeaker:
 
     @staticmethod
     def _pick_device(torch):
+        """选择设备"""
         if getattr(torch.cuda, "is_available", lambda: False)():
             return "cuda:0"
         mps = getattr(torch.backends, "mps", None)
@@ -179,6 +182,7 @@ class QwenTTSSpeaker:
 
     @staticmethod
     def _pick_dtype(torch, dev):
+        """选择数据类型"""
         if dev.startswith("cuda"):
             return torch.bfloat16
         if dev == "mps":
@@ -219,6 +223,7 @@ class QwenTTSSpeaker:
             self._fallback_speak(text)
 
     def _normalize_emotion(self, emotion_hint):
+        """规范化emotion"""
         if not emotion_hint:
             return None
         s = str(emotion_hint)
@@ -249,7 +254,7 @@ class QwenTTSSpeaker:
         play_wav(path)
 
     def _fallback_speak(self, text):
-        """跨平台系统 TTS 兜底（macOS say / Linux espeak / 其它仅打印）。"""
+        """fallback朗读"""
         if IS_MACOS:
             try:
                 import subprocess
@@ -269,7 +274,7 @@ class QwenTTSSpeaker:
 
 
 def play_wav(path):
-    """跨平台 WAV 播放（不依赖额外 Python 包，使用系统命令）。"""
+    """playwav"""
     try:
         if IS_MACOS:
             import subprocess

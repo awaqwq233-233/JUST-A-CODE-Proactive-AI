@@ -8,7 +8,7 @@ warnings.filterwarnings("ignore")
 
 
 def _pick_device():
-    """选择推理加速设备：cuda > mps(Mac GPU) > cpu，保持跨平台兼容。"""
+    """选择设备"""
     if torch.cuda.is_available():
         return "cuda"
     mps = getattr(torch.backends, "mps", None)

@@ -5,6 +5,7 @@ import sys
 import platform
 
 def setup_ffmpeg():
+    """初始化ffmpeg"""
     print("=== FFmpeg 诊断与修复 ===")
     try:
         exe_path = imageio_ffmpeg.get_ffmpeg_exe()

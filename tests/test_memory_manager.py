@@ -19,19 +19,23 @@ class _RaiseBrain:
     backend = "mock"
 
     def think(self, *a, **k):
+        """推理"""
         raise RuntimeError("LLM must NOT be called for rule-stage")
 
     def think_with_image(self, *a, **k):
+        """推理带图像"""
         raise RuntimeError("LLM must NOT be called for rule-stage")
 
 
 def test_retrieve_empty_returns_blank(tmp_memory_dir):
+    """测试：检索emptyreturnsblank"""
     mgr = MemoryManager(base_dir=tmp_memory_dir, enabled=True)
     assert mgr.retrieve_for_prompt("随便说说") == ""
     mgr.close()
 
 
 def test_retrieve_injects_matched_memory(tmp_memory_dir):
+    """测试：检索injectsmatched记忆"""
     mgr = MemoryManager(base_dir=tmp_memory_dir, enabled=True)
     from memory.models import MemoryFact
     mgr.store.upsert(MemoryFact(
@@ -46,6 +50,7 @@ def test_retrieve_injects_matched_memory(tmp_memory_dir):
 
 
 def test_record_turn_nonblocking_stores(tmp_memory_dir):
+    """测试：录音turnnonblockingstores"""
     mgr = MemoryManager(
         base_dir=tmp_memory_dir, enabled=True,
         min_classify_interval=0.0, brain=_RaiseBrain(),
@@ -62,7 +67,7 @@ def test_record_turn_nonblocking_stores(tmp_memory_dir):
 
 
 def test_ratelimit_keeps_explicit_saves(tmp_memory_dir):
-    """限流不得丢弃规则阶段的显式保存（Cody #6 DoD#1）。"""
+    """测试：ratelimitkeepsexplicitsaves"""
     mgr = MemoryManager(
         base_dir=tmp_memory_dir, enabled=True,
         min_classify_interval=100.0, brain=_RaiseBrain(),
@@ -76,14 +81,16 @@ def test_ratelimit_keeps_explicit_saves(tmp_memory_dir):
 
 
 def test_classify_exception_caught(tmp_memory_dir):
-    """弱意图路由到会抛错的 LLM，classify 异常必须被吞。"""
+    """测试：classify异常caught"""
     class _BoomBrain:
         backend = "mock"
 
         def think(self, *a, **k):
+            """推理"""
             raise RuntimeError("boom")
 
         def think_with_image(self, *a, **k):
+            """推理带图像"""
             raise RuntimeError("boom")
 
     mgr = MemoryManager(
@@ -100,6 +107,7 @@ def test_classify_exception_caught(tmp_memory_dir):
 
 
 def test_disabled_manager_is_noop():
+    """测试：disabled管理器是否noop"""
     mgr = MemoryManager(enabled=False)
     assert mgr.retrieve_for_prompt("x") == ""
     mgr.record_turn("记住点什么", "好的")  # 不崩

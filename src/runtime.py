@@ -35,6 +35,7 @@ class JACRuntime:
     def __init__(self, context=None, on_state_change=None):
         # 使用 main 模块级全局 context（process_response / 音频线程都读它），
         # 保证视觉摘要与送入大模型的帧来自同一上下文。
+        """初始化实例"""
         self.context = context if context is not None else main.context
         self.on_state_change = on_state_change  # callable(bool) -> None
         self.running = False
@@ -142,6 +143,7 @@ class JACRuntime:
         self._notify(True)
 
     def stop(self):
+        """停止"""
         if not self.running:
             return
         self.running = False
@@ -166,6 +168,7 @@ class JACRuntime:
         self._notify(False)
 
     def _notify(self, running):
+        """通知"""
         if self.on_state_change is not None:
             try:
                 self.on_state_change(running)
@@ -246,7 +249,7 @@ class JACRuntime:
 
     # ---------------------------------------------------------------- 外部指令
     def manual_input(self, text: str):
-        """把控制台/输入框文字送入对话（取代原 stdin 线程）。"""
+        """手动输入"""
         text = (text or "").strip()
         if not text:
             return

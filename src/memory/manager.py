@@ -43,6 +43,7 @@ class MemoryManager:
         inject_max_chars: int = 300,
         top_k: int = 5,
     ) -> None:
+        """初始化实例"""
         self.enabled = enabled
         self.brain = brain
         self.inject_max_chars = inject_max_chars
@@ -96,7 +97,7 @@ class MemoryManager:
         window: str = "",
         is_thinking: bool = False,
     ) -> None:
-        """对话结束后调用一次：入队后台 worker，立即返回（绝不阻塞）。"""
+        """录音turn"""
         if not self.enabled or self._worker is None:
             return
         if is_thinking:
@@ -106,6 +107,7 @@ class MemoryManager:
     # ------------------------- 后台 worker -------------------------
 
     def _worker_loop(self) -> None:
+        """工作循环"""
         while True:
             item = self._queue.get()
             if item is None:
@@ -114,6 +116,7 @@ class MemoryManager:
             self._classify_and_store(user_text, response, window)
 
     def _classify_and_store(self, user_text: str, response: str, window: str) -> None:
+        """分类与存储"""
         now = time.monotonic()
         # 🟠#6 限流只作用于「LLM 辅助分支」：规则阶段（A 显式保存等）
         # 零成本且属 DoD#1 必须 100% 落库，绝不因限流被丢弃。仅在距上次
@@ -149,6 +152,7 @@ class MemoryManager:
 
     @staticmethod
     def _decision_to_fact(decision: RecordDecision, fallback_text: str) -> Optional[MemoryFact]:
+        """决策事实"""
         content = (decision.content or fallback_text or "").strip()
         if not content:
             return None
@@ -183,10 +187,12 @@ class MemoryManager:
     # ------------------------- 生命周期 -------------------------
 
     def flush(self) -> None:
+        """刷新"""
         if self.store is not None:
             self.store.flush()
 
     def close(self) -> None:
+        """关闭"""
         if self._worker is not None:
             self._queue.put(None)
             if self._worker.is_alive():
@@ -196,4 +202,5 @@ class MemoryManager:
 
     @property
     def stats(self) -> Optional[dict]:
+        """统计"""
         return self.store.stats() if self.store is not None else None

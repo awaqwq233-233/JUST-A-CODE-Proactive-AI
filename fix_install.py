@@ -5,6 +5,7 @@ import os
 import urllib.request
 
 def install_package(package_name):
+    """安装包"""
     print(f"[安装] 正在安装 {package_name} ...")
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
@@ -60,6 +61,7 @@ def install_pyaudio_wheel():
         print("请尝试手动下载对应版本的 .whl 文件：https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio")
 
 def fix_install():
+    """fix安装"""
     print("==========================================")
     print("      J.A.C - 依赖修复工具                 ")
     print("==========================================")
@@ -111,7 +113,7 @@ def fix_install():
     print("==========================================")
 
 def install_ffmpeg_helper():
-    """安装 imageio-ffmpeg 以获取 ffmpeg 可执行文件"""
+    """安装ffmpeg辅助函数"""
     print("[系统] 正在安装 imageio-ffmpeg 以自动配置 ffmpeg 环境...")
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "imageio-ffmpeg"])
