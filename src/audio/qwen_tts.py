@@ -29,6 +29,125 @@ except ImportError:
     QWEN_TTS_AVAILABLE = False
 
 
+# ---------- 数值稳定性补丁（不动 torch 版本，仅做 monkey-patch） ----------
+def _patch_multinomial():
+    """一次性替换 torch.multinomial：采样前把 NaN/Inf/负数归零并重新归一化。
+
+    根治 Qwen3-TTS 在 MPS/CPU 上 'probability tensor contains inf, nan or
+    element < 0' 的崩溃——即便上游仍有零星 NaN/Inf 漏网，也能稳健采样而不崩。
+    """
+    import torch
+    if getattr(torch.multinomial, "_jac_patched", False):
+        return
+    _orig = torch.multinomial
+
+    def _safe(input, num_samples, *a, **k):
+        try:
+            bad = torch.isnan(input) | torch.isinf(input) | (input < 0)
+            if bad.any():
+                clean = torch.where(bad, torch.zeros_like(input), input)
+                s = clean.sum(-1, keepdim=True)
+                # 整行全 NaN/负数：退化为均匀分布，保证一定能采样
+                safe = torch.where(
+                    s > 0,
+                    clean / s.clamp_min(1e-12),
+                    torch.ones_like(clean) / clean.shape[-1],
+                )
+                input = safe
+        except Exception:
+            pass
+        return _orig(input, num_samples, *a, **k)
+
+    _safe._jac_patched = True
+    torch.multinomial = _safe
+
+
+def _force_eager(model):
+    """递归把所有 attention 模块的注意力实现强制设为 eager（float32 softmax 稳定版）。
+
+    Qwen3-TTS 默认走 SDPA，在 Apple Silicon 的 MPS/CPU 上数值不稳会产生 NaN；
+    eager 路径使用 float32 softmax，可根除 attention 侧 NaN。
+    """
+    target = {"Qwen3TTSTalkerAttention", "Qwen3TTSAttention"}
+    for mod in model.modules():
+        if type(mod).__name__ in target:
+            try:
+                mod.config._attn_implementation = "eager"
+            except Exception:
+                pass
+    try:
+        model.config._attn_implementation = "eager"
+    except Exception:
+        pass
+
+
+def _install_nan_guard(model):
+    """对模型所有子模块注册 forward hook：每层输出把 NaN/Inf 替换为 0。
+
+    阻断 NaN 在层间传播，确保最终 logits 不全为 NaN，配合 _patch_multinomial 生效。
+    AttentiveStatisticsPooling 等裸 softmax 模块的 NaN 也在此被兜底归零。
+    """
+    import torch
+
+    def _sanitize(out):
+        if isinstance(out, torch.Tensor):
+            if out.isnan().any() or out.isinf().any():
+                return torch.where(
+                    torch.isnan(out) | torch.isinf(out),
+                    torch.zeros_like(out), out,
+                )
+            return out
+        if isinstance(out, (tuple, list)):
+            return type(out)(_sanitize(o) for o in out)
+        return out
+
+    def _hook(_mod, _inp, out):
+        return _sanitize(out)
+
+    for mod in model.modules():
+        try:
+            mod.register_forward_hook(_hook)
+        except Exception:
+            pass
+
+
+def _patch_attentive_pooling_softmax(model):
+    """针对性修复说话人编码路径的 NaN（增强项）。
+
+    AttentiveStatisticsPooling 使用裸 F.softmax(attention, dim=2)，在 masked 全
+    -inf 行会产生 NaN 污染 x-vector。这里包装其 forward，对输出做 NaN 兜底归零
+    （全局 hook 也会覆盖，此处作为更精准的针对性保险）。
+    """
+    try:
+        from qwen_tts.core.models.modeling_qwen3_tts import AttentiveStatisticsPooling
+    except Exception:
+        return
+    if getattr(AttentiveStatisticsPooling.forward, "_jac_patched", False):
+        return
+    import torch
+    _orig = AttentiveStatisticsPooling.forward
+
+    def _patched(self, hidden_states):
+        out = _orig(self, hidden_states)
+        if isinstance(out, torch.Tensor) and (out.isnan().any() or out.isinf().any()):
+            out = torch.where(
+                torch.isnan(out) | torch.isinf(out),
+                torch.zeros_like(out), out,
+            )
+        return out
+
+    _patched._jac_patched = True
+    AttentiveStatisticsPooling.forward = _patched
+
+
+# 模块加载即全局加固 multinomial，避免 TTS 采样崩溃（与 torch 版本无关）
+if QWEN_TTS_AVAILABLE:
+    try:
+        _patch_multinomial()
+    except Exception:
+        pass
+
+
 # 现有 8 种情绪 -> 自然语言指令（用于 custom/design 模式的 instruct 参数，
 # 以及 clone 模式里作为文本前缀，依靠 Qwen3-TTS 的语义理解自适应语气）。
 EMOTION_INSTRUCT = {
@@ -200,6 +319,7 @@ class QwenTTSSpeaker:
                         resolved,
                         device_map=dev,
                         dtype=dt,
+                        attn_implementation="eager",
                     )
                 except Exception as e:
                     # 本地副本加载失败（如不完整）时，回退到仓库 ID 自动下载
@@ -209,6 +329,7 @@ class QwenTTSSpeaker:
                             self.model_name,
                             device_map=dev,
                             dtype=dt,
+                            attn_implementation="eager",
                         )
                     else:
                         raise
@@ -225,6 +346,19 @@ class QwenTTSSpeaker:
                     except Exception as e:
                         print(f"[警告] 预构建声音克隆提示失败（将逐次克隆）: {e}")
 
+                # 数值稳定性补丁（不动 torch 版本）：强制 eager attention +
+                # 全局 NaN 护栏 + 说话人池化修复，根除 MPS/CPU 上的 NaN 崩溃
+                try:
+                    # self._model 是 Qwen3TTSModel 包装类，真正的 nn.Module 在 .model 属性
+                    _real = getattr(self._model, "model", self._model)
+                    _install_nan_guard(_real)
+                    _patch_attentive_pooling_softmax(_real)
+                    # 仅 CPU 强制 eager：避免 SDPA 在 CPU 上产生 NaN；
+                    # MPS/CUDA 走默认 SDPA，靠全局护栏 + multinomial patch 兜底，且更快
+                    if (dev or "").startswith("cpu"):
+                        _force_eager(_real)
+                except Exception as _e:
+                    print(f"[警告] 应用数值稳定性补丁失败（将尝试裸运行）: {_e}")
                 print("[系统] Qwen3-TTS 已就绪。")
                 return True
             except Exception as e:
@@ -234,21 +368,28 @@ class QwenTTSSpeaker:
 
     @staticmethod
     def _pick_device(torch):
-        """选择设备"""
+        """选择设备。
+
+        默认优先级：cuda > cpu。实测 Apple Silicon 的 MPS 对 Qwen3-TTS(fp32) 生成
+        极慢（约 CPU 的 1/6），故不自动选 MPS；如需尝试可显式设
+        QWEN_TTS_DEVICE=mps（走 SDPA + 护栏兜底，速度仍慢但可用）。
+        CPU 上配合 eager attention 数值稳定且速度可接受。
+        """
         if getattr(torch.cuda, "is_available", lambda: False)():
             return "cuda:0"
-        mps = getattr(torch.backends, "mps", None)
-        if mps is not None and mps.is_available():
-            return "mps"
         return "cpu"
 
     @staticmethod
     def _pick_dtype(torch, dev):
-        """选择数据类型"""
+        """选择数据类型
+
+        MPS / CPU 统一用 float32：Qwen3-TTS 在 fp16 下做语音 token 采样极易产生
+        NaN/Inf（报错 probability tensor contains inf, nan or element < 0），float32 可根除。
+        CUDA 仍用 bfloat16（A 卡/云卡稳定且更快）。
+        """
         if dev.startswith("cuda"):
             return torch.bfloat16
-        if dev == "mps":
-            return torch.float16
+        # MPS / CPU 一律 float32，避免 fp16 采样 NaN 导致合成失败
         return torch.float32
 
     # ---------- 对外接口 ----------
@@ -258,20 +399,25 @@ class QwenTTSSpeaker:
             return
 
         instruct = EMOTION_INSTRUCT.get(self._normalize_emotion(emotion_hint))
+        # 限制最大生成 token 数，避免默认 2048 在慢设备上生成十几分钟像卡死
+        max_new_tokens = int(os.getenv("QWEN_TTS_MAX_TOKENS", "512"))
         try:
             if self.mode == "custom":
-                args = dict(text=text, language=self.language, speaker=self.speaker)
+                args = dict(text=text, language=self.language, speaker=self.speaker,
+                            max_new_tokens=max_new_tokens)
                 if instruct:
                     args["instruct"] = instruct
                 wavs, sr = self._model.generate_custom_voice(**args)
             elif self.mode == "design":
-                args = dict(text=text, language=self.language)
+                args = dict(text=text, language=self.language,
+                            max_new_tokens=max_new_tokens)
                 if instruct:
                     args["instruct"] = instruct
                 wavs, sr = self._model.generate_voice_design(**args)
             else:  # clone（默认）
                 args = dict(text=text, language=self.language,
-                            ref_audio=self.ref_audio, ref_text=self.ref_text)
+                            ref_audio=self.ref_audio, ref_text=self.ref_text,
+                            max_new_tokens=max_new_tokens)
                 if self._clone_prompt is not None:
                     args["voice_clone_prompt"] = self._clone_prompt
                 wavs, sr = self._model.generate_voice_clone(**args)

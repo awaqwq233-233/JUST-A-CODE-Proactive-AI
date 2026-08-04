@@ -491,8 +491,14 @@ class MainWindow(QMainWindow):
             self.runtime.stop()
 
     def _on_state_change(self, running):
-        """当状态变化"""
+        """当状态变化
+
+        关键修复：启动时 _toggle_run 会把按钮 setEnabled(False) 防重复点击，
+        启动成功后必须在此重新 setEnabled(True)，否则按钮虽显示「停止」却仍是
+        禁用态（灰色），用户点不动、无法停止程序。
+        """
         self.start_btn.setText("停止" if running else "启动")
+        self.start_btn.setEnabled(True)  # 运行/停止两种状态都必须可点击
         self._set_options_enabled(not running)
 
     def _set_options_enabled(self, en):

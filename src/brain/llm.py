@@ -291,16 +291,22 @@ class LocalBrain:
                 reasoning = data.get("choices", [{}])[0].get("message", {}).get("reasoning_content", "")
                 if reasoning:
                     print("[System] content 为空，尝试从 thinking 中恢复最终回答（避免把思考链当答案念出）")
-                    # Qwen3 偶尔把 [情绪] 最终回答写在思考链末尾：
-                    # 取最后一个情绪标签之后的文本作为最终回答。
-                    tags = list(re.finditer(r"[\[【](.*?)[\]】]", reasoning))
-                    recovered = reasoning[tags[-1].end():].strip() if tags else ""
+                    # Qwen3 把 [情绪] 最终回答写在思考链末尾：锁定【最后一个情绪标记】
+                    # 之后（或最后一个「情绪词，」之后）作为最终回答，避免取到开头的
+                    # 提示词回吐（如「【铁律】...」）或步骤分析，导致朗读出废话。
+                    import re as _re
+                    em_b = list(_re.finditer(r"[\[【](热情|平静|关怀|鼓励|开心|惊讶|悲伤|生气)[\]】]", reasoning))
+                    em_w = list(_re.finditer(r"(热情|平静|关怀|鼓励|开心|惊讶|悲伤|生气)[，:,：]", reasoning))
+                    if em_b:
+                        recovered = reasoning[em_b[-1].end():].strip()
+                    elif em_w:
+                        recovered = reasoning[em_w[-1].end():].strip()
+                    else:
+                        # 没有情绪标记则退一步取思考链最后一段非空内容
+                        tail = [s for s in reasoning.split("\n\n") if s.strip()]
+                        recovered = tail[-1].strip() if tail else ""
                     if recovered:
                         return recovered
-                    # 没有情绪标签则退一步取思考链最后一段非空内容
-                    tail = [s for s in reasoning.split("\n\n") if s.strip()]
-                    if tail:
-                        return tail[-1].strip()
                 print(f"[Debug] LM Studio returned empty content: {json.dumps(data, ensure_ascii=False)[:500]}")
                 return "（刚才走神了，能再问一次吗？）"
             return content

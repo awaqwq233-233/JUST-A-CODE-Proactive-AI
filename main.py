@@ -200,6 +200,30 @@ def build_text_only_vision_reply(user_text, vision_info, brain, temperature):
         return "[平静] 我眼前暂时没有拿到最新画面，你可以稍等一下再问我一次。"
     return f"[平静] {vision_info}"
 
+def _strip_boilerplate(text):
+    """
+    剔除模型偶尔回吐的系统提示词废话行（思考链 / 格式说明 / 铁律等）。
+
+    现象：Qwen3 在 content 为空、答在 reasoning 末尾时，原始输出会混入
+    「【铁律】...必须且仅用简体中文」「（可选：热情、平静...）口语化描述」等提示词
+    片段，直接朗读会很怪。这里按行过滤掉明显是指令的行，保留真正的描述。
+    """
+    import re
+    if not text:
+        return text
+    kept = []
+    for ln in text.split("\n"):
+        s = ln.strip()
+        if not s:
+            continue
+        if re.search(r"铁律|可选：|口语化描述|根据视觉信息|推理过程|"
+                     r"编号列表|项目符号|输出格式|必须且仅用|Markdown|思考链|"
+                     r"再次检查|再次确认", s):
+            continue
+        kept.append(s)
+    return "\n".join(kept).strip()
+
+
 def process_response(text, brain, speaker):
     """
     核心对话逻辑：思考 -> 回复
@@ -309,24 +333,30 @@ def process_response(text, brain, speaker):
             print("[提示] 大脑返回为空，跳过回复。")
             return
 
-        # 解析情绪与内容
+        # 解析情绪与内容（鲁棒抽取）
+        # 模型偶尔把系统提示词 / 思考链一起吐出来（content 为空、真正答句在输出末尾），
+        # 此时「[情绪] 描述」在末尾。优先取【最后一个情绪标记】之后，其次取最后一个
+        # 「情绪词，」之后，最后兜底取最后一段；并剔除提示词式废话。
         import re
+        EMOTIONS = "热情|平静|关怀|鼓励|开心|惊讶|悲伤|生气"
         emotion = "平静"  # 默认
-        response_text = full_response
-
-        # 1) 先从任意位置提取情绪标签（支持 [xxx] 与 【xxx】）
-        tag_match = re.search(r"[\[【](热情|平静|关怀|鼓励|开心|惊讶|悲伤|生气)[\]】]", full_response)
-        if tag_match:
-            emotion = tag_match.group(1)
-        # 2) 去掉所有 [xxx] / 【xxx】 标签后再朗读，避免把“ [平静] ”读出来
-        cleaned = re.sub(r"\s*[\[【][^\[\]【】]*[\]】]\s*", "", full_response).strip()
-        if cleaned:
-            response_text = cleaned
+        em_bracket = list(re.finditer(r"[\[【](%s)[\]】]" % EMOTIONS, full_response))
+        em_word = list(re.finditer(r"(%s)[，:,：]" % EMOTIONS, full_response))
+        if em_bracket:
+            emotion = em_bracket[-1].group(1)
+            after = full_response[em_bracket[-1].end():]
+        elif em_word:
+            emotion = em_word[-1].group(1)
+            after = full_response[em_word[-1].end():]
         else:
-            response_text = full_response
+            after = full_response
+        after = _strip_boilerplate(after)
+        response_text = after.strip() if after.strip() else full_response.strip()
+        # 清掉可能残留的 [xxx]/【xxx】 标签，避免把「[平静]」读出来
+        response_text = re.sub(r"\s*[\[【][^\[\]【】]*[\]】]\s*", "", response_text).strip()
 
-        # 3) TTS 安全截断：仅当模型抽风产出极端超长文本（>400 字）时才截断，
-        #    正常 500 字以内的回复原样朗读，避免语音引擎卡顿、用户听不完。
+        # TTS 安全截断：仅当模型抽风产出极端超长文本（>400 字）时才截断，
+        # 正常 500 字以内的回复原样朗读，避免语音引擎卡顿、用户听不完。
         if len(response_text) > 400:
             print(f"[提示] 回复过长（{len(response_text)} 字），截断到 400 字后朗读。")
             response_text = response_text[:400]

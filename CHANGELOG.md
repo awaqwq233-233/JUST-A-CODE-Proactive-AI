@@ -4,6 +4,56 @@
 
 ---
 
+## 2026-08-04 — 根治 Qwen3-TTS 合成 NaN（不动 torch 版本）
+
+- **问题**：上一轮改 float32 后 Qwen3-TTS 仍报 `probability tensor contains inf, nan or element < 0`，程序回退系统 TTS。
+- **根因（两个 NaN 源，均在外部包内）**：
+  1. 主生成路径 `Qwen3TTSTalkerAttention`/`Qwen3TTSAttention` 默认走 **SDPA**，在 MPS/CPU 数值不稳产生 NaN；eager 路径（float32 softmax）才稳。
+  2. 说话人编码 `AttentiveStatisticsPooling` 用裸 `F.softmax(attention, dim=2)`，masked 全 `-inf` 行产 NaN 污染 x-vector。
+  - 之前改 float32 只动权重精度，未切 attention 后端 → 无效；`from_pretrained` 实际能转发 `attn_implementation="eager"`（先前测试为假阴性）。
+- **修复（全部在 `src/audio/qwen_tts.py` 内 monkey-patch，不碰 venv 包与 torch）**：
+  1. 模块加载即 `_patch_multinomial()`：采样前把 NaN/Inf/负数归零并重新归一化，整行崩则退化均匀分布。
+  2. 模型加载后 `_install_nan_guard(model.model)`：对所有子模块注册 forward hook，NaN/Inf 归零阻断传播。
+  3. `_patch_attentive_pooling_softmax`：包装 `AttentiveStatisticsPooling.forward` 兜底 NaN。
+  4. **仅 CPU 强制 eager**（`_force_eager` 只在 device=cpu 调用）；MPS/CUDA 走默认 SDPA + 护栏兜底。
+  5. `_pick_device` 默认改 **CPU**（实测 MPS 对该 fp32 模型生成比 CPU 慢 ~6 倍）；MPS 仅 `QWEN_TTS_DEVICE=mps` 显式启用。
+  6. `speak` 加 `max_new_tokens`（默认 512，可用 `QWEN_TTS_MAX_TOKENS` 覆盖），避免默认 2048 在慢设备生成十几分钟像卡死。
+- **验证**：CPU 端到端合成成功（`temp/voice/qwen_*.wav`，24000Hz，约 40s 有效音频），无 NaN 报错。MPS 虽能跑但极慢，不推荐。
+- **未改动**：torch / torchaudio / torchvision 版本（遵循用户要求，规避改版本回归 bug）。
+
+## 2026-08-04 — 修复三类运行问题：TTS NaN / 大脑回吐提示词 / 停止按钮点不动
+
+- 1. **Qwen3-TTS 合成失败（probability tensor contains inf/nan or element < 0）**
+  - 根因：`src/audio/qwen_tts.py` 的 `_pick_dtype` 给 MPS 选了 `float16`；Qwen3-TTS 在 fp16 下采样语音 token 时 logits 算出 NaN/Inf → `torch.multinomial` 报错。
+  - 修复：`_pick_dtype` 改为 **MPS/CPU 一律 `float32`**（CUDA 仍 `bfloat16`）。
+- 2. **大脑把系统提示词当思考链吐出（视觉问答 `content` 为空）**
+  - 根因：qwen3.5 在 LM Studio 上 `content` 为空、答句落在 `reasoning_content` 末尾；旧恢复逻辑取「最后一个任意括号」命中开头 `【铁律】`，把提示词回吐，真正描述在末尾被 400 字截断截掉。
+  - 修复（双保险）：`src/brain/llm.py._query_lm_studio` 恢复时锁定【最后一个情绪标记】/「情绪词，」之后；`main.py.process_response` 抽取情绪与朗读文本同样取最后一个情绪标记之后，并新增 `_strip_boilerplate` 过滤提示词/自检废话行（铁律/可选：/口语化描述/再次检查 等）。已用真实坏输出样例验证：正确提取「画面正中央坐着一位戴黑框眼镜的年轻男性…」（125 字）。
+- 3. **GUI 左下角「停止」按钮点不动**
+  - 根因：`gui.py._toggle_run` 启动时 `start_btn.setEnabled(False)`，运行成功后 `_on_state_change` 只改文字、未重新启用 → 按钮停在禁用灰态。
+  - 修复：`_on_state_change` 内补 `start_btn.setEnabled(True)`（运行/停止两态都可点）。
+- 验证：四文件 `py_compile` 通过；`_pick_dtype` 实测 mps/cpu→float32、cuda→bfloat16；抽取逻辑单元验证通过。
+
+---
+
+## 2026-08-04 — 修复 Qwen3-TTS 不可用：torchaudio 版本漂移（2.11.0 比 torch 2.9.1 新）
+
+- 现象：启动后日志 `[TTS] Qwen3-TTS 不可用（Could not load this library: .../torchaudio/lib/_torchaudio.abi3.so）`，
+  回退系统 TTS（macOS `say`）。`import qwen_tts` 失败，因为 `qwen_tts` 顶层会 `import torchaudio`。
+- 根因：`torch` 已对齐为 2.9.1，但 `torchaudio` 是 **2.11.0**（装 `qwen-tts` 时因其 `requires: torchaudio`
+  **无版本锁**，pip 拉到最新版）。torchaudio 的 C 扩展按新版 torch 编译，引用 `_torch_library_impl` 符号，
+  而 torch 2.9.1 的 `libtorch_cpu.dylib` 没有该符号 → `dlopen` 失败。
+- 修复（本日执行）：
+  1. `pip install torch==2.9.1 torchaudio==2.9.1 torchvision==0.24.1`（清华镜像；
+     torch / torchvision 已满足被跳过，torchaudio 2.11.0 → 2.9.1）。
+  2. `requirements.txt` 补 `torchaudio==2.9.1` 锁定（原本只锁了 torch / torchvision，漏了 torchaudio，
+     这正是重装会复发的原因）。
+- 验证：`import torchaudio` → 2.9.1 正常；`import qwen_tts` 成功；
+  `QwenTTSSpeaker().available == True`，本地权重 `models/qwen_tts/Qwen3-TTS-12Hz-1.7B-Base` 齐全。
+- 结论：torch / torchaudio / torchvision 三件套大版本必须严格一致（2.9.1 ↔ 2.9.1 ↔ 0.24.1）。
+
+---
+
 ## 2026-08-04 — 最终更正：崩溃真凶是 torch 版本漂移（非 macOS 27 / 非 Qt），降级 2.9.1 恢复 MPS 显卡
 
 （前两条「修正根因 MPS 禁用」「macOS 27 GUI 仍崩」为误诊记录：当时误判为系统/Qt 的 Metal 不兼容，

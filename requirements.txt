@@ -87,6 +87,7 @@ sympy==1.14.0
 tiktoken==0.12.0
 tokenizers==0.22.1
 torch==2.9.1
+torchaudio==2.9.1  # 必须与 torch 大版本严格一致；未锁版本时 pip 装 qwen-tts 会拉到最新版导致 _torch_library_impl 符号缺失、Qwen3-TTS 加载失败
 torchvision==0.24.1
 transformers==4.44.0
 mlx-vlm==0.0.23
