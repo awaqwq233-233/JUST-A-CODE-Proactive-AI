@@ -114,6 +114,7 @@ def _load_qwen_tts():
 # 全局状态
 running = True
 conversation_running = False
+DISPLAY_ENABLED = True  # 是否创建 OpenCV 显示窗口；纯终端模式(无 Metal)时置 False
 conversation_lock = threading.Lock()
 # 单飞锁：保证同一时刻只有一个 process_response 在跑（语音/手动输入/判断介入三来源并发时防卡死）
 think_lock = threading.Lock()
@@ -293,6 +294,12 @@ def process_response(text, brain, speaker):
                 # 终端下 end="" 营造打字机效果；GUI 下每个 chunk 也会实时进入控制台队列
                 print(chunk, end="", flush=True)
             print()  # 流式结束后补一个换行
+            # 兜底：流式偶发返回空（LM Studio 并发/繁忙）时，补一次非流式请求重试，
+            # 避免 full_response 为空导致本轮直接"跳过回复"。
+            if not full_response or not full_response.strip():
+                print("[提示] 流式返回为空，改用非流式请求重试一次。")
+                full_response = brain.think(text, system_prompt=system_prompt,
+                                            temperature=temperature, max_tokens=256)
 
         print(f"[J.A.C 原始回复] {full_response}")
 
@@ -530,6 +537,7 @@ def main():
     """主"""
     global running
     global conversation_running
+    global DISPLAY_ENABLED
     # 在任何网络下载（Whisper / Qwen3-TTS 权重）之前应用 SSL 设置；
     # 仅在环境变量 JAC_HF_INSECURE=1 时关闭证书校验（应对代理自签证书环境）
     setup_insecure_ssl()
@@ -682,21 +690,26 @@ def main():
             # cv2.putText(annotated_frame, summary[:30], (10, 110), 
             #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-            cv2.imshow('J.A.C Multimodal Interface', annotated_frame)
-            
-            # --- 交互 ---
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
-                running = False
-                audio_stop.set()
-                break
-            elif key == 32: # Space 键
-                # 手动唤醒
-                print("[交互] 手动唤醒触发")
-                SYSTEM_STATE = "AWAKE"
-                LAST_INTERACTION_TIME = time.time()
-                if speaker:
-                    speaker.speak("我在，请讲。", emotion_hint="热情")
+            # 显示渲染：仅在有窗口时(imshow 在 macOS 27 等系统上会触发 Qt/OpenCV 的
+            # Metal 崩溃，纯终端模式 DISPLAY_ENABLED=False 完全跳过，零渲染、零 Metal)。
+            if DISPLAY_ENABLED:
+                cv2.imshow('J.A.C Multimodal Interface', annotated_frame)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    running = False
+                    audio_stop.set()
+                    break
+                elif key == 32:  # Space 键：手动唤醒
+                    # 手动唤醒
+                    print("[交互] 手动唤醒触发")
+                    SYSTEM_STATE = "AWAKE"
+                    LAST_INTERACTION_TIME = time.time()
+                    if speaker:
+                        speaker.speak("我在，请讲。", emotion_hint="热情")
+            else:
+                # 纯终端模式：不创建任何窗口。退出用 Ctrl+C(KeyboardInterrupt)；
+                # 对话用语音唤醒或直接在控制台输入文字回车。
+                time.sleep(0.005)
             
             # --- 前导判断引擎介入检查 ---
             if JUDGMENT_ACTIVATED:
@@ -729,7 +742,8 @@ def main():
             except Exception:
                 pass
         camera.stop()
-        cv2.destroyAllWindows()
+        if DISPLAY_ENABLED:
+            cv2.destroyAllWindows()
         # 等待音频线程退出（stop_event 已置位，录音循环会在一个 chunk 内退出），再关闭 PyAudio
         try:
             audio_thread.join(timeout=2)
@@ -744,10 +758,15 @@ def main():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="J.A.C. 多模态助手")
     parser.add_argument("--headless", action="store_true",
-                        help="不使用 GUI，改用旧版 cv2 窗口回退（无显示器环境）")
+                        help="纯终端模式：完全不创建任何窗口（无 Qt / 无 OpenCV 窗口），"
+                             "避开 macOS 27 等系统上 Qt/OpenCV 的 Metal 渲染崩溃")
+    parser.add_argument("--console", action="store_true",
+                        help="同 --headless，纯终端模式（推荐在 Metal 不兼容环境使用）")
     args = parser.parse_args()
     config = Config.load()
-    if args.headless:
+    if args.headless or args.console:
+        # 纯终端模式：禁用一切窗口渲染，功能通过语音唤醒 + 控制台输入完成
+        DISPLAY_ENABLED = False
         main()
     else:
         from gui import run_gui

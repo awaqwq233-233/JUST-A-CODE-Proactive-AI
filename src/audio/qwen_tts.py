@@ -359,6 +359,9 @@ def play_wav(path):
             print(f"[播放] {path}")
     except Exception as e:
         print(f"[警告] WAV 播放失败: {e} ({path})")
+
+
+def ensure_qwen_tts(autoinstall=True, autodownload=False):
     """
     确保 qwen-tts 包可用：缺失时自动 pip 安装（国内优先清华镜像），
     并（可选）自动补全本地模型权重。返回是否可用。

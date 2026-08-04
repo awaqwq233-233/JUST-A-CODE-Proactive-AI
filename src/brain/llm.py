@@ -342,6 +342,9 @@ class LocalBrain:
                 print(f"[Error] LM Studio streaming returned {resp.status_code}: {err}")
                 yield "Sorry, brain connection has an issue."
                 return
+            # 累计已产出的文本：流结束若全程为空（LM Studio 并发/繁忙偶发返回空 choice），
+            # 补一句兜底，避免调用方拿到空串并跳过回复。
+            _accumulated = []
             for line in resp.iter_lines():
                 if not line:
                     continue
@@ -355,9 +358,13 @@ class LocalBrain:
                     obj = json.loads(data)
                     delta = obj["choices"][0]["delta"].get("content", "")
                     if delta:
+                        _accumulated.append(delta)
                         yield delta
                 except Exception:
                     continue
+            if not "".join(_accumulated).strip():
+                print("[System] 流式返回为空（LM Studio 可能繁忙/并发），补一句兜底回复。")
+                yield "（刚才走神了，能再问一次吗？）"
         except requests.exceptions.ReadTimeout:
             yield "My brain is thinking too slowly. Please try again later."
         except requests.exceptions.ConnectionError:

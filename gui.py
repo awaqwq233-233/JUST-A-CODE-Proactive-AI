@@ -7,10 +7,13 @@
   也不影响送入大模型的帧。
 - 所有开关/滑块仅在程序未运行时可调节，运行中锁定。
 """
+import os
 import sys
 import queue
 import logging
+import threading
 
+import numpy as np
 import main  # 复用 main.context 作为唯一共享上下文
 
 from PySide6.QtWidgets import (
@@ -105,9 +108,15 @@ class RoundedVideoLabel(QLabel):
     """把 pixmap 裁剪为圆角绘制，配合 #video 的圆角边框。
     关键：摄像头画面保持原始比例居中绘制，绝不拉伸填满标签矩形。"""
     def paintEvent(self, event):
-        """绘制事件"""
+        """绘制事件：圆角裁剪后等比绘制视频帧。
+
+        关键防御：pix 可能是 None，也可能是 isNull() 的空 QPixmap——
+        PySide6 在 QLabel 未设置 pixmap 时会返回空 QPixmap 而非 None。对空 pixmap
+        调用 scaled() 会打印 "QPixmap::scaled: Pixmap is a null pixmap" 并触发 macOS
+        Metal 后端断言崩溃(abort)。因此必须同时判 None 与 isNull()。
+        """
         pix = self.pixmap()
-        if pix is None:
+        if pix is None or pix.isNull():
             super().paintEvent(event)
             return
         painter = QPainter(self)
@@ -116,11 +125,18 @@ class RoundedVideoLabel(QLabel):
         path = QPainterPath()
         path.addRoundedRect(0, 0, self.width(), self.height(), r, r)
         painter.setClipPath(path)
-        # 等比缩放并居中，避免画面被拉伸变形
-        target = pix.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        x = (self.width() - target.width()) // 2
-        y = (self.height() - target.height()) // 2
-        painter.drawPixmap(x, y, target)
+        # 手动等比缩放绘制，避免调用 QPixmap.scaled() —— 该方法在 macOS
+        # Metal 后端会触发 "_status < MTLCommandBufferStatusCommitted" 断言崩溃(abort)。
+        pw, ph = pix.width(), pix.height()
+        lw, lh = self.width(), self.height()
+        if pw <= 0 or ph <= 0:
+            super().paintEvent(event)
+            return
+        scale = min(lw / pw, lh / ph)
+        dw, dh = int(pw * scale), int(ph * scale)
+        x = (lw - dw) // 2
+        y = (lh - dh) // 2
+        painter.drawPixmap(x, y, dw, dh, pix)
 
 
 # ----------------------------- 多行输入框 -----------------------------
@@ -388,15 +404,36 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------- 取帧
     def _pull_frame(self):
+        """从共享上下文取标注帧并绘制到视频标签（带空帧/空 pixmap 防御）。
+
+        macOS Metal 后端对空 QPixmap 做 scaled() 会断言崩溃(abort)，故任何一
+        环拿到空对象都直接跳过本次绘制，绝不把空 pixmap 交出去渲染。
+        """
         f = self.context.get_annotated_frame()
         if f is None:
             return
-        h, w, ch = f.shape
+        try:
+            h, w, ch = f.shape
+        except Exception:
+            return
+        if h <= 0 or w <= 0 or ch <= 0:
+            return
+        # cv2 帧需内存连续，否则 QImage 绑定到错位缓冲会得到损坏/空的 pixmap
+        try:
+            _contiguous = bool(f.flags["C_CONTIGUOUS"])
+        except Exception:
+            _contiguous = False
+        if not _contiguous:
+            f = np.ascontiguousarray(f)
         img = QImage(f.data, w, h, ch * w, QImage.Format_BGR888)
+        if img.isNull():
+            return
         pix = QPixmap.fromImage(img)
-        target = self.video_label.size()
-        scaled = pix.scaled(target, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.video_label.setPixmap(scaled)
+        if pix.isNull():
+            return
+        # 不做 scaled：缩放交给 RoundedVideoLabel.paintEvent 用 drawPixmap 等比绘制，
+        # 避免在 Metal 后端对 QPixmap 二次 scaled 触发断言崩溃(abort)。
+        self.video_label.setPixmap(pix)
 
     # ----------------------------------------------------- 取日志
     def _pull_logs(self):
@@ -425,15 +462,31 @@ class MainWindow(QMainWindow):
     def _toggle_run(self):
         if not self.runtime.running:
             cfg = self._collect_config()
-            try:
-                self.runtime.start(cfg)
-            except Exception as e:
-                self.console.appendPlainText(f"[GUI] 启动失败: {e}")
-                return
-            if not self.runtime.running:
-                self.console.appendPlainText(
-                    "[GUI] 启动未完成（摄像头/模型未就绪），请检查设备与 LM Studio。"
-                )
+            # 把重活放到后台线程：摄像头/YOLO/Whisper/Qwen3-TTS/记忆加载
+            # 全在主线程同步执行会长时间阻塞事件循环，macOS 会判为「未响应」，
+            # 并在阻塞期间任何绘制请求下放大 Metal 崩溃概率。后台跑可保 GUI 流畅。
+            self.start_btn.setEnabled(False)
+            self.start_btn.setText("启动中…")
+
+            def _do_start():
+                try:
+                    self.runtime.start(cfg)
+                except Exception as e:
+                    self.console.appendPlainText(f"[GUI] 启动失败: {e}")
+                # 成功时 _on_state_change 已把按钮置为「停止」；
+                # 失败时需在此恢复按钮可交互，否则会卡在「启动中…」。
+                if not self.runtime.running:
+                    self.console.appendPlainText(
+                        "[GUI] 启动未完成（摄像头/模型未就绪），请检查设备与 LM Studio。"
+                    )
+                    # 跨线程回主线程恢复 UI
+                    QTimer.singleShot(0, lambda: (
+                        self.start_btn.setEnabled(True),
+                        self.start_btn.setText("启动"),
+                        self._set_options_enabled(True),
+                    ))
+
+            threading.Thread(target=_do_start, daemon=True, name="gui-start").start()
         else:
             self.runtime.stop()
 

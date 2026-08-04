@@ -44,6 +44,17 @@ def _apply_hf_mirror():
     else:
         print(f"[Embedder] 使用现有 HF_ENDPOINT={os.environ['HF_ENDPOINT']} 下载向量模型。")
 
+    # 向量模型缓存目录：fastembed 在未显式设置 FASTEMBED_CACHE_PATH 时，默认会把
+    # 权重落到系统临时目录（macOS 为 /var/folders/.../T/fastembed_cache）。该目录在
+    # 重启或清理临时文件后会被清空，导致每次启动都要重新联网下载。这里固定到一个
+    # 用户级持久目录，避免重复下载、也顺带让缓存与 HF 主缓存（~/.cache/huggingface）
+    # 区分开，便于排查。
+    if not os.environ.get("FASTEMBED_CACHE_PATH"):
+        _fb_cache = os.path.join(os.path.expanduser("~"), ".cache", "fastembed")
+        os.makedirs(_fb_cache, exist_ok=True)
+        os.environ["FASTEMBED_CACHE_PATH"] = _fb_cache
+        print(f"[Embedder] 向量模型缓存目录固定为 {_fb_cache}（避免临时目录被清理后重复下载）")
+
     if os.environ.get("JAC_HF_INSECURE") == "1":
         os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
         os.environ["PYTHONHTTPSVERIFY"] = "0"
@@ -66,13 +77,23 @@ class MemoryEmbedder:
         self._model = None
         self._dim: Optional[int] = None
         self.available: bool = False
+        # 加载熔断标志：保证 _ensure_loaded 全进程只真正尝试一次，避免刷屏
+        self._load_attempted: bool = False
 
     # ------------------------- lazy load -------------------------
 
     def _ensure_loaded(self) -> bool:
-        """确保已加载"""
-        if self._model is not None:
+        """确保已加载。
+
+        熔断机制：整个进程生命周期内只尝试加载一次。无论成功或失败，
+        后续调用直接返回缓存的 available 状态，不再重复连接 HuggingFace /
+        重试模型加载，避免每轮对话（每次 embed）都刷屏打印镜像信息与失败原因。
+        """
+        # 已尝试过加载（成功或失败）：直接返回缓存结果，不再重试、不再打印
+        if self._load_attempted:
             return self.available
+        self._load_attempted = True
+
         # 下载权重前先应用 HF 镜像 / SSL 设置（国内网络必需），提高首次加载成功率
         try:
             _apply_hf_mirror()
