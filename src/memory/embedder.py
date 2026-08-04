@@ -21,7 +21,38 @@ from __future__ import annotations
 import os
 from typing import List, Optional
 
-_DEFAULT_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+# 注意：fastembed 的 TextEmbedding 要求带命名空间前缀的模型名（裸名会报
+# "is not supported in TextEmbedding"）。paraphrase-multilingual 系列是真正的
+# 多语言模型，中英通吃、无需 query/passage 前缀，作为默认最稳妥。
+_DEFAULT_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+
+
+def _apply_hf_mirror():
+    """加载向量模型前，自动配置 HuggingFace 镜像与按需关闭 SSL 校验。
+
+    国内网络直连 huggingface.co 常被掐断，导致 fastembed 权重下载失败、
+    Embedder 无声降级为关键词检索。这里：
+      - 未显式设置 HF_ENDPOINT 时，默认指向 hf-mirror.com 镜像；
+      - 若 JAC_HF_INSECURE=1（代理/防火墙 TLS 拦截环境），关闭 SSL 证书校验，
+        使下载能正常进行（仅限可信内网）。
+
+    已在环境变量显式配置的情况下尊重用户设置，不覆盖。
+    """
+    if not os.environ.get("HF_ENDPOINT"):
+        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+        print("[Embedder] 未检测到 HF_ENDPOINT，已默认使用镜像 https://hf-mirror.com 下载向量模型。")
+    else:
+        print(f"[Embedder] 使用现有 HF_ENDPOINT={os.environ['HF_ENDPOINT']} 下载向量模型。")
+
+    if os.environ.get("JAC_HF_INSECURE") == "1":
+        os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
+        os.environ["PYTHONHTTPSVERIFY"] = "0"
+        try:
+            import ssl
+            ssl._create_default_https_context = ssl._create_unverified_context
+        except Exception:
+            pass
+        print("[Embedder] JAC_HF_INSECURE=1：已关闭 SSL 证书校验（仅限可信内网/代理环境）。")
 
 
 class MemoryEmbedder:
@@ -42,6 +73,11 @@ class MemoryEmbedder:
         """确保已加载"""
         if self._model is not None:
             return self.available
+        # 下载权重前先应用 HF 镜像 / SSL 设置（国内网络必需），提高首次加载成功率
+        try:
+            _apply_hf_mirror()
+        except Exception as e:
+            print(f"[Embedder] 配置 HF 镜像失败（可忽略）：{e}")
         try:
             from fastembed import TextEmbedding  # 延迟 import，缺包时不崩
         except Exception as e:
@@ -61,8 +97,9 @@ class MemoryEmbedder:
             self.available = False
             self._model = None
             hint = ""
-            if "Connection" in str(e) or "HF" in str(e) or "download" in str(e).lower():
-                hint = "（国内网络请先设置 HF_ENDPOINT=https://hf-mirror.com 再启动）"
+            err = str(e)
+            if "Connection" in err or "HF" in err or "download" in err.lower():
+                hint = "（已自动尝试 HF 镜像 hf-mirror.com；若仍失败可设置 JAC_HF_INSECURE=1 处理代理自签证书，或保持关键词检索）"
             print(f"[Embedder] 模型加载失败，向量检索降级为关键词：{e}{hint}")
         return self.available
 

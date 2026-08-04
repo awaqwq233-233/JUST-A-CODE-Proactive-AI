@@ -26,6 +26,7 @@ from src.brain.llm import LocalBrain
 from src.memory import MemoryManager
 from src.judgment.judge import JudgmentEngine
 from src.utils.config import Config
+from src.utils.net import setup_insecure_ssl
 
 
 logger = logging.getLogger("runtime")
@@ -56,6 +57,9 @@ class JACRuntime:
         main.running = True
         self.running = True
         self.config = config
+        # 在任何网络下载（Whisper / Qwen3-TTS 权重）之前应用 SSL 设置；
+        # 仅在环境变量 JAC_HF_INSECURE=1 时关闭证书校验（应对代理自签证书环境）
+        setup_insecure_ssl()
 
         # 1) 摄像头（采集分辨率固定，绝不被 GUI 缩放影响）
         self.camera = Camera(
@@ -78,7 +82,11 @@ class JACRuntime:
         QWEN_TTS_AVAILABLE = False
         if config.use_qwen_tts:
             try:
-                from src.audio.qwen_tts import QwenTTSSpeaker, QWEN_TTS_AVAILABLE
+                from src.audio import qwen_tts as _qt
+                if _qt.ensure_qwen_tts():
+                    import importlib
+                    importlib.reload(_qt)
+                    from src.audio.qwen_tts import QwenTTSSpeaker, QWEN_TTS_AVAILABLE
             except Exception as e:
                 print(f"[TTS] Qwen3-TTS 不可用（{e}），将回退系统 TTS。")
         if QwenTTSSpeaker is not None and QWEN_TTS_AVAILABLE:
@@ -110,6 +118,7 @@ class JACRuntime:
                 model_name=config.judgment_model_name,
                 interval=config.judgment_interval,
                 timeout=config.judgment_timeout,
+                cooldown=config.judgment_cooldown,
             )
             je.set_context(self.context)
             if je.check_available():
@@ -249,17 +258,28 @@ class JACRuntime:
 
     # ---------------------------------------------------------------- 外部指令
     def manual_input(self, text: str):
-        """手动输入"""
+        """手动输入（GUI 输入框 / 发送按钮入口）。
+
+        对话分支必须放到独立 worker 线程执行，绝不能留在 Qt 主线程：
+        process_response 内部是同步阻塞的 HTTP 请求（视觉查询 think_with_image
+        走非流式，timeout 默认 120s），若在主线程执行会直接冻结 Qt 事件循环，
+        表现为「程序未响应 / 界面卡死」。记忆命令因含交互式 input() 仍留在主线程。
+        """
         text = (text or "").strip()
         if not text:
             return
         if text.lower().startswith("记忆"):
+            # 记忆命令含交互式 input()，GUI 下仍由 Qt 主线程处理
             main.handle_memory_command(text)
         else:
-            main.handle_user_text(
-                text, self.speaker, self.brain,
-                source="控制台", bypass_wake=True,
-            )
+            # 丢到后台线程，避免阻塞 GUI 主线程导致界面冻结
+            threading.Thread(
+                target=main.handle_user_text,
+                args=(text, self.speaker, self.brain),
+                kwargs={"source": "控制台", "bypass_wake": True},
+                daemon=True,
+                name="manual-input",
+            ).start()
 
     def manual_wake(self):
         """手动唤醒（等价于原空格键）。"""

@@ -49,12 +49,29 @@ class Speaker:
             import pyttsx3
             self.engine = pyttsx3.init()
             self.engine.setProperty('rate', 150)
-            
+
             voices = self.engine.getProperty('voices')
+            # 优先选明确的普通话嗓色（Tingting / Mei-Jia / 普通话），其次含 Chinese/zh 的
+            preferred = ("Tingting", "Mei-Jia", "普通话", "Chinese", "zh")
+            chosen = None
             for voice in voices:
-                if 'Chinese' in voice.name or '普通话' in voice.name or 'zh' in voice.languages:
-                    self.engine.setProperty('voice', voice.id)
+                vname = voice.name or ""
+                vlanguages = " ".join(voice.languages) if isinstance(voice.languages, (list, tuple)) else str(voice.languages)
+                if any(p in vname for p in ("Tingting", "Mei-Jia", "普通话")):
+                    chosen = voice
                     break
+            if chosen is None:
+                for voice in voices:
+                    vname = voice.name or ""
+                    vlanguages = " ".join(voice.languages) if isinstance(voice.languages, (list, tuple)) else str(voice.languages)
+                    if 'Chinese' in vname or '普通话' in vname or 'zh' in vlanguages:
+                        chosen = voice
+                        break
+            if chosen is not None:
+                self.engine.setProperty('voice', chosen.id)
+                print(f"[TTS] 系统语音已选中文嗓色: {chosen.name}")
+            else:
+                print("[TTS] 未找到中文嗓色，使用默认嗓色（可能是英文）。")
         except Exception as e:
             print(f"[警告] pyttsx3 在 macOS 上初始化失败: {e}")
             print("[提示] 将使用系统自带的 say 命令")
@@ -130,12 +147,16 @@ class Speaker:
 
     def _macos_say_command(self, text):
         """
-        使用 macOS 系统自带的 say 命令进行语音合成
+        使用 macOS 系统自带的 say 命令进行语音合成（指定中文嗓色 Tingting）
         """
         try:
             import subprocess
-            subprocess.run(['say', '-v', 'Tingting', text], 
-                         capture_output=True, text=True)
+            r = subprocess.run(['say', '-v', 'Tingting', text],
+                               capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"[警告] macOS say 命令失败: {r.stderr.strip()[:200]}")
+            else:
+                print("[TTS] (say 回退) 播放完成")
         except Exception as e:
             print(f"[错误] macOS say 命令失败: {e}")
 

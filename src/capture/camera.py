@@ -47,35 +47,43 @@ class Camera:
     def start(self):
         """
         启动摄像头
+
+        兼容 macOS 摄像头授权弹窗的时序：首次打开常因权限尚未授予而失败，
+        这里在失败后等待 2 秒重试一次（权限弹窗点允许后设备即可用）。
         """
         # 自动检测默认摄像头（如果未指定）
         if self.camera_id is None:
             print("[系统] 正在自动检测默认摄像头...")
             self.camera_id = self.find_default_camera()
             print(f"[系统] 使用摄像头 ID: {self.camera_id}")
-        
-        print(f"[系统] 正在尝试打开摄像头 (ID: {self.camera_id})...")
-        
-        if IS_MACOS:
+
+        last_err = ""
+        for attempt in range(2):
+            print(f"[系统] 正在尝试打开摄像头 (ID: {self.camera_id})... (尝试 {attempt + 1}/2)")
             self.cap = cv2.VideoCapture(self.camera_id)
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
             self.cap.set(cv2.CAP_PROP_FPS, 30)
-        else:
-            self.cap = cv2.VideoCapture(self.camera_id)
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-        
-        if not self.cap.isOpened():
-            print("[错误] 无法打开摄像头！请检查设备连接。")
-            if IS_MACOS:
-                print("[提示] macOS 用户请确保已授权摄像头访问权限")
-            self.is_running = False
-            return False
-        
-        print(f"[系统] 摄像头启动成功。分辨率: {self.width}x{self.height}")
-        self.is_running = True
-        return True
+
+            if self.cap.isOpened():
+                print(f"[系统] 摄像头启动成功。分辨率: {self.width}x{self.height}")
+                self.is_running = True
+                return True
+
+            # 失败：释放后重试（macOS 权限弹窗后设备可能稍后才就绪）
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+            last_err = "无法打开摄像头"
+            if attempt == 0:
+                print("[提示] 摄像头首次打开失败，2 秒后自动重试（若 macOS 弹出摄像头权限请求，请点「允许」）。")
+                time.sleep(2)
+
+        print(f"[错误] {last_err}！请检查设备连接。")
+        if IS_MACOS:
+            print("[提示] macOS 用户请确保已授权摄像头访问权限（系统设置 → 隐私与安全性 → 摄像头）")
+        self.is_running = False
+        return False
 
     def get_frame(self):
         """

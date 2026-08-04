@@ -85,3 +85,7 @@ node_modules/
 # Office temp/lock files (Word ~$ prefix)
 ~$*.docx
 ~$*.doc
+
+# 第三方 Qwen3-TTS WebUI 一键包（用户临时放入，Windows 专用、含 9GB+ 捆绑 Python 与不完整模型缓存）
+# 不是项目源码，禁止提交；其中的「银狼」参考音已提取到 voices/silverwolf_template_from_qwentts3.wav。
+qwentts3/

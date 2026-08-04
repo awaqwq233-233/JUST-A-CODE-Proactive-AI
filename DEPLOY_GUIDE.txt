@@ -89,6 +89,42 @@ J.A.C. - Just A Code 智能眼镜助手 - 全套离线/迁移部署指南
    QWEN_TTS_MODEL 切换（详见 src/audio/qwen_tts.py 顶部说明）。离线部署时把
    QWEN_TTS_MODEL 指向本地模型目录即可。
 
+   **【重要】权重必须完整（半截下载是 TTS 起不来的头号原因）**：
+   只判断"目录/文件存在"会被截断的半截下载骗过。请下载后务必校验：
+     python download_models.py --check          # 官方完整性检查（含 safetensors 头部大小比对）
+   - 看到 model.safetensors [✓] 且结果 [完整 ✅] 才算 OK；
+   - 若显示 [✗] 截断，重跑 `python download_models.py --size 1.7B --mode clone --insecure`
+     即可增量续传（已完整文件跳过、截断文件自动 `--retry` 续传），直到 --check 通过。
+   - 权重不完整时程序不会崩，会自动回退系统 TTS（macOS 中文嗓色），只是没有克隆音色。
+
+6. [Embedder 向量记忆模型] (长期记忆语义检索，可选但推荐)
+   J.A.C. 长期记忆默认开启语义向量检索，需要 fastembed 的 ONNX 向量模型权重
+   `qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q`（中英通吃，约 100MB，无需 torch）。
+   包 `fastembed` 已在 requirements.txt（已随依赖安装），**缺的只是权重文件**。
+   权重会在你首次启用记忆（启动 J.A.C.）时自动从 HuggingFace 下载；若国内网络被墙或
+   你想离线/手动预置，按下面任一种方式处理。
+
+   **方式 A：让程序自动下载（最简单，国内需先设镜像）**
+   启动 J.A.C. 前在终端执行：
+     export HF_ENDPOINT=https://hf-mirror.com     # 国内走 HF 镜像（代码现也会自动设）
+     export JAC_HF_INSECURE=1                      # 仅当你的网络有代理自签证书拦截时加
+     python main.py
+   启动后日志出现 `[Embedder] 已加载向量模型 ...（维度 384）` 即成功；
+   若仍下载失败会打印 `[Embedder] 模型加载失败，向量检索降级为关键词：...`，
+   **不影响程序运行**，记忆检索仅退化为关键词匹配。
+
+   **方式 B：手动下载权重并放到缓存目录（完全离线）**
+   默认缓存根目录（fastembed 用）：`$TMPDIR/fastembed_cache`
+     - macOS 实际路径通常为 /var/folders/<随机>/T/fastembed_cache
+     - 可用环境变量 FASTEMBED_CACHE_PATH 覆盖，例如：
+         export FASTEMBED_CACHE_PATH=$HOME/.cache/fastembed
+   手动拉取（推荐用下面这条 Python 一行命令，需先 pip install -U huggingface_hub）：
+     HF_ENDPOINT=https://hf-mirror.com python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
+   说明：fastembed 对缓存目录结构是 `models--qdrant--<名>-onnx-Q/snapshots/<commit>/`，
+   手工 huggingface-cli 放置容易结构对不上、导致仍报 NO_SUCHFILE；这条 Python 命令会
+   自动建好正确的快照目录并把权重下进去，等价于"自动下载"但全程在你掌控下、可断点重试。
+   若你的网络有代理自签证书拦截，在上面命令前再加 `JAC_HF_INSECURE=1`。
+
 【平台特定文件】
 
 【Windows 用户】
@@ -227,3 +263,13 @@ macOS 要求明确授权应用访问摄像头和麦克风：
 - 模型文件过大：确保有足够的磁盘空间 (约 10GB+)
 - 内存不足：建议至少 8GB RAM，推荐 16GB+
 - 摄像头无法打开：检查设备连接，尝试更换 camera_id (0, 1, 2...)
+
+【Embedder 向量记忆权重下载失败】
+- 日志报 `[Embedder] 模型加载失败，向量检索降级为关键词：... NO_SUCHFILE / Connection`：
+  这是 fastembed 拉取 `qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q` 失败（国内常因
+  HuggingFace 被墙）。处理：
+  1) 启动前先设镜像：`export HF_ENDPOINT=https://hf-mirror.com`（代码现也会自动设）；
+  2) 代理自签证书环境加：`export JAC_HF_INSECURE=1`；
+  3) 或按上文 §2.6 方式 B 手动预下载权重。
+  该错误**仅降级为关键词检索、不阻断程序**；要真正启用语义向量检索才需要权重就绪。
+- 若想彻底关闭向量检索（纯关键词）：无需处理，加载失败本就自动降级。

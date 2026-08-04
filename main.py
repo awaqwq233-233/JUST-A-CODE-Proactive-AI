@@ -81,6 +81,7 @@ from src.audio.recorder import AudioRecorder
 from src.brain.llm import LocalBrain
 from src.utils.context import SharedContext
 from src.memory import MemoryManager, seed_base_memories
+from src.utils.net import setup_insecure_ssl
 
 
 def _load_qwen_tts():
@@ -89,10 +90,22 @@ def _load_qwen_tts():
     qwen_tts 会拉起沉重的 transformers / huggingface_hub 导入链（首次可能耗时数十秒），
     若放在模块顶层 import，会阻塞 GUI 窗口弹出与控制台交互。故改为在真正创建扬声器时才加载，
     且仅加载一次（之后由 sys.modules 缓存）。返回 (QwenTTSSpeaker, available)。
+
+    若包未安装，这里会触发自动安装（清华镜像优先）与权重补全，安装成功才返回可用。
     """
     try:
+        from src.audio import qwen_tts as qt
+        if not qt.ensure_qwen_tts():
+            print("[TTS] Qwen3-TTS 不可用（自动安装失败），将回退系统 TTS。")
+            return None, False
+        # 安装后重新加载模块，刷新模块级 QWEN_TTS_AVAILABLE 标志
+        import importlib
+        importlib.reload(qt)
         from src.audio.qwen_tts import QwenTTSSpeaker, QWEN_TTS_AVAILABLE
-        return QwenTTSSpeaker, QWEN_TTS_AVAILABLE
+        if QWEN_TTS_AVAILABLE:
+            return QwenTTSSpeaker, True
+        print("[TTS] Qwen3-TTS 不可用，将回退系统 TTS。")
+        return None, False
     except Exception as e:
         print(f"[TTS] Qwen3-TTS 不可用（{e}），将回退系统 TTS。")
         return None, False
@@ -102,6 +115,8 @@ def _load_qwen_tts():
 running = True
 conversation_running = False
 conversation_lock = threading.Lock()
+# 单飞锁：保证同一时刻只有一个 process_response 在跑（语音/手动输入/判断介入三来源并发时防卡死）
+think_lock = threading.Lock()
 # 消息队列 (日志)
 log_queue = queue.Queue()
 
@@ -122,6 +137,8 @@ JUDGMENT_MODEL_NAME = "minicpm-v-4_5"  # LM Studio / llama_cpp 中 MiniCPM-o(视
 JUDGMENT_INTERVAL = float(os.environ.get("JUDGMENT_INTERVAL", "4.0"))
 # 判断请求超时（秒）。真机默认 15.0；若判断模型加载中或资源紧张偶发超时，可调大 JUDGMENT_TIMEOUT。
 JUDGMENT_TIMEOUT = float(os.environ.get("JUDGMENT_TIMEOUT", "15.0"))
+# 介入后冷却（秒）。默认 20.0；避免同一画面反复触发主动介入、淹没大脑与用户对话。
+JUDGMENT_COOLDOWN = float(os.environ.get("JUDGMENT_COOLDOWN", "20.0"))
 
 # --- 大脑推理后端 ---
 # 默认 lm_studio（需 LM Studio 在 127.0.0.1:12345 加载 qwen3.5-9b）。
@@ -163,16 +180,16 @@ def build_text_only_vision_reply(user_text, vision_info, brain, temperature):
         "你看不到原始图片，只能依据下面这份实时检测摘要回答，不能编造未检测到的细节。"
         f"\n【检测摘要】{vision_info}"
         f"\n【用户问题】{user_text}"
-        "\n请严格按照 [情绪] 回复内容 的格式作答。"
-        "如果摘要信息不足，请明确说明你目前只能根据检测结果判断。"
-        "回答尽量自然、简短。"
+        "\n【格式】第一句必须是 [情绪]（情绪可选：热情、平静、关怀、鼓励、开心、惊讶），随后紧跟一句口语化回答。"
+        "【铁律】必须且仅用简体中文；不得输出推理过程、Markdown、列表或编号；"
+        "回答控制在 250 字以内，自然流畅即可。若摘要信息不足，请明确说明只能根据检测结果判断。"
     )
 
     response = brain.think(
         vision_prompt,
         system_prompt="你是一个谨慎的视觉问答助手。",
         temperature=temperature,
-        max_tokens=128
+        max_tokens=256
     )
 
     if response and response.strip():
@@ -185,12 +202,21 @@ def build_text_only_vision_reply(user_text, vision_info, brain, temperature):
 def process_response(text, brain, speaker):
     """
     核心对话逻辑：思考 -> 回复
+
+    单飞保护：同一时刻只允许一个 process_response 在跑（语音/手动输入/判断介入三来源并发时），
+    避免多线程同时调用 TTS 与大脑导致资源争抢、主程序卡死。上一轮未结束则本轮直接跳过。
     """
     global conversation_running
+
+    if not think_lock.acquire(blocking=False):
+        print("[提示] 上一轮思考/说话尚未结束，本次输入已跳过（防止并发卡死）。")
+        return
+
     conversation_running = True
     context.is_thinking = True
     print(f"[交互] 正在思考: {text}")
-    
+
+    full_response = ""
     try:
         # 获取当前的视觉摘要
         vision_info = context.get_vision_summary()
@@ -203,7 +229,7 @@ def process_response(text, brain, speaker):
             except Exception as e:
                 print(f"[记忆] 检索注入失败，本轮跳过：{e}")
         # print(f"[视觉感知] {vision_info}")
-        
+
         # 构建更智能的 System Prompt
         system_prompt = (
             "你是一个叫 J.A.C. 的全功能语音助手，J.A.C. 的全称是 Just A Code。"
@@ -211,11 +237,14 @@ def process_response(text, brain, speaker):
             f"【当前视觉信息】：{vision_info}\n"
             "请根据视觉信息和用户的提问，选择最合适的情绪（可选：热情、平静、关怀、鼓励、开心、惊讶、悲伤、生气）。"
             "【重要】请严格按照以下格式回复："
-            "不要输出推理过程，直接给出最终回答。请简短回答。"
             "[情绪] 回复内容"
             "例如：[开心] 哇，这只猫真可爱！"
             "例如：[关怀] 你看起来有点累，要注意休息哦。"
-            "如果用户问看到了什么，请直接描述视觉信息，并带上[平静]或[热情]的情绪。"
+            "【输出铁律（必须严格遵守）】："
+            "1. 必须且仅用简体中文回答，不得出现英文、繁体中文或其他语言。"
+            "2. 不要输出任何推理过程、思考链、Markdown 标题、项目符号、编号列表、分隔线或代码块。"
+            "3. 普通回答控制在 500 字以内（视觉描述最多 250 字），自然流畅即可，不必强行压缩。"
+            "4. 直接给结论，不展开、不铺垫、不解释。"
         )
         if mem_block:
             system_prompt += f"\n{mem_block}\n"
@@ -234,7 +263,12 @@ def process_response(text, brain, speaker):
                 if "看到" in text or "看见" in text or "有什么" in text or "什么东西" in text:
                     vision_prompt = "请详细描述这张图片中有什么物体、人物和环境。"
 
-                img_system_prompt = "你是一个视觉分析助手。请准确描述图像内容，按照格式 [情绪] 回复内容 来回答，情绪可选：热情、平静、关怀、鼓励、开心、惊讶。"
+                img_system_prompt = (
+                    "你是一个视觉分析助手。请准确描述图像内容。"
+                    "【格式】第一句必须是 [情绪]（情绪可选：热情、平静、关怀、鼓励、开心、惊讶），随后紧跟一句口语化描述。"
+                    "【铁律】必须且仅用简体中文；不得输出推理过程、Markdown、列表或编号；"
+                    "视觉描述控制在 250 字以内，自然流畅即可。"
+                )
                 if mem_block:
                     img_system_prompt += f"\n{mem_block}\n"
 
@@ -253,28 +287,45 @@ def process_response(text, brain, speaker):
                 print("[警告] 没有可用的摄像头帧，改用检测摘要回答视觉问题。")
                 full_response = build_text_only_vision_reply(text, vision_info, brain, temperature)
         else:
-            full_response = brain.think(text, system_prompt=system_prompt, temperature=temperature, max_tokens=256)
+            # 流式文本思考：逐 token 打印，形成"持续思考"的打字机效果
+            for chunk in brain.think_stream(text, system_prompt=system_prompt, temperature=temperature, max_tokens=256):
+                full_response += chunk
+                # 终端下 end="" 营造打字机效果；GUI 下每个 chunk 也会实时进入控制台队列
+                print(chunk, end="", flush=True)
+            print()  # 流式结束后补一个换行
+
         print(f"[J.A.C 原始回复] {full_response}")
-        
+
         context.is_thinking = False
+
+        if not full_response or not full_response.strip():
+            print("[提示] 大脑返回为空，跳过回复。")
+            return
 
         # 解析情绪与内容
         import re
-        emotion = "平静" # 默认
+        emotion = "平静"  # 默认
         response_text = full_response
-        
-        match = re.match(r"^\s*[\[【](.*?)[\]】]\s*(.*)", full_response, re.DOTALL)
-        if match:
-            emotion = match.group(1)
-            response_text = match.group(2)
+
+        # 1) 先从任意位置提取情绪标签（支持 [xxx] 与 【xxx】）
+        tag_match = re.search(r"[\[【](热情|平静|关怀|鼓励|开心|惊讶|悲伤|生气)[\]】]", full_response)
+        if tag_match:
+            emotion = tag_match.group(1)
+        # 2) 去掉所有 [xxx] / 【xxx】 标签后再朗读，避免把“ [平静] ”读出来
+        cleaned = re.sub(r"\s*[\[【][^\[\]【】]*[\]】]\s*", "", full_response).strip()
+        if cleaned:
+            response_text = cleaned
         else:
-            match_colon = re.match(r"^(\w{2})\s*[：:]\s*(.*)", full_response, re.DOTALL)
-            if match_colon and match_colon.group(1) in ["热情", "平静", "关怀", "鼓励", "开心", "惊讶"]:
-                emotion = match_colon.group(1)
-                response_text = match_colon.group(2)
+            response_text = full_response
+
+        # 3) TTS 安全截断：仅当模型抽风产出极端超长文本（>400 字）时才截断，
+        #    正常 500 字以内的回复原样朗读，避免语音引擎卡顿、用户听不完。
+        if len(response_text) > 400:
+            print(f"[提示] 回复过长（{len(response_text)} 字），截断到 400 字后朗读。")
+            response_text = response_text[:400]
 
         print(f"[解析结果] 情绪: {emotion}, 内容: {response_text}")
-        
+
         # 回答
         context.is_speaking = True
         try:
@@ -293,10 +344,16 @@ def process_response(text, brain, speaker):
 
     finally:
         conversation_running = False
+        think_lock.release()
 
 def handle_user_text(text, speaker, brain, source="语音", bypass_wake=False):
     """
     统一处理来自语音或控制台的用户输入
+
+    注意：不再在 with conversation_lock 内调用 process_response，
+    避免与 process_response 内部的 think_lock 形成重入死锁。
+    状态字段（SYSTEM_STATE / LAST_INTERACTION_TIME）的并发更新属非关键路径，
+    由 process_response 的 think_lock 单飞保证真正的重活不会并发。
     """
     global SYSTEM_STATE, LAST_INTERACTION_TIME
 
@@ -304,45 +361,44 @@ def handle_user_text(text, speaker, brain, source="语音", bypass_wake=False):
     if not text:
         return
 
-    with conversation_lock:
-        current_time = time.time()
+    current_time = time.time()
 
-        if SYSTEM_STATE == "AWAKE" and (current_time - LAST_INTERACTION_TIME > AWAKE_TIMEOUT):
-            print("[系统] 超时未交互，进入休眠模式。")
-            SYSTEM_STATE = "SLEEP"
-            if memory is not None:
-                memory.flush()
+    if SYSTEM_STATE == "AWAKE" and (current_time - LAST_INTERACTION_TIME > AWAKE_TIMEOUT):
+        print("[系统] 超时未交互，进入休眠模式。")
+        SYSTEM_STATE = "SLEEP"
+        if memory is not None:
+            memory.flush()
 
-        if source == "控制台":
-            print(f"[控制台] {text}")
-        elif source == "语音":
-            print(f"[听写] {text}")
+    if source == "控制台":
+        print(f"[控制台] {text}")
+    elif source == "语音":
+        print(f"[听写] {text}")
 
-        if bypass_wake:
+    if bypass_wake:
+        SYSTEM_STATE = "AWAKE"
+        LAST_INTERACTION_TIME = current_time
+        process_response(text, brain, speaker)
+        return
+
+    if SYSTEM_STATE == "SLEEP":
+        if check_wake_word(text):
+            print("[系统] 检测到唤醒词！进入唤醒状态。")
             SYSTEM_STATE = "AWAKE"
             LAST_INTERACTION_TIME = current_time
-            process_response(text, brain, speaker)
-            return
+            speaker.speak("我在。", emotion_hint="热情")
 
-        if SYSTEM_STATE == "SLEEP":
-            if check_wake_word(text):
-                print("[系统] 检测到唤醒词！进入唤醒状态。")
-                SYSTEM_STATE = "AWAKE"
-                LAST_INTERACTION_TIME = current_time
-                speaker.speak("我在。", emotion_hint="热情")
+            if len(text) > 5:
+                process_response(text, brain, speaker)
+        return
 
-                if len(text) > 5:
-                    process_response(text, brain, speaker)
-            return
-
-        LAST_INTERACTION_TIME = current_time
-        if "再见" in text or "休息" in text:
-            speaker.speak("好的，有需要随时叫我。", emotion_hint="平静")
-            SYSTEM_STATE = "SLEEP"
-            if memory is not None:
-                memory.flush()
-        else:
-            process_response(text, brain, speaker)
+    LAST_INTERACTION_TIME = current_time
+    if "再见" in text or "休息" in text:
+        speaker.speak("好的，有需要随时叫我。", emotion_hint="平静")
+        SYSTEM_STATE = "SLEEP"
+        if memory is not None:
+            memory.flush()
+    else:
+        process_response(text, brain, speaker)
 
 def handle_memory_command(text):
     """处理记忆相关控制台命令：记忆 列表 / 导出 <路径> / 清除 [<id>|全部]"""
@@ -474,6 +530,9 @@ def main():
     """主"""
     global running
     global conversation_running
+    # 在任何网络下载（Whisper / Qwen3-TTS 权重）之前应用 SSL 设置；
+    # 仅在环境变量 JAC_HF_INSECURE=1 时关闭证书校验（应对代理自签证书环境）
+    setup_insecure_ssl()
     print("==========================================")
     print("      J.A.C. - Just A Code (多模态版)      ")
     print("==========================================")
@@ -555,6 +614,7 @@ def main():
             model_name=JUDGMENT_MODEL_NAME,
             interval=JUDGMENT_INTERVAL,
             timeout=JUDGMENT_TIMEOUT,
+            cooldown=JUDGMENT_COOLDOWN,
         )
         judge_engine.set_context(context)
 

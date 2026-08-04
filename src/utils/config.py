@@ -14,6 +14,7 @@ class Config:
     judgment_engine_enabled: bool = True
     judgment_interval: float = 4.0          # 每隔几秒判断一次（秒）
     judgment_timeout: float = 15.0          # 单次判断请求最长等待（秒）
+    judgment_cooldown: float = 20.0         # 介入后冷却时长（秒）：避免同一场景反复触发
     judgment_model_name: str = "minicpm-v-4_5"
 
     # --- TTS 选择（新增开关，覆盖原"默认优先 Qwen、不可用时回退"的隐式逻辑）---
@@ -51,6 +52,7 @@ class Config:
             judgment_engine_enabled=truthy("JUDGMENT_ENGINE_ENABLED", True),
             judgment_interval=float(os.environ.get("JUDGMENT_INTERVAL", "4.0")),
             judgment_timeout=float(os.environ.get("JUDGMENT_TIMEOUT", "15.0")),
+            judgment_cooldown=float(os.environ.get("JUDGMENT_COOLDOWN", "20.0")),
             judgment_model_name=os.environ.get("JUDGMENT_MODEL_NAME", "minicpm-v-4_5"),
             use_qwen_tts=truthy("USE_QWEN_TTS", True),
             brain_backend=os.environ.get("JAC_BRAIN_BACKEND", "lm_studio"),

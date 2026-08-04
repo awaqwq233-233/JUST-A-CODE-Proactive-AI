@@ -54,7 +54,7 @@ class JudgmentEngine:
         "直接输出判断结果，不要输出其他内容。"
     )
 
-    def __init__(self, api_url="http://127.0.0.1:12345/v1/chat/completions", check_url="http://127.0.0.1:12345/v1/models", model_name="minicpm-v-4_5", interval=4.0, timeout=15.0, transcription_window=15.0):
+    def __init__(self, api_url="http://127.0.0.1:12345/v1/chat/completions", check_url="http://127.0.0.1:12345/v1/models", model_name="minicpm-v-4_5", interval=4.0, timeout=15.0, transcription_window=15.0, cooldown=20.0):
         """初始化实例"""
         self.api_url = api_url
         self.check_url = check_url
@@ -62,9 +62,12 @@ class JudgmentEngine:
         self.interval = interval
         self.timeout = timeout
         self.transcription_window = transcription_window
+        # 介入冷却：一旦判定 INTERVENE，冷却期内不再判断，避免同一场景反复触发、淹没大脑
+        self.cooldown = cooldown
         self.running = True
         self._available = False
         self._recheck_at = 0  # 模型不可用时，周期性重新检测的节流时间戳
+        self._cooldown_until = 0.0  # 介入后的冷却截止时间戳
         # 视觉能力：默认尝试发图；若模型报"不支持图像输入"则自动降级为纯文本判断
         self._vision_supported = True
         self.context = None
@@ -135,7 +138,15 @@ class JudgmentEngine:
         # 仅当模型支持视觉时才附带图像；不支持则走纯文本（基于音频转录）判断
         if frame is not None and self._vision_supported:
             try:
-                ret, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                # 降采样到 640×360（16:9，与原 1280×720 同比例）再编码，
+                # 大幅减小发给 LM Studio 的 base64 payload，降低显存/带宽压力
+                h, w = frame.shape[:2]
+                if w > 640:
+                    scale = 640.0 / w
+                    small = cv2.resize(frame, (640, int(h * scale)))
+                else:
+                    small = frame
+                ret, buffer = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 if ret:
                     img_b64 = base64.b64encode(buffer).decode("utf-8")
                     user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
@@ -147,10 +158,25 @@ class JudgmentEngine:
             {"role": "user", "content": user_content},
         ]
 
-        payload = {"model": self.model_name, "messages": messages, "temperature": 0.2, "max_tokens": 64, "stream": False}
+        # 禁用 MiniCPM-o 思考链：判断只需 INTERVENE/SILENT 标签，思考链既拖慢 4s 轮询、
+        # 又易占满 max_tokens 导致 content 恒为空（之前 INTERVENE 写在 reasoning_content 里被漏解析）。
+        # 禁用后结论直接落到 content，max_tokens 给足 1024 作为安全上限。
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "temperature": 0.2,
+            "max_tokens": 1024,
+            "stream": False,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
 
         try:
             resp = requests.post(self.api_url, json=payload, timeout=self.timeout, headers={"Content-Type": "application/json"})
+            # 个别模型/模板不支持 enable_thinking 参数：移除后重试一次，退回 reasoning_content 兜底解析
+            if resp.status_code == 400 and "enable_thinking" in resp.text.lower():
+                payload.pop("chat_template_kwargs", None)
+                logger.warning("判断模型不支持 enable_thinking 参数，已移除后重试（将依赖 reasoning_content 兜底解析）")
+                resp = requests.post(self.api_url, json=payload, timeout=self.timeout, headers={"Content-Type": "application/json"})
             if resp.status_code != 200:
                 err_text = resp.text[:300]
                 # 模型被 LM Studio 卸载（通常因显存不足被挤出）：标记为不可用，run 循环会周期性重试
@@ -165,18 +191,53 @@ class JudgmentEngine:
                     return self.judge(None, transcript_text)
                 logger.warning("判断模型 API 返回 %s: %s", resp.status_code, err_text)
                 return False, ""
-            content = resp.json()["choices"][0]["message"]["content"].strip()
+            message = resp.json()["choices"][0]["message"]
+            content = (message.get("content") or "").strip()
+            reasoning = (message.get("reasoning_content") or "").strip()
         except Exception as exc:
             logger.warning("判断模型请求异常: %s", exc)
             return False, ""
 
-        if content.startswith("INTERVENE"):
-            reason = content[len("INTERVENE:"):].strip()
+        should_intervene, reason = self._parse_judgment(content, reasoning)
+        if should_intervene:
             logger.info("判断模型决定介入: %s", reason)
             return True, reason
-        else:
-            logger.debug("判断模型决定保持静默: %s", content[:60])
+        logger.debug("判断模型决定保持静默 (content=%r, reasoning_len=%d)", content[:60], len(reasoning))
+        return False, ""
+
+    @staticmethod
+    def _parse_judgment(content, reasoning):
+        """从模型输出解析介入判定。
+
+        MiniCPM-o 等带思考链的模型常把最终结论放在 reasoning_content，
+        content 可能为空（尤其在 max_tokens 偏小、思考链占用全部 token 时）。
+        优先用 content；content 为空则解析 reasoning_content 中的 INTERVENE/SILENT。
+        返回 (should_intervene: bool, reason: str)。
+        """
+        import re
+        # 1) content 优先（显式 INTERVENE:/SILENT）
+        if content:
+            if content.upper().startswith("INTERVENE"):
+                reason = content[len("INTERVENE:"):].strip().strip("。. ")
+                return True, reason or "判断引擎建议主动介入（未给出具体原因）"
+            if content.upper().startswith("SILENT"):
+                return False, ""
+        # 2) 回退到 reasoning_content：提取其中的 INTERVENE: 原因
+        raw = reasoning if reasoning else content
+        m = re.search(r"INTERVENE\s*[:：]\s*(.+)", raw, re.IGNORECASE)
+        if m:
+            reason = m.group(1).strip().strip("。. ")
+            if reason:
+                return True, reason
+            return True, "判断引擎建议主动介入（未给出具体原因）"
+        # 3) reasoning 中出现明确 SILENT 标记
+        if re.search(r"\bSILENT\b", raw, re.IGNORECASE):
             return False, ""
+        # 4) 兜底：中文结论倾向（不需要/无需/不介入）
+        if re.search(r"(不需要介入|无需介入|保持静默|不应介入|不介入|无需主动)", raw):
+            return False, ""
+        # 5) 无法解析：默认静默，避免误触发淹没用户对话
+        return False, ""
 
     def run(self):
         """运行"""
@@ -198,6 +259,18 @@ class JudgmentEngine:
                 continue
 
             loop_start = time.time()
+
+            # 介入冷却期：刚主动介入过，先静默一段时间，避免同一场景反复触发淹没大脑
+            now = time.time()
+            if now < self._cooldown_until:
+                time.sleep(self.interval)
+                continue
+
+            # 大脑正忙（思考/说话中）：跳过本轮判断，避免和用户的对话请求抢 GPU
+            if self.context is not None and (self.context.is_thinking or self.context.is_speaking):
+                time.sleep(self.interval)
+                continue
+
             try:
                 frame = self.context.get_frame()
                 transcript = self.context.get_recent_transcriptions(window=self.transcription_window)
@@ -205,7 +278,9 @@ class JudgmentEngine:
                 if should_intervene:
                     req = InterventionRequest(reason=reason, transcript=transcript, timestamp=time.time())
                     self.intervention_queue.put(req)
-                    logger.info("判断结果: INTERVENE - %s", reason)
+                    # 进入冷却，避免在用户未响应期间被同一画面反复触发
+                    self._cooldown_until = time.time() + self.cooldown
+                    logger.info("判断结果: INTERVENE - %s（冷却 %.0fs）", reason, self.cooldown)
                 else:
                     logger.debug("判断结果: 保持静默")
             except Exception as exc:

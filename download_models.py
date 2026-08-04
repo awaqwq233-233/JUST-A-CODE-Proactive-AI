@@ -17,6 +17,7 @@ J.A.C. 一键模型预下载脚本（当前覆盖 Qwen3-TTS 语音模型）
   python download_models.py --source modelscope   # 改用 ModelScope（国内备用）
   python download_models.py --no-mirror    # 不使用 HuggingFace 国内镜像
   python download_models.py --insecure    # 关闭 SSL 校验（仅限代理/防火墙拦截的内网；有中间人风险）
+  python download_models.py --check        # 仅校验本地权重是否完整（含 safetensors 截断检测），不下载
 
 注意：
   - 跨平台（Windows / macOS / Linux），只需能联网运行一次。
@@ -33,8 +34,10 @@ J.A.C. 一键模型预下载脚本（当前覆盖 Qwen3-TTS 语音模型）
 """
 
 import argparse
+import json
 import os
 import platform
+import struct
 import subprocess
 import sys
 
@@ -171,6 +174,44 @@ def _hf_list_files(repo_id, mirror, insecure):
     return [s["rfilename"] for s in data.get("siblings", [])]
 
 
+def _safetensors_sizes(path):
+    """读取 safetensors 头部的 (header_len, 声明的数据总字节数)；非 safetensors / 读不到返回 None。"""
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(8)
+            if len(magic) < 8:
+                return None
+            header_len = struct.unpack("<Q", magic)[0]
+            header = json.loads(f.read(header_len))
+        tensors = {k: v for k, v in header.items() if k != "__metadata__"}
+        if not tensors:
+            return None
+        declared = max(v["data_offsets"][1] for v in tensors.values())
+        return header_len, declared
+    except Exception:
+        return None
+
+
+def _file_complete(path):
+    """判断本地文件是否"完整"（可安全跳过）：
+      - 不存在或为空 → 不完整；
+      - 是 safetensors：磁盘大小必须 >= 8(长度) + 头部 + 声明的数据字节，否则视为截断（半截下载）→ 不完整；
+      - 其它文件：存在且非空即视为完整。
+    safetensors 头部会声明全部张量的数据总字节数；截断的半截文件头部虽在、但磁盘大小远小于声明值，
+    借此可识破"存在但残缺"的假完整，避免 download_models.py 误跳过、qwen_tts.py 误判已就绪。
+    """
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return False
+    if path.endswith(".safetensors"):
+        sz = _safetensors_sizes(path)
+        if sz is None:
+            return False
+        header_len, declared = sz
+        expected = 8 + header_len + declared
+        return os.path.getsize(path) >= expected
+    return True
+
+
 def download_hf(repo_id, local_dir, use_mirror):
     """下载 HuggingFace 仓库。
 
@@ -184,14 +225,20 @@ def download_hf(repo_id, local_dir, use_mirror):
         base = f"{mirror}/{repo_id}/resolve/main"
         for fn in files:
             dst = os.path.join(local_dir, *fn.split("/"))
-            # 已存在且非空则跳过（只下载缺少的部分，支持断点续传/重复运行）
-            if os.path.exists(dst) and os.path.getsize(dst) > 0:
-                print(f"      [已存在] 跳过 {fn}")
+            # 已完整则跳过（只下载缺少/截断的部分，支持断点续传/重复运行）。
+            # 注意：不能只看"存在且非空"——safetensors 半截下载（被中断）文件存在且非空，
+            # 但其磁盘大小小于头部声明值，必须续传补齐，否则模型加载会失败。
+            if _file_complete(dst):
+                print(f"      [已完整] 跳过 {fn}")
                 continue
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             url = f"{base}/{fn}"
-            cmd = ["curl", "-L"] + (["--ssl-no-revoke"] if platform.system() == "Windows" else []) + [
-                "--retry", "3", "--retry-delay", "2",
+            # -C -：断点续传（文件已部分下载时从断点接着下，配合 _file_complete 识别出的
+            # 截断文件，可多次重跑逐步补全，不怕中途网络超时）。
+            # --retry-all-errors + 加大重试次数：弱网/超时也自动重试，避免一次抖动就整体失败。
+            cmd = ["curl", "-L", "--connect-timeout", "30", "--retry", "8",
+                   "--retry-delay", "3", "--retry-all-errors"] + \
+                  (["--ssl-no-revoke"] if platform.system() == "Windows" else []) + [
                 "-C", "-", "-o", dst, url]
             if INSECURE:
                 cmd.append("-k")
@@ -241,6 +288,79 @@ def resolve_source(preferred):
     return "huggingface", True
 
 
+def _check_one_variant(base, variant, args):
+    """校验单个 Qwen3-TTS 变体目录的完整性，返回 0(完整)/1(有问题)。"""
+    vdir = os.path.join(base, variant)
+    print(f"==> 校验 {variant}")
+    if not os.path.isdir(vdir):
+        print(f"  [✗] 目录不存在：{vdir}")
+        print(f"      需先运行: python download_models.py --size {args.size} --mode {args.mode}")
+        return 1
+
+    # 必需的非权重文件（与 src/audio/qwen_tts.py:_maybe_download_weights 保持一致；
+    # 注意官方仓库不含 tokenizer.json，其分词器为 Qwen2Tokenizer 慢速分词器，只需下面三件套）。
+    required = [
+        "config.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "merges.txt",
+        "speech_tokenizer/preprocessor_config.json",
+    ]
+    # 权重文件：必须做 safetensors 头部完整性校验，识破"存在但被截断"的半截下载。
+    weights = ["model.safetensors", "speech_tokenizer/model.safetensors"]
+
+    problems = []
+    for rel in required:
+        p = os.path.join(vdir, *rel.split("/"))
+        if os.path.exists(p):
+            print(f"  [✓] {rel}")
+        else:
+            problems.append(f"缺失文件 {rel}")
+            print(f"  [✗] {rel}  （不存在）")
+    for rel in weights:
+        p = os.path.join(vdir, *rel.split("/"))
+        if not os.path.exists(p):
+            problems.append(f"缺失权重 {rel}")
+            print(f"  [✗] {rel}  （不存在）")
+            continue
+        if _file_complete(p):
+            print(f"  [✓] {rel}  （{os.path.getsize(p)} 字节，头部完整）")
+        else:
+            problems.append(f"权重截断 {rel}")
+            print(f"  [✗] {rel}  （截断！磁盘 {os.path.getsize(p)} 字节 < 头部声明大小，半截下载）")
+    return 0 if not problems else 1
+
+
+def cmd_check(args):
+    """仅校验本地 Qwen3-TTS 权重是否完整，不下载。供排障 / CI 快速确认。"""
+    base = os.path.join(project_root(), "models", "qwen_tts")
+    print(f"[系统] Qwen3-TTS 权重完整性检查（size={args.size}, mode={args.mode}）\n")
+    if args.mode == "all":
+        variants = [v.split("/")[-1] for v in MODEL_REPOS[args.size].values()]
+    else:
+        variants = [MODEL_REPOS[args.size][args.mode].split("/")[-1]]
+
+    rc = 0
+    for variant in variants:
+        rc = max(rc, _check_one_variant(base, variant, args))
+
+    # 独立语音分词器仓库（Qwen3-TTS-Tokenizer-12Hz）是 Base 内置 speech_tokenizer 的同源完整副本，
+    # 仅作可选信息提示，不影响加载判定（模型从 Base 目录加载其内置 speech_tokenizer）。
+    tok_dir = os.path.join(base, TOKENIZER_REPO.split("/")[-1])
+    if os.path.isdir(tok_dir):
+        print(f"\n[提示] 独立分词器仓库已存在：{tok_dir}（可选，模型从 Base 内置 speech_tokenizer 加载）")
+
+    print("\n" + "=" * 56)
+    if rc == 0:
+        print("[结果] 完整 ✅  Qwen3-TTS 可正常加载，无需再下载。")
+    else:
+        print("[结果] 不完整 ❌  修复：重跑 "
+              f"python download_models.py --size {args.size} --mode {args.mode} [--insecure] "
+              "即可增量补全（已完整文件跳过、截断文件自动续传）。")
+    print("=" * 56)
+    return rc
+
+
 def main():
     """主"""
     parser = argparse.ArgumentParser(description="J.A.C. 模型预下载（Qwen3-TTS）")
@@ -255,7 +375,13 @@ def main():
                         help="不使用 HuggingFace 国内镜像（hf-mirror.com）")
     parser.add_argument("--insecure", action="store_true",
                         help="关闭 SSL 证书校验（仅限被代理/防火墙做 TLS 拦截的内网；有中间人风险）")
+    parser.add_argument("--check", action="store_true",
+                        help="仅校验本地 Qwen3-TTS 权重是否完整（含 safetensors 截断检测），不下载")
     args = parser.parse_args()
+
+    # --check 模式：只校验不下载
+    if args.check:
+        sys.exit(cmd_check(args))
 
     insecure = args.insecure or os.environ.get("JAC_HF_INSECURE") == "1"
     global INSECURE

@@ -3,6 +3,8 @@ import os
 import torch
 import warnings
 
+from src.utils.net import setup_insecure_ssl
+
 # 忽略 Whisper 可能产生的一些非关键警告
 warnings.filterwarnings("ignore")
 
@@ -31,16 +33,21 @@ class SpeechRecognizer:
                               对于笔记本，推荐 'base' 或 'small'。
         """
         print(f"[系统] 正在加载 Whisper 模型 ({model_size})... 这可能需要几分钟...")
+        # 任何下载前先应用 SSL 设置（代理自签证书环境需要 JAC_HF_INSECURE=1）
+        setup_insecure_ssl()
         try:
             # 选择加速设备：cuda > mps(Mac GPU) > cpu
             device = _pick_device()
             print(f"[系统] 运行设备: {device}")
             
-            # 加载模型
+            # 加载模型（首次会从网络下载权重到 ~/.cache/whisper/，之后复用本地缓存）
             self.model = whisper.load_model(model_size, device=device)
             print("[系统] Whisper 模型加载成功！")
         except Exception as e:
             print(f"[错误] Whisper 模型加载失败: {e}")
+            print("[提示] 若报 CERTIFICATE_VERIFY_FAILED（代理自签证书环境），请先执行：")
+            print("        export JAC_HF_INSECURE=1   # 关闭 SSL 校验（仅可信内网）")
+            print("       然后再启动；或手动预下载权重到 ~/.cache/whisper/ 以彻底离线。")
             self.model = None
 
     def transcribe(self, audio_data):

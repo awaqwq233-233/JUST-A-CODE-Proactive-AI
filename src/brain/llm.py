@@ -5,6 +5,7 @@ except ImportError:
 
 import os
 import sys
+import re
 import platform
 import base64
 import cv2
@@ -183,8 +184,8 @@ class LocalBrain:
                 return os.path.join(model_dir, f)
         return None
 
-    def think(self, prompt, system_prompt="You are J.A.C., a helpful AI assistant. J.A.C. stands for Just A Code.", temperature=0.7, max_tokens=120):
-        """推理"""
+    def think(self, prompt, system_prompt="You are J.A.C., a helpful AI assistant. J.A.C. stands for Just A Code.", temperature=0.7, max_tokens=1024):
+        """推理（默认 max_tokens=1024，可容纳约 500 字中文回复）"""
         if self.backend == "mock":
             return self._mock_response(prompt)
         messages = [
@@ -198,8 +199,27 @@ class LocalBrain:
         else:
             return self._query_llama_cpp(messages, temperature, max_tokens)
 
-    def think_with_image(self, prompt, frame, system_prompt="You are J.A.C., a helpful AI assistant.", temperature=0.7, max_tokens=200):
-        """推理带图像"""
+    def think_stream(self, prompt, system_prompt="You are J.A.C., a helpful AI assistant. J.A.C. stands for Just A Code.", temperature=0.7, max_tokens=768):
+        """流式推理：yield 文本片段（token），形成"持续思考"的打字机效果。
+
+        仅 lm_studio 后端真正走 SSE 流式；其余后端退化为一次性返回（包装成单元素生成器），
+        调用方无需区分即可统一用 `for chunk in brain.think_stream(...)` 消费。
+        """
+        if self.backend == "mock":
+            yield self._mock_response(prompt)
+            return
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt}
+        ]
+        if self.backend == "lm_studio":
+            yield from self._query_lm_studio_stream(messages, temperature, max_tokens)
+        else:
+            # 非流式后端：直接一次性返回（保持接口一致）
+            yield self.think(prompt, system_prompt, temperature, max_tokens)
+
+    def think_with_image(self, prompt, frame, system_prompt="You are J.A.C., a helpful AI assistant.", temperature=0.7, max_tokens=1024):
+        """推理带图像（默认 max_tokens=1024，可容纳约 250 字视觉描述）"""
         if self.backend == "mock":
             return self._mock_response(prompt)
         if self.backend not in ("lm_studio", "ollama") and not self.multimodal:
@@ -270,10 +290,19 @@ class LocalBrain:
             if not content:
                 reasoning = data.get("choices", [{}])[0].get("message", {}).get("reasoning_content", "")
                 if reasoning:
-                    print("[System] content is empty, using reasoning_content as response")
-                    parts = reasoning.rsplit('\n\n', 1)
-                    return parts[-1].strip() if len(parts) > 1 else reasoning
+                    print("[System] content 为空，尝试从 thinking 中恢复最终回答（避免把思考链当答案念出）")
+                    # Qwen3 偶尔把 [情绪] 最终回答写在思考链末尾：
+                    # 取最后一个情绪标签之后的文本作为最终回答。
+                    tags = list(re.finditer(r"[\[【](.*?)[\]】]", reasoning))
+                    recovered = reasoning[tags[-1].end():].strip() if tags else ""
+                    if recovered:
+                        return recovered
+                    # 没有情绪标签则退一步取思考链最后一段非空内容
+                    tail = [s for s in reasoning.split("\n\n") if s.strip()]
+                    if tail:
+                        return tail[-1].strip()
                 print(f"[Debug] LM Studio returned empty content: {json.dumps(data, ensure_ascii=False)[:500]}")
+                return "（刚才走神了，能再问一次吗？）"
             return content
         except requests.exceptions.ReadTimeout:
             print("[Error] 大脑推理超时：模型可能仍在加载，或设备资源不足导致推理过慢。"
@@ -286,6 +315,56 @@ class LocalBrain:
             print(f"[Error] LM Studio request failed: {e}")
             return "My brain is having trouble, please try again later."
 
+    def _query_lm_studio_stream(self, messages, temperature, max_tokens):
+        """流式查询 LM Studio（SSE）。逐块 yield 文本片段，首个 token 即开始返回，降低感知延迟。"""
+        if max_tokens < 512:
+            max_tokens = 512
+        try:
+            payload = {
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "stream": True,
+                # 禁用 Qwen3 思考链，避免先吐大段 thinking 占满 token
+                "chat_template_kwargs": {"enable_thinking": False},
+            }
+            if self.active_model_id:
+                payload["model"] = self.active_model_id
+            resp = requests.post(
+                self.lm_studio_url,
+                json=payload,
+                stream=True,
+                timeout=120,
+                headers={"Content-Type": "application/json"},
+            )
+            if resp.status_code != 200:
+                err = resp.text[:300]
+                print(f"[Error] LM Studio streaming returned {resp.status_code}: {err}")
+                yield "Sorry, brain connection has an issue."
+                return
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                text = line.decode("utf-8")
+                if not text.startswith("data:"):
+                    continue
+                data = text[len("data:"):].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(data)
+                    delta = obj["choices"][0]["delta"].get("content", "")
+                    if delta:
+                        yield delta
+                except Exception:
+                    continue
+        except requests.exceptions.ReadTimeout:
+            yield "My brain is thinking too slowly. Please try again later."
+        except requests.exceptions.ConnectionError:
+            yield "Sorry, cannot connect to brain server."
+        except Exception as e:
+            yield f"My brain is having trouble: {e}"
+
     def _query_ollama(self, messages, temperature, max_tokens):
         """查询Ollama"""
         try:
@@ -295,6 +374,7 @@ class LocalBrain:
                     "model": self.ollama_model_name,
                     "messages": messages,
                     "stream": False,
+                    "think": False,  # 禁用 Qwen3 思考链，直接输出结果
                     "options": {
                         "temperature": temperature,
                         "num_predict": max_tokens

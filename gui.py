@@ -102,7 +102,8 @@ QStatusBar::item { border: none; }
 
 # ----------------------------- 圆角视频标签 -----------------------------
 class RoundedVideoLabel(QLabel):
-    """把 pixmap 裁剪为圆角绘制，配合 #video 的圆角边框。"""
+    """把 pixmap 裁剪为圆角绘制，配合 #video 的圆角边框。
+    关键：摄像头画面保持原始比例居中绘制，绝不拉伸填满标签矩形。"""
     def paintEvent(self, event):
         """绘制事件"""
         pix = self.pixmap()
@@ -115,7 +116,11 @@ class RoundedVideoLabel(QLabel):
         path = QPainterPath()
         path.addRoundedRect(0, 0, self.width(), self.height(), r, r)
         painter.setClipPath(path)
-        painter.drawPixmap(self.rect(), pix)
+        # 等比缩放并居中，避免画面被拉伸变形
+        target = pix.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        x = (self.width() - target.width()) // 2
+        y = (self.height() - target.height()) // 2
+        painter.drawPixmap(x, y, target)
 
 
 # ----------------------------- 多行输入框 -----------------------------

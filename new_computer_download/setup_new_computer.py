@@ -14,7 +14,7 @@ J.A.C. 新电脑「一键依赖补全」工具
   2. 系统级依赖（portaudio 麦克风录音库、ffmpeg 音视频库）
   3. ffmpeg 可执行文件（跨平台放到项目根目录，main.py 能直接找到）
   4. 大模型权重（Qwen3.5-9B 大脑 / mmproj 投影 / MiniCPM-o 判断引擎 / Qwen3-TTS / YOLOv8）
-  5. 记忆向量检索的 embedding 模型权重（fastembed + 默认 paraphrase-multilingual-MiniLM-L12-v2，
+  5. 记忆向量检索的 embedding 模型权重（fastembed + 默认 sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2，
      用于记忆的语义向量召回；国内走 HF 镜像下载，下载失败自动降级关键词检索，不影响主功能）
 
 网络问题应对（针对国内网络 / 弱网）
@@ -60,6 +60,7 @@ import platform
 import re
 import shutil
 import ssl
+import struct
 import subprocess
 import sys
 import urllib.request  # 仅用于无 curl 时的回退下载
@@ -312,8 +313,10 @@ def download_hf_files(repo_id, target_dir, wanted, insecure, use_mirror):
     ok = True
     for fn in targets:
         dst = os.path.join(target_dir, *fn.split("/"))
-        if os.path.exists(dst) and os.path.getsize(dst) > 0:
-            log(f"   [已存在] 跳过 {fn}")
+        # 用 safetensors 头部完整性校验判断是否已完整：截断的半截下载（存在且非空）
+        # 会被识破并重新下载/续传，避免 TTS 权重"看起来在、实际残缺"导致加载失败。
+        if _safetensors_complete(dst):
+            log(f"   [已完整] 跳过 {fn}")
             continue
         url = f"{base}/{fn}"
         log(f"   ↓ {fn}")
@@ -334,7 +337,8 @@ def download_hf_repo_all(repo_id, target_dir, insecure, use_mirror):
     ok = True
     for fn in all_files:
         dst = os.path.join(target_dir, *fn.split("/"))
-        if os.path.exists(dst) and os.path.getsize(dst) > 0:
+        # 同上：safetensors 截断的半截下载需重新下载/续传，不能只看"存在且非空"。
+        if _safetensors_complete(dst):
             continue
         log(f"   ↓ {fn}")
         if not download_file(f"{base}/{fn}", dst, insecure):
@@ -599,6 +603,68 @@ def _already_has(target_dir, files):
     return all(os.path.exists(os.path.join(target_dir, *fn.split("/"))) for fn in files)
 
 
+def _safetensors_complete(path):
+    """safetensors 是否完整：头部声明的张量数据总字节必须 <= 磁盘大小。
+
+    只查"存在且非空"会被【截断的半截下载】骗过（头部在、数据只下了一部分），
+    必须比对头部声明大小才能识破。非 safetensors / 读不到头部返回 False。
+    """
+    try:
+        if not path.endswith(".safetensors"):
+            return os.path.exists(path) and os.path.getsize(path) > 0
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return False
+        with open(path, "rb") as f:
+            magic = f.read(8)
+            if len(magic) < 8:
+                return False
+            header_len = struct.unpack("<Q", magic)[0]
+            header = json.loads(f.read(header_len))
+        tensors = {k: v for k, v in header.items() if k != "__metadata__"}
+        if not tensors:
+            return False
+        declared = max(v["data_offsets"][1] for v in tensors.values())
+        return os.path.getsize(path) >= 8 + header_len + declared
+    except Exception:
+        return False
+
+
+# TTS 权重完整性校验：与 src/audio/qwen_tts.py:_maybe_download_weights 保持一致。
+# 仅有 model.safetensors（主权重）不够，缺分词器 / 语音分词器会导致 Qwen3-TTS 加载失败并回退系统 TTS。
+# 注意：Qwen3-TTS-12Hz-1.7B-Base 官方仓库【并不】包含 tokenizer.json（已实测 HF 仓库清单确认），
+# 其文本分词器为 Qwen2Tokenizer（慢速），仅依赖 tokenizer_config.json + vocab.json + merges.txt，
+# 无需 tokenizer.json。把 tokenizer.json 当必需文件会误判"不完整"→ 反复触发补全且永远无法满足。
+# 两个权重文件（model.safetensors、speech_tokenizer/model.safetensors）必须做 safetensors
+# 头部完整性校验，防止"存在但被截断"的半截下载骗过校验、导致加载失败。
+TTS_REQUIRED_FILES = (
+    "config.json",
+    "model.safetensors",
+    "tokenizer_config.json",
+    "vocab.json",
+    "merges.txt",
+    "speech_tokenizer/preprocessor_config.json",
+    "speech_tokenizer/model.safetensors",
+)
+
+
+def _tts_variant_dir(size, mode):
+    """变体目录名（suffix 映射同 _download_tts）。"""
+    suffix = {"clone": "Base", "custom": "CustomVoice", "design": "VoiceDesign"}.get(mode, "Base")
+    return f"Qwen3-TTS-12Hz-{size}-{suffix}"
+
+
+def _tts_complete(tdir, size, mode):
+    """TTS 权重是否已完整下载（目录存在且关键文件齐全、safetensors 未被截断）。"""
+    variant_dir = os.path.join(tdir, _tts_variant_dir(size, mode))
+    if not os.path.isdir(variant_dir):
+        return False
+    for rel in TTS_REQUIRED_FILES:
+        full = os.path.join(variant_dir, *rel.split("/"))
+        if not _safetensors_complete(full):
+            return False
+    return True
+
+
 def step_models(args):
     """step模型"""
     hr("步骤 4/6  下载模型权重")
@@ -628,10 +694,16 @@ def step_models(args):
         if mtype == "direct" and os.path.exists(os.path.join(PROJECT_ROOT, m.get("target", ""))):
             log(f"\n[models] 已存在，跳过：{name}")
             continue
-        if mtype == "tts" and os.path.isdir(os.path.join(PROJECT_ROOT, m.get("target_dir", "models/qwen_tts"))):
-            # TTS 目录存在即视为已下（粗略判断）
-            log(f"\n[models] TTS 目录已存在，跳过：{name}")
-            continue
+        if mtype == "tts":
+            # 不能只判断 models/qwen_tts 目录存在就跳过：该目录可能只含 Tokenizer 或
+            # 主权重下完但分词器/语音分词器缺失（中断的半截下载）。必须校验关键文件齐全。
+            size = m.get("size") or args.ts_size
+            mode = m.get("mode") or args.ts_mode
+            tdir_tts = os.path.join(PROJECT_ROOT, m.get("target_dir", "models/qwen_tts"))
+            if _tts_complete(tdir_tts, size, mode):
+                log(f"\n[models] TTS 权重已完整，跳过：{name}")
+                continue
+            log(f"\n[models] TTS 权重不完整（缺失分词器/语音分词器），将补全：{name}")
 
         log(f"\n[models] 处理：{name}")
         log(f"         说明：{m.get('note','')}")
@@ -674,6 +746,11 @@ def _download_tts(m, tdir, insecure, use_mirror, args):
     """下载语音合成"""
     size = m.get("size") or args.ts_size
     mode = m.get("mode") or args.ts_mode
+    # 变体后缀映射：clone->Base / custom->CustomVoice / design->VoiceDesign。
+    # 注意：绝不能直接用 mode.capitalize()（会得到 Clone / Customvoice），与官方
+    # 仓库名不符；正确的 clone 变体仓库是 "...-1.7B-Base"（见 download_models.py /
+    # src/audio/qwen_tts.py 的 MODEL_FOR_MODE）。
+    suffix = {"clone": "Base", "custom": "CustomVoice", "design": "VoiceDesign"}.get(mode, "Base")
     repos = []
     if mode == "all":
         repos = [
@@ -682,7 +759,7 @@ def _download_tts(m, tdir, insecure, use_mirror, args):
             f"Qwen/Qwen3-TTS-12Hz-{size}-VoiceDesign",
         ]
     else:
-        repos = [f"Qwen/Qwen3-TTS-12Hz-{size}-{mode.capitalize()}"]
+        repos = [f"Qwen/Qwen3-TTS-12Hz-{size}-{suffix}"]
     repos.append(f"Qwen/Qwen3-TTS-Tokenizer-12Hz")
     ok = True
     for repo in repos:
@@ -696,8 +773,10 @@ def _download_tts(m, tdir, insecure, use_mirror, args):
 # ----------------------------------------------------------------------------
 # 步骤（记忆向量模型）：预下载 embedding 模型权重
 # ----------------------------------------------------------------------------
-# 与 embedder.py 的默认模型保持一致；可用 MEMORY_EMBED_MODEL 环境变量覆盖
-EMBED_MODEL_DEFAULT = "paraphrase-multilingual-MiniLM-L12-v2"
+# 必须与 src/memory/embedder.py 的 _DEFAULT_MODEL 完全一致（fastembed 要求带
+# sentence-transformers/ 命名空间前缀，裸名会报 "is not supported in TextEmbedding"）。
+# 可用 MEMORY_EMBED_MODEL 环境变量覆盖本默认值。
+EMBED_MODEL_DEFAULT = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 
 
 def step_embed_model(args):
@@ -772,15 +851,24 @@ def step_verify(args):
     log(f"[自检] ffmpeg：{'找到 ' + found if found else '未找到（请检查步骤 3）'}")
 
     # 模型（部分模型落盘在子目录下，允许多候选路径，避免误报缺失）
+    def _tts_ready():
+        variant = os.path.join(PROJECT_ROOT, "models", "qwen_tts", "Qwen3-TTS-12Hz-1.7B-Base")
+        if not os.path.isdir(variant):
+            return False
+        # 用 _safetensors_complete 做完整性校验（含 safetensors 截断检测），
+        # 避免"存在但被截断"的半截权重被误判为就绪。
+        return all(_safetensors_complete(os.path.join(variant, *f.split("/"))) for f in TTS_REQUIRED_FILES)
+
     expect_models = {
         "大脑模型 Qwen3.5-9B": [os.path.join("models", "Qwen3.5-9B-Q4_K_M.gguf")],
-        "TTS 模型 Qwen3-TTS-12Hz-1.7B-Base": [
-            os.path.join("models", "qwen_tts", "Qwen3-TTS-12Hz-1.7B-Base"),
-            os.path.join("models", "Qwen3-TTS-12Hz-1.7B-Base"),
-        ],
+        "TTS 模型 Qwen3-TTS-12Hz-1.7B-Base": "tts",  # 特殊：走 _tts_ready 校验关键文件
     }
     for name, cands in expect_models.items():
-        if any(os.path.exists(os.path.join(PROJECT_ROOT, c)) for c in cands):
+        if cands == "tts":
+            ok = _tts_ready()
+        else:
+            ok = any(os.path.exists(os.path.join(PROJECT_ROOT, c)) for c in cands)
+        if ok:
             log(f"[自检] 模型就绪：{name}")
         else:
             log(f"[自检] 模型缺失（不影响装包，运行前需补）：{name}")
