@@ -19,7 +19,8 @@ J.A.C. 新电脑「一键依赖补全」工具
 
 网络问题应对（针对国内网络 / 弱网）
 ------------------------------
-  * pip 默认走清华镜像，安装失败自动重试。
+  * pip 默认走清华镜像；整批失败自动改逐个安装，仍失败的包再回退官方源 pypi.org 重试一次
+    （部分大包如 PySide6 在清华镜像返回 403，官方源通常可用）。
   * 模型下载优先用系统 curl；仅 Windows 加 --ssl-no-revoke（绕过证书吊销检查），
     macOS/Linux 自动省略该 Windows 专属选项，避免 "unknown option" 报错、
     --retry 重试、 -C - 断点续传（中断后可继续，不从头再来）。
@@ -56,6 +57,7 @@ import importlib.util  # 显式导入，供 _package_installed 的 find_spec 使
 import json
 import os
 import platform
+import re
 import shutil
 import ssl
 import subprocess
@@ -75,6 +77,9 @@ IS_LINUX = platform.system() == "Linux"
 # pip 国内镜像（pypi.org 在部分网络下被掐断）
 DEFAULT_PIP_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple"
 DEFAULT_PIP_TRUSTED = "pypi.tuna.tsinghua.edu.cn"
+# 回退源：部分大包（如 PySide6）在清华镜像返回 403 Forbidden，官方源 pypi.org 通常可用
+OFFICIAL_PIP_INDEX = "https://pypi.org/simple"
+OFFICIAL_PIP_TRUSTED = "pypi.org"
 HF_MIRROR = "https://hf-mirror.com"
 HF_OFFICIAL = "https://huggingface.co"
 
@@ -436,8 +441,20 @@ def step_pip(args):
     return True
 
 
+def _log_pip_error(stderr, lines=15):
+    """打印 pip 错误输出的关键尾部（去除 ANSI 颜色），便于排查 403 / 超时 / 编译失败。"""
+    if not stderr:
+        return
+    text = re.sub(r"\x1b\[[0-9;]*m", "", stderr)
+    snippet = [ln for ln in text.strip().splitlines() if ln.strip()]
+    if snippet:
+        log("   └─ " + "\n      ".join(snippet[-lines:]))
+
+
 def _pip_install(pkgs, pip_base, index_url):
-    """先整批装，失败再逐个装（避免一个失败拖垮全部）。返回失败列表。"""
+    """先整批装，失败改逐个装（避免一个失败拖垮全部），最后对仍失败的包回退官方源重试。
+    返回最终失败的包列表。
+    """
     if index_url:
         cmd = pip_base + ["--extra-index-url", index_url] + pkgs
     else:
@@ -445,15 +462,31 @@ def _pip_install(pkgs, pip_base, index_url):
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode == 0:
         return []
-    log(f"   [整批安装失败，改为逐个安装并重试]")
+    log("   [整批安装失败，改为逐个安装并重试]")
+    _log_pip_error(r.stderr)
     failed = []
     for p in pkgs:
         c = pip_base + ([ "--extra-index-url", index_url ] if index_url else []) + [p]
         rr = subprocess.run(c, capture_output=True, text=True)
         if rr.returncode != 0:
             failed.append(p)
-            log(f"   [失败] {p}")
-    return failed
+            log(f"   [失败] {p}（镜像源）")
+            _log_pip_error(rr.stderr)
+    if not failed:
+        return []
+    # 回退官方源 pypi.org：PySide6 等大包在清华镜像可能返回 403，官方源通常可用
+    log(f"   [回退官方源 pypi.org 重试 {len(failed)} 个包]")
+    still_failed = []
+    for p in failed:
+        c = pip_base + ["-i", OFFICIAL_PIP_INDEX, "--trusted-host", OFFICIAL_PIP_TRUSTED] + [p]
+        rr = subprocess.run(c, capture_output=True, text=True)
+        if rr.returncode != 0:
+            still_failed.append(p)
+            log(f"   [仍失败] {p}")
+            _log_pip_error(rr.stderr)
+        else:
+            log(f"   [官方源成功] {p}")
+    return still_failed
 
 
 # ----------------------------------------------------------------------------
@@ -474,14 +507,16 @@ def step_system(args):
         if shutil.which("brew") is None:
             log("[macOS] 未检测到 Homebrew。请先安装：/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"")
         else:
-            log("[macOS] brew install portaudio ffmpeg …")
-            subprocess.run(["brew", "install", "portaudio", "ffmpeg"])
+            # sox：音频格式转换（whisper / soundfile 可选依赖）；cmake：llama-cpp-python 源码编译需要
+            log("[macOS] brew install portaudio ffmpeg sox cmake …")
+            subprocess.run(["brew", "install", "portaudio", "ffmpeg", "sox", "cmake"])
     elif IS_LINUX:
         if shutil.which("apt-get"):
-            log("[Linux] apt 安装 portaudio19-dev python3-dev ffmpeg …")
+            log("[Linux] apt 安装 portaudio19-dev python3-dev ffmpeg sox cmake …")
             subprocess.run(sudo_prefix() + ["apt-get", "update"])
             subprocess.run(sudo_prefix() + ["apt-get", "install", "-y",
-                                            "portaudio19-dev", "python3-dev", "ffmpeg"])
+                                            "portaudio19-dev", "python3-dev",
+                                            "ffmpeg", "sox", "cmake"])
         elif shutil.which("dnf"):
             log("[Linux] dnf 安装 portaudio-devel python3-devel ffmpeg …")
             subprocess.run(sudo_prefix() + ["dnf", "install", "-y",
@@ -507,9 +542,15 @@ def step_ffmpeg(args):
         return True
 
     log("[ffmpeg] pip 安装 imageio-ffmpeg（提供跨平台二进制）…")
-    subprocess.run([sys.executable, "-m", "pip", "install", "imageio-ffmpeg",
-                    "-i", (args.mirror or DEFAULT_PIP_INDEX),
-                    "--trusted-host", DEFAULT_PIP_TRUSTED], capture_output=True)
+    rc = subprocess.run([sys.executable, "-m", "pip", "install", "imageio-ffmpeg",
+                         "-i", (args.mirror or DEFAULT_PIP_INDEX),
+                         "--trusted-host", DEFAULT_PIP_TRUSTED], capture_output=True).returncode
+    if rc != 0:
+        # 清华镜像个别包可能 403，回退官方源重试一次
+        log("[ffmpeg] 清华镜像安装失败，回退官方源 pypi.org 重试…")
+        subprocess.run([sys.executable, "-m", "pip", "install", "imageio-ffmpeg",
+                        "-i", OFFICIAL_PIP_INDEX, "--trusted-host", OFFICIAL_PIP_TRUSTED],
+                       capture_output=True)
     try:
         import imageio_ffmpeg  # noqa: F401
     except ImportError:
@@ -730,17 +771,19 @@ def step_verify(args):
         found = shutil.which("ffmpeg")
     log(f"[自检] ffmpeg：{'找到 ' + found if found else '未找到（请检查步骤 3）'}")
 
-    # 模型
-    expect_models = [
-        os.path.join("models", "Qwen3.5-9B-Q4_K_M.gguf"),
-        os.path.join("models", "Qwen3-TTS-12Hz-1.7B-Base"),
-    ]
-    for rel in expect_models:
-        p = os.path.join(PROJECT_ROOT, rel)
-        if os.path.exists(p):
-            log(f"[自检] 模型就绪：{rel}")
+    # 模型（部分模型落盘在子目录下，允许多候选路径，避免误报缺失）
+    expect_models = {
+        "大脑模型 Qwen3.5-9B": [os.path.join("models", "Qwen3.5-9B-Q4_K_M.gguf")],
+        "TTS 模型 Qwen3-TTS-12Hz-1.7B-Base": [
+            os.path.join("models", "qwen_tts", "Qwen3-TTS-12Hz-1.7B-Base"),
+            os.path.join("models", "Qwen3-TTS-12Hz-1.7B-Base"),
+        ],
+    }
+    for name, cands in expect_models.items():
+        if any(os.path.exists(os.path.join(PROJECT_ROOT, c)) for c in cands):
+            log(f"[自检] 模型就绪：{name}")
         else:
-            log(f"[自检] 模型缺失（不影响装包，运行前需补）：{rel}")
+            log(f"[自检] 模型缺失（不影响装包，运行前需补）：{name}")
     return True
 
 
