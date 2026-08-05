@@ -16,8 +16,12 @@
   - GET  /profiles                      列出已建声纹（期望 list 或 {"profiles": [...]}）
   - POST /profiles                      新建声纹（body: {name, language}）
   - POST /profiles/{id}/samples         上传参考音做克隆（multipart 文件字段 "file"）
-  - POST /generate                      合成语音（body: {text, profile_id, engine,
+  - POST /generate                      合成语音（body: {text, profile_id, engine?,
                                           language, instruct?}）→ 返回 WAV 字节
+
+引擎选择：本模块**不硬编码 TTS 引擎**。合成时只传 JAC 声纹的 profile_id，由 Voicebox
+  用该声纹在 App 内绑定的模型发声（用户需求：声纹是什么模型就用什么模型）。仅当显式
+  设置 VOICEBOX_ENGINE 环境变量时才会覆盖此行为。
 
 情绪保留：原 Qwen3-TTS 支持 8 种情绪自然语言控制。Voicebox 底层的 Chatterbox Turbo
 支持内联副语言标签（[laugh] [sigh] [gasp] [excited] [whisper] …），本模块把 8 种情绪
@@ -32,6 +36,7 @@ import sys
 import time
 import threading
 import platform
+import subprocess
 
 try:
     import requests
@@ -47,7 +52,7 @@ IS_LINUX = PLATFORM == 'Linux'
 
 # ---------- 默认配置（均可用环境变量覆盖） ----------
 DEFAULT_URL = "http://127.0.0.1:17493"
-DEFAULT_ENGINE = "chatterbox"          # macOS(MLX) 友好且支持中文+克隆的引擎
+DEFAULT_ENGINE = ""                     # 留空=不指定引擎，由 JAC 声纹在 Voicebox 中绑定的引擎决定
 DEFAULT_PROFILE_NAME = "JAC"           # 克隆声纹名（自动建/复用）
 DEFAULT_REF_WAV = "voices/silverwalf_voice.wav"
 DEFAULT_REF_TEXT = "哎，场地限制，我还有更棒的点子没展示呢...看谁能让我火力全开，指不定哪天就能有比999更劲爆的大数字呢。"
@@ -88,7 +93,7 @@ class VoiceboxSpeaker:
                  output_dir="temp/voice"):
         """初始化实例（仅探活，不加载模型/声纹）"""
         self.base_url = url or os.getenv("VOICEBOX_URL", DEFAULT_URL)
-        self.engine = engine or os.getenv("VOICEBOX_ENGINE", DEFAULT_ENGINE)
+        self.engine = engine or os.getenv("VOICEBOX_ENGINE") or None  # 留空则用声纹绑定的引擎
         self.profile_name = profile_name or os.getenv("VOICEBOX_PROFILE_NAME", DEFAULT_PROFILE_NAME)
         self.ref_wav = ref_wav or os.getenv("VOICEBOX_REF_WAV", DEFAULT_REF_WAV)
         self.ref_text = ref_text or os.getenv("VOICEBOX_REF_TEXT", DEFAULT_REF_TEXT)
@@ -112,7 +117,7 @@ class VoiceboxSpeaker:
         try:
             if self._check_health():
                 self.available = True
-                print(f"[TTS] Voicebox 服务已连接: {self.base_url}（引擎 {self.engine}）")
+                print(f"[TTS] Voicebox 服务已连接: {self.base_url}（使用 JAC 声纹绑定的引擎）")
             else:
                 print(f"[TTS] Voicebox 服务未响应（{self.base_url}），将回退系统 TTS。")
         except Exception as e:
@@ -196,9 +201,13 @@ class VoiceboxSpeaker:
         profile_id = self._resolve_profile()
         payload = {
             "text": gen_text,
-            "engine": self.engine,
             "language": self.language,
         }
+        # 关键：不指定引擎。只传 JAC 声纹的 profile_id，由 Voicebox 用该声纹在 App 里
+        # 绑定的那个模型来发声（用户的需求：声纹是什么模型就用什么模型）。
+        # 仅当显式设置 VOICEBOX_ENGINE 环境变量时才覆盖此行为。
+        if self.engine:
+            payload["engine"] = self.engine
         if profile_id:
             payload["profile_id"] = profile_id
         if instruct:
@@ -213,7 +222,7 @@ class VoiceboxSpeaker:
             path = os.path.join(self.output_dir, f"voicebox_{int(time.time() * 1000)}.wav")
             with open(path, "wb") as f:
                 f.write(wav_bytes)
-            print(f"[TTS] 正在播放（Voicebox / {self.engine}）: {path}")
+            print(f"[TTS] 正在播放（Voicebox / {self.engine or 'JAC声纹引擎'}）: {path}")
             from src.audio.playback import play_wav
             play_wav(path)
         except Exception as e:

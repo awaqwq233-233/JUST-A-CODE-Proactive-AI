@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-05 — Voicebox 不再硬编码引擎，由 JAC 声纹绑定的模型发声
+
+- **改动**：`VoiceboxSpeaker` 合成时**不再默认指定 `engine` 字段**。原默认 `chatterbox` 改为
+  留空（`DEFAULT_ENGINE=""`、`config.voicebox_engine=""`），`POST /generate` 只传 `JAC` 声纹的
+  `profile_id`，由 Voicebox 用该声纹在 App 内绑定的模型发声（即「声纹什么模型就用什么模型」）。
+  仅当显式设置环境变量 `VOICEBOX_ENGINE` 时才覆盖此行为。
+- **报错回退**：合成失败 / 服务未启动 / 声纹克隆失败 → 一律回退系统 TTS（macOS `say -v Tingting`），
+  不阻断主程序。**顺手修复** `_fallback_speak` 缺失 `import subprocess` 的 bug（否则回退路径会 NameError）。
+- **涉及文件**：`src/audio/voicebox_tts.py`、`src/utils/config.py`、`tests/test_voicebox_speaker.py`
+  （新增「默认不传 engine」与「显式设置才传 engine」两个用例，共 7 passed）、`AGENTS.md`、`README.md`。
+
+---
+
 ## 2026-08-05 — 新增 Voicebox 开源克隆 TTS，替代 macOS 上出 bug 的 Qwen3-TTS
 
 - **动机**：Qwen3-TTS 在 macOS（无 NVIDIA GPU）推理数值错乱（见下条），合成「外星人噪音」；

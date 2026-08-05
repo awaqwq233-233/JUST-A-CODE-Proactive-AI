@@ -39,7 +39,7 @@ J.A.C.核心由“J.A.C. Brain”驱动，通过“Agent”单元调度任务，
 •	DeepSeek
 输出与反馈机制：
 •	结果呈现层：结果/显卡层（APP）接收校验后的输出并展示
-•	语音合成输出：统一由 `build_speaker` 工厂选择引擎——**Voicebox（开源克隆引擎，macOS 主力）** 或 Qwen3-TTS（仅 NVIDIA）或系统 TTS 兜底；Voicebox 控制音色、情绪（Chatterbox 副语言标签 + 自然语言指令）、语速、停顿参数，并用参考音 voices/silverwalf_voice.wav 做声音克隆（详见 AGENTS.md）。macOS 上 Qwen3-TTS 因无 NVIDIA GPU 不可用，已默认由 Voicebox 接管。
+•	语音合成输出：统一由 `build_speaker` 工厂选择引擎——**Voicebox（开源克隆引擎，macOS 主力）** 或 Qwen3-TTS（仅 NVIDIA）或系统 TTS 兜底；Voicebox 用参考音 voices/silverwalf_voice.wav 克隆 J.A.C. 音色，**合成时不指定引擎、由 JAC 声纹在 App 中绑定的模型发声**，情绪通过引擎支持的副语言标签（如 Chatterbox 的 [laugh]/[sigh]）+ 自然语言指令表达（详见 AGENTS.md）。macOS 上 Qwen3-TTS 因无 NVIDIA GPU 不可用，已默认由 Voicebox 接管。
 •	闭环反馈路径：从“结果/显卡层”指向“开始判断周期”，实现持续感知与主动服务的动态循环
 硬件部署与运行环境:
 •	主机设备：MacBook Pro 14" M5PRO芯片，18+20核心，48gb统一内存

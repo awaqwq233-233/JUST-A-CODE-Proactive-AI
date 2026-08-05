@@ -24,7 +24,7 @@ class Config:
     # 默认开启：服务未启动会自动回退系统 TTS，不会阻断启动。
     use_voicebox_tts: bool = True
     voicebox_url: str = "http://127.0.0.1:17493"   # Voicebox 桌面 App 的 REST API 地址
-    voicebox_engine: str = "chatterbox"            # 引擎名（macOS 上支持中文+克隆的引擎）
+    voicebox_engine: str = ""                      # 留空=不指定，由 JAC 声纹绑定的模型决定
     voicebox_profile_name: str = "JAC"             # 克隆声纹名（自动建/复用）
     voicebox_ref_wav: str = "voices/silverwalf_voice.wav"  # 声音克隆参考音
     voicebox_ref_text: str = ("哎，场地限制，我还有更棒的点子没展示呢..."
@@ -69,7 +69,7 @@ class Config:
             use_qwen_tts=truthy("USE_QWEN_TTS", True),
             use_voicebox_tts=truthy("USE_VOICEBOX_TTS", True),
             voicebox_url=os.environ.get("VOICEBOX_URL", "http://127.0.0.1:17493"),
-            voicebox_engine=os.environ.get("VOICEBOX_ENGINE", "chatterbox"),
+            voicebox_engine=os.environ.get("VOICEBOX_ENGINE", ""),
             voicebox_profile_name=os.environ.get("VOICEBOX_PROFILE_NAME", "JAC"),
             voicebox_ref_wav=os.environ.get("VOICEBOX_REF_WAV", "voices/silverwalf_voice.wav"),
             voicebox_ref_text=os.environ.get("VOICEBOX_REF_TEXT",

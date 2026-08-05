@@ -69,11 +69,11 @@ class TestVoiceboxSpeaker(unittest.TestCase):
         session.post.side_effect = _post
         return session
 
-    def _make_speaker(self, **kw):
+    def _make_speaker(self, engine=None, **kw):
         """在 patch 掉 requests.Session 的前提下构造 VoiceboxSpeaker。"""
         session = self._make_session(**kw)
         with patch("src.audio.voicebox_tts.requests.Session", return_value=session):
-            sp = VoiceboxSpeaker(output_dir="temp/test_voice")
+            sp = VoiceboxSpeaker(engine=engine, output_dir="temp/test_voice")
         return sp
 
     def test_health_ok_sets_available(self):
@@ -112,6 +112,16 @@ class TestVoiceboxSpeaker(unittest.TestCase):
         m_play.assert_called_once()
         gen_payload = sp.session.post.call_args_list[-1].kwargs["json"]
         self.assertIn("[laugh]", gen_payload["text"])
+        # 默认不传 engine：由 JAC 声纹绑定的模型决定
+        self.assertNotIn("engine", gen_payload)
+
+    def test_speak_passes_engine_when_explicitly_set(self):
+        """显式设置 engine 时，合成请求应带上 engine 字段（覆盖默认行为）。"""
+        sp = self._make_speaker(engine="chatterbox")
+        with patch("src.audio.playback.play_wav"), patch("builtins.open", mock_open()):
+            sp.speak("你好世界")
+        gen_payload = sp.session.post.call_args_list[-1].kwargs["json"]
+        self.assertEqual(gen_payload.get("engine"), "chatterbox")
 
     def test_speak_fallback_when_unavailable(self):
         """不可用时 speak 应回退系统 TTS，而非抛错。"""

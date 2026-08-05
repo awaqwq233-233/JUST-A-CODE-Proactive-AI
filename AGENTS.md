@@ -102,7 +102,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 当前 TTS：默认走 `build_speaker` 工厂，选择链 **Voicebox（开源克隆引擎，REST API）→ Qwen3-TTS（仅 NVIDIA）→ 系统 TTS 兜底**。
 - **Voicebox（macOS 主力）**：`src/audio/voicebox_tts.py`，调开源 Voicebox App 的 `http://127.0.0.1:17493` REST API；自动建/复用名为 **JAC** 的克隆声纹（用 `voices/silverwalf_voice.wav`），支持中文 + 声音克隆；8 种情绪映射成 Chatterbox Turbo 副语言标签（`[laugh]/[sigh]/[gasp]/[excited]/[whisper]`）+ instruct；服务未启动自动回退系统 `say -v Tingting`。
 - **Qwen3-TTS（仅 NVIDIA）**：`src/audio/qwen_tts.py`，开源本地 TTS，支持情绪/语气自然语言控制与 3 秒声音克隆（克隆参考音在 `voices/`）。macOS 无 NVIDIA 卡，已默认禁用（见 CHANGELOG 2026-08-05）；可用 `QWEN_TTS_FORCE=1` 强开。默认克隆模式（`clone`）使用 `voices/silverwalf_voice.wav`，参考文本见 `qwen_tts.py` 的 `DEFAULT_REF_TEXT`；可用环境变量 `QWEN_TTS_REF` / `QWEN_TTS_REF_TEXT` 临时覆盖。
-- 配置项（`src/utils/config.py`，均可用环境变量覆盖）：`use_voicebox_tts` / `voicebox_url` / `voicebox_engine`(默认 chatterbox) / `voicebox_profile_name`(JAC) / `voicebox_ref_wav` / `voicebox_ref_text` / `voicebox_language`(zh) / `voicebox_fallback_voice`(Tingting)。
+- 配置项（`src/utils/config.py`，均可用环境变量覆盖）：`use_voicebox_tts` / `voicebox_url` / `voicebox_engine`(默认留空，由 JAC 声纹绑定的模型决定；设 `VOICEBOX_ENGINE` 可覆盖) / `voicebox_profile_name`(JAC) / `voicebox_ref_wav` / `voicebox_ref_text` / `voicebox_language`(zh) / `voicebox_fallback_voice`(Tingting)。
 
 ## 设置与运行
 
