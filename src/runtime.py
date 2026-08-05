@@ -26,6 +26,7 @@ from src.brain.llm import LocalBrain
 from src.memory import MemoryManager
 from src.judgment.judge import JudgmentEngine
 from src.utils.config import Config
+from src.audio.speaker_factory import build_speaker, preload_if_needed
 from src.utils.net import setup_insecure_ssl
 
 
@@ -75,27 +76,10 @@ class JACRuntime:
             return
         detector = VisionDetector()
 
-        # 2) 扬声器：use_qwen_tts 开关决定（覆盖原隐式回退）
-        # Qwen3-TTS 延迟加载：避免 GUI 启动时就拉起沉重的 transformers/huggingface_hub 导入链
-        speaker = None
-        QwenTTSSpeaker = None
-        QWEN_TTS_AVAILABLE = False
-        if config.use_qwen_tts:
-            try:
-                from src.audio import qwen_tts as _qt
-                if _qt.ensure_qwen_tts():
-                    import importlib
-                    importlib.reload(_qt)
-                    from src.audio.qwen_tts import QwenTTSSpeaker, QWEN_TTS_AVAILABLE
-            except Exception as e:
-                print(f"[TTS] Qwen3-TTS 不可用（{e}），将回退系统 TTS。")
-        if QwenTTSSpeaker is not None and QWEN_TTS_AVAILABLE:
-            speaker = QwenTTSSpeaker()
-        if speaker is None or not getattr(speaker, "available", False):
-            speaker = Speaker()
-        self.speaker = speaker
-        if getattr(speaker, "_ensure_model", None) is not None and getattr(speaker, "available", False):
-            threading.Thread(target=speaker._ensure_model, daemon=True, name="tts-preload").start()
+        # 2) 扬声器：统一走 build_speaker 工厂
+        #   优先级 Voicebox（开源克隆 TTS）-> Qwen3-TTS（仅 NVIDIA）-> 系统 TTS 兜底
+        self.speaker = build_speaker(config)
+        preload_if_needed(self.speaker)
 
         recognizer = SpeechRecognizer(model_size="tiny")
         recorder = AudioRecorder()

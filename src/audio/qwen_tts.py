@@ -8,6 +8,7 @@ import json
 import struct
 import warnings
 from src.utils.net import setup_insecure_ssl
+from src.audio.playback import play_wav  # 共享 WAV 播放工具（避免与 Voicebox 重复实现）
 
 PLATFORM = platform.system()
 IS_WINDOWS = PLATFORM == 'Windows'
@@ -463,31 +464,8 @@ class QwenTTSSpeaker:
         print(f"[J.A.C.(回退)] {text}")
 
 
-def play_wav(path):
-    """playwav（带结果日志，便于排查静音）"""
-    try:
-        if IS_MACOS:
-            import subprocess
-            r = subprocess.run(["afplay", path], capture_output=True, text=True)
-            if r.returncode != 0:
-                print(f"[警告] afplay 播放失败（{path}）：{r.stderr.strip()[:200]}")
-            else:
-                print(f"[TTS] 播放完成: {path}")
-        elif IS_WINDOWS:
-            import subprocess
-            ps = f'(New-Object Media.SoundPlayer("{path}")).PlaySync()'
-            r = subprocess.run(["powershell", "-Command", ps], capture_output=True, text=True)
-            if r.returncode != 0:
-                print(f"[警告] Windows 播放失败（{path}）：{r.stderr.strip()[:200]}")
-        elif IS_LINUX:
-            import subprocess
-            r = subprocess.run(["aplay", path], capture_output=True, text=True)
-            if r.returncode != 0:
-                print(f"[警告] aplay 播放失败（{path}）：{r.stderr.strip()[:200]}")
-        else:
-            print(f"[播放] {path}")
-    except Exception as e:
-        print(f"[警告] WAV 播放失败: {e} ({path})")
+# play_wav 已迁移到 src/audio/playback.py（见 playback.play_wav），此处不再重复定义，
+# 由顶部 `from src.audio.playback import play_wav` 复用，保证 Qwen3-TTS 与 Voicebox 播放一致。
 
 
 def ensure_qwen_tts(autoinstall=True, autodownload=False):

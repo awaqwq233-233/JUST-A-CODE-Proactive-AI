@@ -28,7 +28,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 
 ### 运行流程（`main.py`）
 
-1. 初始化摄像头、YOLO 检测器、扬声器（`QwenTTSSpeaker`，不可用则回退 `Speaker`）、Whisper、`AudioRecorder`、`LocalBrain`（**默认 `backend="lm_studio"`，模型 `Qwen3.5-9B-Q4_K_M.gguf`**）。
+1. 初始化摄像头、YOLO 检测器、扬声器（统一走 `build_speaker` 工厂：**Voicebox** → `QwenTTSSpeaker`（仅 NVIDIA）→ `Speaker` 兜底；macOS 上 Qwen 禁用、由 Voicebox 接管）、Whisper、`AudioRecorder`、`LocalBrain`（**默认 `backend="lm_studio"`，模型 `Qwen3.5-9B-Q4_K_M.gguf`**）。
 2. 启动三条线程：音频主循环（监听→识别→唤醒判断→响应）、**控制台输入线程（新增）**、判断引擎线程（daemon）。
 3. 主循环每帧：取帧 → YOLO 检测 → 更新 `SharedContext`（视觉摘要 + 缓存最新帧）→ 绘制 FPS / 状态灯（Listening/Thinking/Speaking）→ `cv2.imshow`。
 4. 唤醒词集合：`jac` / `j.a.c` / `杰克` / `接客` / `你好` / `hello jac` / `hi jac` / `你好 jac` / `hey jac`。
@@ -55,7 +55,10 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 - `src/audio/recorder.py`：PyAudio + WebRTC VAD 录音器。
 - `src/audio/stt.py`：OpenAI Whisper 封装。
 - `src/audio/tts.py`：跨平台系统 TTS 兜底封装。
-- `src/audio/qwen_tts.py`：Qwen3-TTS 语音合成（开源本地 TTS，支持情绪/语气控制与声音克隆），带系统 TTS 兜底降级。
+- `src/audio/playback.py`：共享 WAV 播放工具（`afplay` / PowerShell / `aplay`），Qwen3-TTS 与 Voicebox 共用。
+- `src/audio/voicebox_tts.py`：**新增**，Voicebox 克隆 TTS（开源，REST API `http://127.0.0.1:17493`，macOS 友好替代 Qwen3-TTS），自动克隆 JAC 声纹 + 8 种情绪映射 + 系统 TTS 兜底。
+- `src/audio/speaker_factory.py`：**新增**，统一扬声器选择工厂 `build_speaker(config)`（Voicebox → Qwen3-TTS → 系统 TTS），消除 main.py / runtime.py 重复逻辑。
+- `src/audio/qwen_tts.py`：Qwen3-TTS 语音合成（开源本地 TTS，支持情绪/语气控制与声音克隆，仅 NVIDIA 平台启用），带系统 TTS 兜底降级。
 - `src/brain/llm.py`：`LocalBrain`，llama.cpp / LM Studio / Ollama / auto 多后端，含 `think_with_image`。
 - `src/judgment/judge.py`：**新增**，主动判断引擎（MiniCPM-o via LM Studio）。
 - `src/judgment/__init__.py`：**新增**。
@@ -96,7 +99,10 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 
 当前 STT：Whisper，`model_size="tiny"`，非流式。
 
-当前 TTS：默认 Qwen3-TTS（`src/audio/qwen_tts.py`，开源本地 TTS，支持情绪/语气自然语言控制与 3 秒声音克隆，克隆参考音在 `voices/`）；不可用时代码自动降级到 pyttsx3 / macOS `say`。默认克隆模式（`clone`）使用 `voices/silverwalf_voice.wav` 作 3 秒声音克隆，参考文本为 `qwen_tts.py` 的 `DEFAULT_REF_TEXT`；可用环境变量 `QWEN_TTS_REF` / `QWEN_TTS_REF_TEXT` 临时覆盖。
+当前 TTS：默认走 `build_speaker` 工厂，选择链 **Voicebox（开源克隆引擎，REST API）→ Qwen3-TTS（仅 NVIDIA）→ 系统 TTS 兜底**。
+- **Voicebox（macOS 主力）**：`src/audio/voicebox_tts.py`，调开源 Voicebox App 的 `http://127.0.0.1:17493` REST API；自动建/复用名为 **JAC** 的克隆声纹（用 `voices/silverwalf_voice.wav`），支持中文 + 声音克隆；8 种情绪映射成 Chatterbox Turbo 副语言标签（`[laugh]/[sigh]/[gasp]/[excited]/[whisper]`）+ instruct；服务未启动自动回退系统 `say -v Tingting`。
+- **Qwen3-TTS（仅 NVIDIA）**：`src/audio/qwen_tts.py`，开源本地 TTS，支持情绪/语气自然语言控制与 3 秒声音克隆（克隆参考音在 `voices/`）。macOS 无 NVIDIA 卡，已默认禁用（见 CHANGELOG 2026-08-05）；可用 `QWEN_TTS_FORCE=1` 强开。默认克隆模式（`clone`）使用 `voices/silverwalf_voice.wav`，参考文本见 `qwen_tts.py` 的 `DEFAULT_REF_TEXT`；可用环境变量 `QWEN_TTS_REF` / `QWEN_TTS_REF_TEXT` 临时覆盖。
+- 配置项（`src/utils/config.py`，均可用环境变量覆盖）：`use_voicebox_tts` / `voicebox_url` / `voicebox_engine`(默认 chatterbox) / `voicebox_profile_name`(JAC) / `voicebox_ref_wav` / `voicebox_ref_text` / `voicebox_language`(zh) / `voicebox_fallback_voice`(Tingting)。
 
 ## 设置与运行
 

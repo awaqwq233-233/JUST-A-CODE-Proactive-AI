@@ -4,6 +4,33 @@
 
 ---
 
+## 2026-08-05 — 新增 Voicebox 开源克隆 TTS，替代 macOS 上出 bug 的 Qwen3-TTS
+
+- **动机**：Qwen3-TTS 在 macOS（无 NVIDIA GPU）推理数值错乱（见下条），合成「外星人噪音」；
+  开源项目 voicebox.sh 是一个本地优先的 TTS 聚合 App（Tauri/Rust），以 REST API
+  （默认 `http://127.0.0.1:17493`）对外服务，内部 Chatterbox 引擎在 macOS(MLX) 上支持
+  中文 + 声音克隆，正好替代。
+- **新增文件**：
+  - `src/audio/voicebox_tts.py`：`VoiceboxSpeaker`，走 Voicebox REST API：
+    `GET /health` 探活 → 自动建/复用名为 **JAC** 的克隆声纹（用 `voices/silverwalf_voice.wav`）
+    → `POST /generate` 拿 WAV 用 `afplay` 播；8 种情绪映射成 Chatterbox Turbo 副语言标签
+    （`[laugh]/[sigh]/[gasp]/[excited]/[whisper]`）+ instruct 自然语言指令；失败回退系统 TTS。
+  - `src/audio/playback.py`：抽出共享 `play_wav`（原在 `qwen_tts.py`），Qwen3-TTS 与 Voicebox 共用。
+  - `src/audio/speaker_factory.py`：`build_speaker(config)` 统一 TTS 选择（消除 main.py /
+    runtime.py 重复逻辑），选择链 **Voicebox → Qwen3-TTS(仅 NVIDIA) → 系统 TTS 兜底**；
+    另含 `preload_if_needed` 预热 Qwen 模型。
+  - `tests/test_voicebox_speaker.py`：mock REST API 的单元测试（探活/克隆/情绪/降级），6 passed。
+- **配置**（`src/utils/config.py`，均可用环境变量覆盖）：`use_voicebox_tts`(默认 True) /
+  `voicebox_url` / `voicebox_engine`(默认 chatterbox) / `voicebox_profile_name`(JAC) /
+  `voicebox_ref_wav` / `voicebox_ref_text` / `voicebox_language`(zh) / `voicebox_fallback_voice`(Tingting)。
+- **接入**：`main.py` 与 `runtime.py` 的 speaker 选择统一改为 `build_speaker(config)`；
+  macOS 上 Qwen 仍禁用，由 Voicebox 接管；Voicebox 未启动则自动回退系统 `say -v Tingting`。
+- **已知风险**：Chatterbox 偏英文，macOS 上中文克隆音质可能不理想；已做成 `VOICEBOX_ENGINE`
+  可切换 + 系统 TTS 兜底，真跑起来若中文不行可换引擎或回退。
+- **App 内设置**：打开 Voicebox App（或 `docker compose up` 起无 GUI 后端），默认监听 17493；
+  在 App 内确保已下载/启用一个支持中文+克隆的引擎（如 Chatterbox / Chatterbox Turbo），
+  J.A.C. 启动时会自动建 JAC 声纹并上传 `voices/silverwalf_voice.wav` 做克隆。详见 README.md。
+
 ## 2026-08-05 — 结论：Qwen3-TTS 在 macOS（无 NVIDIA GPU）上不可用，改为平台分流
 
 - **诊断铁证**：在声码器 `F.embedding` 处抓取 talker 生成的原始 audio codes，统计分布：

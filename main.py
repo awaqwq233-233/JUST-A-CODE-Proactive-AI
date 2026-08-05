@@ -75,7 +75,8 @@ except Exception as e:
 from src.capture.camera import Camera
 from src.analysis.detector import VisionDetector
 from src.audio.tts import Speaker
-# qwen_tts 不在顶层 import：见下方 _load_qwen_tts（懒加载，避免阻塞 GUI 启动）
+from src.audio.speaker_factory import build_speaker, preload_if_needed
+# qwen_tts 不在顶层 import：build_speaker 内部按需懒加载（避免阻塞 GUI 启动）
 from src.audio.stt import SpeechRecognizer
 from src.audio.recorder import AudioRecorder
 from src.brain.llm import LocalBrain
@@ -84,31 +85,8 @@ from src.memory import MemoryManager, seed_base_memories
 from src.utils.net import setup_insecure_ssl
 
 
-def _load_qwen_tts():
-    """懒加载 Qwen3-TTS。
-
-    qwen_tts 会拉起沉重的 transformers / huggingface_hub 导入链（首次可能耗时数十秒），
-    若放在模块顶层 import，会阻塞 GUI 窗口弹出与控制台交互。故改为在真正创建扬声器时才加载，
-    且仅加载一次（之后由 sys.modules 缓存）。返回 (QwenTTSSpeaker, available)。
-
-    若包未安装，这里会触发自动安装（清华镜像优先）与权重补全，安装成功才返回可用。
-    """
-    try:
-        from src.audio import qwen_tts as qt
-        if not qt.ensure_qwen_tts():
-            print("[TTS] Qwen3-TTS 不可用（自动安装失败），将回退系统 TTS。")
-            return None, False
-        # 安装后重新加载模块，刷新模块级 QWEN_TTS_AVAILABLE 标志
-        import importlib
-        importlib.reload(qt)
-        from src.audio.qwen_tts import QwenTTSSpeaker, QWEN_TTS_AVAILABLE
-        if QWEN_TTS_AVAILABLE:
-            return QwenTTSSpeaker, True
-        print("[TTS] Qwen3-TTS 不可用，将回退系统 TTS。")
-        return None, False
-    except Exception as e:
-        print(f"[TTS] Qwen3-TTS 不可用（{e}），将回退系统 TTS。")
-        return None, False
+# 注：Qwen3-TTS 的懒加载逻辑已统一收进 src/audio/speaker_factory.build_speaker，
+#     此处不再重复（避免与 runtime.py 出现两份分叉的加载代码）。
 
 
 # 全局状态
@@ -580,18 +558,11 @@ def main():
     if not camera.start(): return
 
     detector = VisionDetector()
-    # 扬声器选择：优先 Qwen3-TTS（本地优先、开源、支持情绪/声音克隆），
-    # 不可用时回退系统 TTS（pyttsx3 / macOS say / espeak）。
-    speaker = None
-    QwenTTSSpeaker, QWEN_TTS_AVAILABLE = _load_qwen_tts()
-    if QwenTTSSpeaker is not None and QWEN_TTS_AVAILABLE:
-        speaker = QwenTTSSpeaker()
-    if speaker is None or not getattr(speaker, "available", False):
-        speaker = Speaker()
-
-    # 预加载 Qwen3-TTS 模型（后台线程）：避免首次发声才加载导致慢一截
-    if getattr(speaker, "_ensure_model", None) is not None and getattr(speaker, "available", False):
-        threading.Thread(target=speaker._ensure_model, daemon=True, name="tts-preload").start()
+    # 扬声器选择：统一走 build_speaker 工厂
+    #   优先级 Voicebox（开源克隆 TTS，macOS 友好）-> Qwen3-TTS（仅 NVIDIA）-> 系统 TTS 兜底
+    speaker = build_speaker(Config.load())
+    # 若选中 Qwen3-TTS，后台预热模型，避免首次发声才加载导致慢一截
+    preload_if_needed(speaker)
     
     # 根据电脑配置选择模型大小
     # recognizer = SpeechRecognizer(model_size="base") 

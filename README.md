@@ -39,7 +39,7 @@ J.A.C.核心由“J.A.C. Brain”驱动，通过“Agent”单元调度任务，
 •	DeepSeek
 输出与反馈机制：
 •	结果呈现层：结果/显卡层（APP）接收校验后的输出并展示
-•	语音合成输出：Qwen3-TTS 模块控制音色、情绪（自然语言指令）、语速、停顿参数（当前原型默认用开源本地 Qwen3-TTS + 参考音 voices/silverwalf_voice.wav 做 3 秒声音克隆，详见 AGENTS.md）
+•	语音合成输出：统一由 `build_speaker` 工厂选择引擎——**Voicebox（开源克隆引擎，macOS 主力）** 或 Qwen3-TTS（仅 NVIDIA）或系统 TTS 兜底；Voicebox 控制音色、情绪（Chatterbox 副语言标签 + 自然语言指令）、语速、停顿参数，并用参考音 voices/silverwalf_voice.wav 做声音克隆（详见 AGENTS.md）。macOS 上 Qwen3-TTS 因无 NVIDIA GPU 不可用，已默认由 Voicebox 接管。
 •	闭环反馈路径：从“结果/显卡层”指向“开始判断周期”，实现持续感知与主动服务的动态循环
 硬件部署与运行环境:
 •	主机设备：MacBook Pro 14" M5PRO芯片，18+20核心，48gb统一内存
@@ -112,7 +112,7 @@ o	DeepSeek
 ________________________________________
 Output & Feedback Mechanism
 •	Result Presentation Layer: The Result/Display Layer (APP) receives validated output and presents it
-•	Speech Synthesis Output: Qwen3-TTS module controls voice timbre, emotion (natural-language instructions), speech rate, and pause parameters (the current prototype uses open-source local Qwen3-TTS with a 3-second voice clone from voices/silverwalf_voice.wav; see AGENTS.md)
+•	Speech Synthesis Output: a unified `build_speaker` factory picks the engine — **Voicebox (open-source cloning engine, macOS primary)** or Qwen3-TTS (NVIDIA only) or system TTS fallback. Voicebox controls timbre, emotion (Chatterbox paralinguistic tags + natural-language instructions), speech rate, and pauses, cloning the J.A.C. voice from voices/silverwalf_voice.wav (see AGENTS.md). On macOS, Qwen3-TTS is unavailable without an NVIDIA GPU and is replaced by Voicebox by default.
 •	Closed-Loop Feedback Path: From the "Result/Display Layer" back to "Start Judgment Cycle," achieving continuous perception and a dynamic loop of proactive service
 ________________________________________
 Hardware Deployment & Runtime Environment
