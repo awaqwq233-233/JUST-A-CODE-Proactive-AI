@@ -10,14 +10,18 @@
   Chatterbox 系列。因此本模块让 J.A.C. 走 Voicebox 的 HTTP 接口，用
   voices/silverwalf_voice.wav 克隆出 J.A.C. 的固定音色，替代易出 bug 的 Qwen3-TTS。
 
-接口约定（基于 voicebox.sh 文档 /docs 调研，若实际版本端点有出入，集中在本文件
-顶部的常量与 _ENDPOINT_* 方法微调即可）：
+接口约定（已通过 OpenAPI /openapi.json 实测 voicebox API v0.5.0，端点/字段以本文件为准）：
   - GET  /health                        探活（服务未启动即连接失败）
-  - GET  /profiles                      列出已建声纹（期望 list 或 {"profiles": [...]}）
+  - GET  /profiles                      列出已建声纹（list[{id, name, ...}]）
   - POST /profiles                      新建声纹（body: {name, language}）
   - POST /profiles/{id}/samples         上传参考音做克隆（multipart 文件字段 "file"）
-  - POST /generate                      合成语音（body: {text, profile_id, engine?,
-                                          language, instruct?}）→ 返回 WAV 字节
+  - POST /generate                      提交合成任务（body: {text, profile_id, engine?,
+                                          language, instruct?}）→ 返回 JSON，含 generation id
+                                          （异步：status="generating"，需轮询取音频）
+  - GET  /audio/{id}                    按 generation id 取音频字节（audio/x-wav，PCM WAV）；
+                                          生成中服务端返回 HTTP 500，需重试直到拿到 >44 字节
+  注意：旧实现把 /generate 的 JSON 响应整个当 WAV 写入，导致 afplay 报
+  AudioFileOpen failed ('typ?')。正确做法是提交后轮询 /audio/{id} 取真正音频。
 
 引擎选择：本模块**不硬编码 TTS 引擎**。合成时只传 JAC 声纹的 profile_id，由 Voicebox
   用该声纹在 App 内绑定的模型发声（用户需求：声纹是什么模型就用什么模型）。仅当显式
@@ -214,20 +218,49 @@ class VoiceboxSpeaker:
             payload["instruct"] = instruct
 
         try:
+            # 1) 提交合成任务（异步）：/generate 返回 generation id（JSON），而非音频字节。
+            #    旧实现把这段 JSON 直接当 WAV 写入，导致 afplay 报 AudioFileOpen failed ('typ?')。
             resp = self.session.post(f"{self.base_url}/generate", json=payload, timeout=60)
             resp.raise_for_status()
-            wav_bytes = resp.content
-            if not wav_bytes or len(wav_bytes) < 44:
-                raise RuntimeError("Voicebox 返回音频为空或过小")
+            data = resp.json()
+            gen_id = data.get("id")
+            if not gen_id:
+                raise RuntimeError(f"Voicebox /generate 未返回 id：{data}")
+            # 2) 轮询 /audio/{id} 直到音频就绪（生成中服务端返回 HTTP 500，需重试）
+            wav_bytes = self._poll_audio(gen_id)
+            # 3) 校验 WAV 魔数（RIFF....WAVE），避免再次出现无效文件
+            if not wav_bytes or wav_bytes[:4] != b"RIFF" or wav_bytes[8:12] != b"WAVE":
+                raise RuntimeError("Voicebox 返回的音频不是合法 WAV")
+            # 4) 写文件并播放；播放失败（afplay 报错）则以系统 TTS 兜底
             path = os.path.join(self.output_dir, f"voicebox_{int(time.time() * 1000)}.wav")
             with open(path, "wb") as f:
                 f.write(wav_bytes)
             print(f"[TTS] 正在播放（Voicebox / {self.engine or 'JAC声纹引擎'}）: {path}")
             from src.audio.playback import play_wav
-            play_wav(path)
+            if not play_wav(path):
+                raise RuntimeError("Voicebox 音频播放失败（afplay）")
         except Exception as e:
-            print(f"[错误] Voicebox 合成失败: {e}")
+            print(f"[错误] Voicebox 合成/播放失败: {e}")
             self._fallback_speak(text)
+
+    def _poll_audio(self, gen_id, timeout=60.0, interval=0.5):
+        """轮询 /audio/{id} 直到返回可用音频字节（Voicebox /generate 是异步的）。
+
+        /generate 提交后 status="generating"，此时 GET /audio/{id} 返回 HTTP 500；
+        持续轮询，直到拿到 >44 字节的音频（audio/x-wav）即视为就绪并返回。
+        超时则抛异常，由 speak() 的 except 统一切换到系统 TTS 兜底。
+        """
+        deadline = time.time() + timeout
+        last_err = None
+        while time.time() < deadline:
+            try:
+                r = self.session.get(f"{self.base_url}/audio/{gen_id}", timeout=30)
+                if r.status_code == 200 and len(r.content) > 44:
+                    return r.content
+            except Exception as e:  # 生成中服务端返回 500 等，忽略并继续轮询
+                last_err = e
+            time.sleep(interval)
+        raise RuntimeError(f"Voicebox 轮询音频超时（{gen_id}）：{last_err}")
 
     @staticmethod
     def _normalize_emotion(emotion_hint):

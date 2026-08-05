@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-08-05 — 修复 Voicebox「合成成功但 J.A.C. 播不到声音」（typ?）+ GUI 停止/复制/闪退
+
+### 1. Voicebox 发声 bug（调用契约错误，根因坐实）
+- **现象**：Voicebox 服务端合成成功，但 J.A.C. 写出的 `temp/voice/voicebox_*.wav` 被 afplay 报
+  `AudioFileOpen failed ('typ?')`，且播放失败被静默吞掉 → 全程无声音、无系统兜底。
+- **根因（OpenAPI /openapi.json + curl 实测 v0.5.0）**：`POST /generate` 是**异步**的，200 响应是
+  `application/json`（`GenerationResponse`，含 `id`），**不是音频字节**。旧 `speak()` 把整段 JSON 当 WAV
+  写入 → 文件是 JSON 文本 → afplay 打不开。次要 bug：`playback.play_wav` 把播放失败（afplay 非零退出码/
+  异常）悄悄 print 掉、不报错 → `speak()` 的 `except` 兜底链永远触发不了。
+- **修复**：
+  - `src/audio/playback.py`：`play_wav` 改返回 `bool`（成功 True / 失败 False），保留 defensive print、不 raise。
+  - `src/audio/voicebox_tts.py`：`speak()` 重写 → `/generate` 取 `id` → 新增 `_poll_audio(gen_id)` 轮询
+    `GET /audio/{id}`（超时 60s，生成中 HTTP 500 重试）→ 校验 WAV 魔数（`RIFF`/`WAVE`）→ 写 `.wav` →
+    `play_wav` 返回 False 时 raise 触发 `_fallback_speak`（系统 `say -v Tingting` 兜底）。
+    顶部接口约定注释按实测 v0.5.0 重写。
+- **验证**：managed venv 装 requests 跑临时脚本（替换 play_wav 为记录型），确认生成→轮询→写出**合法 WAV**
+  （魔数通过）且 play_wav 被调用。结论：发声链路修复成功。
+
+### 2. GUI 修复（用户需求：停止 ≠ 关窗）
+- **需求**：点「停止」= 停掉 J.A.C. 运行时但 **GUI 保持打开**（控制台日志保留可复制，用于 debug）；
+  只有点窗口 X 才真正退出程序。
+- **控制台可复制**：`gui.py` 控制台 `QPlainTextEdit` 显式
+  `setTextInteractionFlags(TextSelectableByMouse | TextSelectableByKeyboard)`；
+  `_pull_logs` 在用户有选区（`textCursor().hasSelection()`）时不滚动/移动光标，避免打断复制。
+- **防闪退（macOS Metal）**：之前停运行时主线程释放摄像头、但 `frame_timer`(33ms) 仍在 `_pull_frame`
+  向已销毁/释放的窗口提交帧 → Metal 断言崩溃。修复：`_pull_frame` 在 `not runtime.running` 时早退；
+  新增 `_safe_stop_runtime()`（先 `frame_timer.stop()` + `video_label.clear()` 释放 Metal 资源，再
+  `runtime.stop()`），被「停止」按钮与 `closeEvent` 共用；`closeEvent` 用 `try/finally` 保证无论如何都
+  `super().closeEvent(event)` 关窗、不崩溃。
+- **边界**：新增 `self._stop_requested` 标志，处理「启动过程中点停止」——`_do_start` 完成后若其为 True
+  则 `_safe_stop_runtime()`。
+- **验证**：`py_compile` 三个文件通过；GUI 运行时行为（停止不关窗、控制台 Cmd+C、点 X 退出不闪退）
+  需在用户 GUI 环境实测。
+
+---
+
 ## 2026-08-05 — Voicebox 不再硬编码引擎，由 JAC 声纹绑定的模型发声
 
 - **改动**：`VoiceboxSpeaker` 合成时**不再默认指定 `engine` 字段**。原默认 `chatterbox` 改为

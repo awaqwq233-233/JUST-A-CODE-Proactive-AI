@@ -205,6 +205,7 @@ class MainWindow(QMainWindow):
         )
         self.panel_collapsed = False
         self.zoom = 1.0
+        self._stop_requested = False  # 启动过程中若用户点「停止」，用于中止刚拉起的运行时
 
         self.setWindowTitle("J.A.C.Prototype")
         self.resize(1280, 720)
@@ -272,6 +273,11 @@ class MainWindow(QMainWindow):
         self.console = QPlainTextEdit()
         self.console.setObjectName("console")
         self.console.setReadOnly(True)
+        # 显式声明可选中/可复制：macOS + Fusion 样式下只读控件偶发选择被禁用，
+        # 这里强制开启鼠标与键盘选择，保证控制台日志随时可被 Cmd+C 复制（用于 debug）。
+        self.console.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        )
         self.console.setMinimumWidth(320)
         self.console.setMaximumBlockCount(4000)  # 限制缓冲，防止无限增长卡顿
         self.console.setFont(QFont("Consolas", 11))
@@ -409,6 +415,10 @@ class MainWindow(QMainWindow):
         macOS Metal 后端对空 QPixmap 做 scaled() 会断言崩溃(abort)，故任何一
         环拿到空对象都直接跳过本次绘制，绝不把空 pixmap 交出去渲染。
         """
+        # 运行时已停止（点了「停止」或正在退出窗口）则不再绘制：避免在底层资源
+        # 释放/窗口销毁过程中仍向 Metal 渲染管线提交帧，触发断言崩溃（闪退）。
+        if not self.runtime.running:
+            return
         f = self.context.get_annotated_frame()
         if f is None:
             return
@@ -437,9 +447,10 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------- 取日志
     def _pull_logs(self):
-        # 仅当用户已滚动到底部时才自动跟随，否则保留其阅读/复制位置
+        # 仅当用户已滚动到底部且未在选中文本时才自动跟随，否则保留其阅读/复制位置
         sb = self.console.verticalScrollBar()
         at_bottom = sb.value() >= sb.maximum() - 2
+        has_selection = self.console.textCursor().hasSelection()
         while True:
             try:
                 msg = self.log_q.get_nowait()
@@ -449,7 +460,8 @@ class MainWindow(QMainWindow):
             clean = msg.replace("\r", "\n").rstrip("\n")
             if clean:
                 self.console.appendPlainText(clean)
-        if at_bottom:
+        # 用户正在选中复制（有选区）时不打断其选型；否则在底部时自动跟随最新日志
+        if at_bottom and not has_selection:
             self.console.moveCursor(QTextCursor.End)
 
     # ----------------------------------------------------- 状态栏
@@ -461,6 +473,7 @@ class MainWindow(QMainWindow):
     # ----------------------------------------------------- 启动/停止
     def _toggle_run(self):
         if not self.runtime.running:
+            self._stop_requested = False  # 开始新启动，清除上一次的「停止」意图
             cfg = self._collect_config()
             # 把重活放到后台线程：摄像头/YOLO/Whisper/Qwen3-TTS/记忆加载
             # 全在主线程同步执行会长时间阻塞事件循环，macOS 会判为「未响应」，
@@ -473,6 +486,10 @@ class MainWindow(QMainWindow):
                     self.runtime.start(cfg)
                 except Exception as e:
                     self.console.appendPlainText(f"[GUI] 启动失败: {e}")
+                # 边界：若用户在启动过程中点了「停止」，立即停掉刚拉起的运行时
+                if self._stop_requested and self.runtime.running:
+                    self._safe_stop_runtime()
+                    return
                 # 成功时 _on_state_change 已把按钮置为「停止」；
                 # 失败时需在此恢复按钮可交互，否则会卡在「启动中…」。
                 if not self.runtime.running:
@@ -488,7 +505,27 @@ class MainWindow(QMainWindow):
 
             threading.Thread(target=_do_start, daemon=True, name="gui-start").start()
         else:
-            self.runtime.stop()
+            # 点「停止」：只停运行时，GUI 窗口保持打开（便于查看/复制控制台日志 debug）
+            self._stop_requested = True
+            self._safe_stop_runtime()
+
+    def _safe_stop_runtime(self):
+        """安全地停止 J.A.C. 运行时，但**不关闭 GUI 窗口**。
+
+        顺序很关键：先停帧定时器 + 清空视频画面（释放 Metal 渲染资源），再释放
+        底层资源（摄像头/线程），避免在资源销毁过程中仍在向窗口提交帧，触发
+        macOS Metal 断言崩溃（abort/闪退）。停止后 GUI 保持打开，控制台日志完整
+        保留，便于调试（debug）。
+        """
+        if not self.runtime.running:
+            return
+        try:
+            self.frame_timer.stop()       # 停止视频绘制，避免 Metal 崩溃
+            self.video_label.clear()      # 清空画面 pixmap，释放渲染资源
+            self.runtime.stop()           # 释放摄像头/线程等底层资源
+        except Exception as e:
+            print(f"[GUI] 停止运行时异常（已忽略）: {e}")
+        # 状态回调 _on_state_change(False) 已把按钮恢复为「启动」并解锁选项
 
     def _on_state_change(self, running):
         """当状态变化
@@ -562,9 +599,13 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------- 关闭
     def closeEvent(self, event):
-        if self.runtime.running:
-            self.runtime.stop()
-        super().closeEvent(event)
+        # 点窗口 X：真正退出程序。先安全停止运行时（停帧定时器 + 清空画面防 Metal
+        # 崩溃），再无论如何都关闭窗口。用 try/finally 兜底：即使停止过程抛异常，
+        # 窗口也能正常关闭，不会闪退。
+        try:
+            self._safe_stop_runtime()
+        finally:
+            super().closeEvent(event)
 
 
 # ----------------------------- 入口 -----------------------------
