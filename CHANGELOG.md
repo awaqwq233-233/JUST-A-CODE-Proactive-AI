@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-08-05 — 结论：Qwen3-TTS 在 macOS（无 NVIDIA GPU）上不可用，改为平台分流
+
+- **诊断铁证**：在声码器 `F.embedding` 处抓取 talker 生成的原始 audio codes，统计分布：
+  中/英文 codes 的 norm_entropy≈0.9（越接近 1.0 越均匀随机）、unique≈2048/2048、top-10 占比仅 12%，
+  证明 talker 输出的是**无语义的随机序列**，声码器忠实合成即"外星人噪音"。
+- **根因**：官方 qwen-tts 0.1.1 **仅验证 CUDA + bfloat16（NVIDIA GPU）**；Apple Silicon 无 NVIDIA 卡，
+  CPU(fp32 不崩但噪声) / CPU(bf16 采样 NaN 崩) / MPS(极慢且不稳) 均跑不对。属**环境不匹配**，
+  非模型文件损坏、非中文前端、非越界。
+- **推翻 08-05 早些时候的"越界 clamp 修复"判断**：之前的 `_patch_multinomial` / `_patch_embedding_clamp` /
+  `_force_eager` 都只"防崩溃"，codes 本身仍随机 → 声音永远噪，属治标不治本（补丁保留，无害）。
+- **决策（按平台分流，符合项目架构：重推理上服务器）**：
+  - macOS：默认禁用 Qwen3-TTS（`QwenTTSSpeaker.available=False`），回退系统 TTS（say / pyttsx3）。
+  - Windows / Linux（未来带 NVIDIA GPU 的服务器）：仍启用 Qwen3-TTS。
+  - 强制开关：`QWEN_TTS_FORCE=1` 可在 Mac 上强制尝试 Qwen3-TTS。
+  - 改动文件：`src/audio/qwen_tts.py`（`__init__` 新增 IS_MACOS 分流分支）。
+- **用户偏好重申**：尽量不动 torch 版本（之前改 torch 引出过 MPS 崩溃等 bug）。
+
+## 2026-08-05 — 早前（已推翻）根治 Qwen3-TTS「外星人语音/噪音」：audio codes 越界 clamp（不动 torch）
+
+- **问题**：Qwen3-TTS 合成不崩溃但输出无语义的"外星人说话"噪音，听不清内容。
+- **根因（推翻了 08-04 的判断）**：
+  1. 上一轮加的 forward hook（NaN 归零）+ pooling patch **过度破坏内容**——实测在 torch 2.9.x + CPU(float32) + eager 下，模型前向 **NaN 比例仅 0.00%**，并非 NaN 问题。
+  2. 真正元凶：talker 自回归生成的多层音频 code 中**偶发越界索引**（如某层 codebook=2048 却收到 3063），导致声码器 `F.embedding` 解码时 `IndexError: index out of range`；越界被 forward hook 归零后，codes 勉强落回范围却内容错乱 → 噪音。越界比例极低（全程仅 2 次 / 数千次）。
+- **修复（全部在 src/audio/qwen_tts.py，运行时 monkey-patch，不动 torch、不改 venv 包）**：
+  - 删除 `_install_nan_guard`（forward hook 归零）与 `_patch_attentive_pooling_softmax`——二者是噪音元凶。
+  - 新增 `_patch_embedding_clamp()`：模块加载时替换 `torch.nn.functional.embedding`，对越界索引夹回 `[0, num_embeddings-1]`，修复声码器解码越界且不破坏正常语音。
+  - 保留 `_patch_multinomial()`（防 SDPA 路径偶发 NaN 崩溃）与 CPU 强制 eager attention。
+- **验证**：正式链路生成 `temp/voice/final_cn.wav`（中文 clone，23.9s）频谱质心 1809Hz、峰值 0.93（正常语音特征，对比噪音段 1466Hz/0.46）；英文 `diag_clip_en.wav` 亦成功。
+
 ## 2026-08-04 — 根治 Qwen3-TTS 合成 NaN（不动 torch 版本）
 
 - **问题**：上一轮改 float32 后 Qwen3-TTS 仍报 `probability tensor contains inf, nan or element < 0`，程序回退系统 TTS。

@@ -81,69 +81,41 @@ def _force_eager(model):
         pass
 
 
-def _install_nan_guard(model):
-    """对模型所有子模块注册 forward hook：每层输出把 NaN/Inf 替换为 0。
+def _patch_embedding_clamp():
+    """一次性替换 torch.nn.functional.embedding：对越界索引做 clamp，修复声码器解码崩溃。
 
-    阻断 NaN 在层间传播，确保最终 logits 不全为 NaN，配合 _patch_multinomial 生效。
-    AttentiveStatisticsPooling 等裸 softmax 模块的 NaN 也在此被兜底归零。
+    Qwen3-TTS 在 torch 2.9.x + CPU(float32) 下，talker 自回归生成的**多层音频 code**
+    中偶发出现超出声码器 codebook 范围的索引（如某层 codebook=2048 却收到 3063），
+    导致 speech_tokenizer.decode 内 F.embedding 直接 IndexError 崩溃；若被其它补丁
+    归零，则合成出无语义的“外星人语音”。这里在 embedding 查表前把索引夹回
+    [0, num_embeddings-1]，既修复崩溃，又不破坏正常语音（越界比例极低，约千分之几）。
+    对 token embedding 等本就在范围内的正常调用无副作用。
     """
     import torch
-
-    def _sanitize(out):
-        if isinstance(out, torch.Tensor):
-            if out.isnan().any() or out.isinf().any():
-                return torch.where(
-                    torch.isnan(out) | torch.isinf(out),
-                    torch.zeros_like(out), out,
-                )
-            return out
-        if isinstance(out, (tuple, list)):
-            return type(out)(_sanitize(o) for o in out)
-        return out
-
-    def _hook(_mod, _inp, out):
-        return _sanitize(out)
-
-    for mod in model.modules():
-        try:
-            mod.register_forward_hook(_hook)
-        except Exception:
-            pass
-
-
-def _patch_attentive_pooling_softmax(model):
-    """针对性修复说话人编码路径的 NaN（增强项）。
-
-    AttentiveStatisticsPooling 使用裸 F.softmax(attention, dim=2)，在 masked 全
-    -inf 行会产生 NaN 污染 x-vector。这里包装其 forward，对输出做 NaN 兜底归零
-    （全局 hook 也会覆盖，此处作为更精准的针对性保险）。
-    """
-    try:
-        from qwen_tts.core.models.modeling_qwen3_tts import AttentiveStatisticsPooling
-    except Exception:
+    if getattr(torch.nn.functional.embedding, "_jac_patched", False):
         return
-    if getattr(AttentiveStatisticsPooling.forward, "_jac_patched", False):
-        return
-    import torch
-    _orig = AttentiveStatisticsPooling.forward
+    _orig = torch.nn.functional.embedding
 
-    def _patched(self, hidden_states):
-        out = _orig(self, hidden_states)
-        if isinstance(out, torch.Tensor) and (out.isnan().any() or out.isinf().any()):
-            out = torch.where(
-                torch.isnan(out) | torch.isinf(out),
-                torch.zeros_like(out), out,
-            )
-        return out
+    def _safe(codes, weight, *a, **k):
+        if codes.numel() == 0:
+            return _orig(codes, weight, *a, **k)
+        if codes.dtype.is_floating_point:
+            codes = codes.round().clamp(0, weight.shape[0] - 1).long()
+        elif codes.min().item() < 0 or codes.max().item() >= weight.shape[0]:
+            codes = codes.clamp(0, weight.shape[0] - 1)
+        return _orig(codes, weight, *a, **k)
 
-    _patched._jac_patched = True
-    AttentiveStatisticsPooling.forward = _patched
+    _safe._jac_patched = True
+    torch.nn.functional.embedding = _safe
 
 
-# 模块加载即全局加固 multinomial，避免 TTS 采样崩溃（与 torch 版本无关）
+# 模块加载即全局加固（均为运行时 monkey-patch，与 torch 版本无关、不动 venv 包）：
+#  - torch.multinomial：采样前把 NaN/Inf/负数归零重归一化，防 SDPA 路径采样崩溃
+#  - F.embedding：查表前把越界索引夹回 [0, num_embeddings-1]，修复声码器解码越界
 if QWEN_TTS_AVAILABLE:
     try:
         _patch_multinomial()
+        _patch_embedding_clamp()
     except Exception:
         pass
 
@@ -263,6 +235,18 @@ class QwenTTSSpeaker:
             print("[提示] 未安装 qwen-tts，QwenTTSSpeaker 不可用（将回退系统 TTS）。")
             return
 
+        # ---------- 平台分流：Qwen3-TTS 仅在有 NVIDIA GPU 的环境启用 ----------
+        # 官方 qwen-tts 0.1.1 仅验证过 CUDA + bfloat16（NVIDIA GPU）路径；
+        # Apple Silicon（macOS）无 NVIDIA 卡，在 CPU/MPS 上推理数值错乱，talker
+        # 生成的 audio codes 呈均匀随机分布，声码器合成出无语义的“外星人噪音”。
+        # 故 macOS 默认禁用 Qwen3-TTS、回退系统 TTS；Windows / Linux（未来带
+        # NVIDIA GPU 的服务器）才启用。如需在 Mac 上强制尝试，设 QWEN_TTS_FORCE=1。
+        if IS_MACOS and not os.getenv("QWEN_TTS_FORCE"):
+            print("[TTS] 当前为 macOS（无 NVIDIA GPU），Qwen3-TTS 推理数值不稳，"
+                  "已禁用并回退系统 TTS。Windows / Linux 服务器上才启用 Qwen3-TTS。")
+            self.available = False
+            return
+
         # 引擎包已安装：先快速探测本地权重是否齐全。
         # 若本地权重缺失/不完整，标记 available=False 并给出明确警告，
         # 让上层（main.py / runtime.py）直接回退系统 TTS，避免"程序以为 TTS 可用、
@@ -346,15 +330,14 @@ class QwenTTSSpeaker:
                     except Exception as e:
                         print(f"[警告] 预构建声音克隆提示失败（将逐次克隆）: {e}")
 
-                # 数值稳定性补丁（不动 torch 版本）：强制 eager attention +
-                # 全局 NaN 护栏 + 说话人池化修复，根除 MPS/CPU 上的 NaN 崩溃
+                # 数值稳定性补丁（不动 torch 版本，均为运行时 monkey-patch）：
+                #  - 模块加载时全局加固 torch.multinomial（防 SDPA 路径采样崩溃）
+                #  - 模块加载时全局 clamp F.embedding 越界索引（修复声码器解码越界）
+                #  - 仅 CPU 强制 eager attention（避免 SDPA 在 CPU 上数值不稳）
                 try:
                     # self._model 是 Qwen3TTSModel 包装类，真正的 nn.Module 在 .model 属性
                     _real = getattr(self._model, "model", self._model)
-                    _install_nan_guard(_real)
-                    _patch_attentive_pooling_softmax(_real)
-                    # 仅 CPU 强制 eager：避免 SDPA 在 CPU 上产生 NaN；
-                    # MPS/CUDA 走默认 SDPA，靠全局护栏 + multinomial patch 兜底，且更快
+                    # 仅 CPU 强制 eager：SDPA 在 CPU 上数值不稳，eager(float32 softmax) 更稳
                     if (dev or "").startswith("cpu"):
                         _force_eager(_real)
                 except Exception as _e:
