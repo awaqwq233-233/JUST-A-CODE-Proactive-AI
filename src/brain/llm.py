@@ -27,7 +27,7 @@ class LocalBrain:
         self.active_model_id = None
         self._explicit_lm_model = lm_studio_model
         # 大脑首选模型（LM Studio 中的实际模型 ID，大小写不敏感模糊匹配）；加载顺序变化时也能正确锁定
-        self.brain_model_name = "qwen/qwen3.5-9b"
+        self.brain_model_name = "qwen/qwen3.6-35b-a3b"
 
         self.lm_studio_url = "http://127.0.0.1:12345/v1/chat/completions"
         self.lm_studio_check_url = "http://127.0.0.1:12345/v1/models"
@@ -282,6 +282,17 @@ class LocalBrain:
                 timeout=120,
                 headers={"Content-Type": "application/json"}
             )
+            # 个别 LM Studio 聊天模板不支持 enable_thinking 参数：移除后重试一次，
+            # 退回"直接输出"模式（对齐 src/judgment/judge.py 的判断引擎兜底逻辑）
+            if resp.status_code == 400 and "enable_thinking" in resp.text.lower() and "chat_template_kwargs" in payload:
+                payload.pop("chat_template_kwargs", None)
+                print("[System] 大脑模型/模板不支持 enable_thinking 参数，已移除 chat_template_kwargs 后重试（保持直接输出）")
+                resp = requests.post(
+                    self.lm_studio_url,
+                    json=payload,
+                    timeout=120,
+                    headers={"Content-Type": "application/json"}
+                )
             if resp.status_code != 200:
                 print(f"[Error] LM Studio API returned {resp.status_code}: {resp.text}")
                 return "Sorry, brain connection has an issue."
@@ -343,6 +354,17 @@ class LocalBrain:
                 timeout=120,
                 headers={"Content-Type": "application/json"},
             )
+            # 个别 LM Studio 聊天模板不支持 enable_thinking 参数：移除后重试一次（对齐 judge.py 兜底）
+            if resp.status_code == 400 and "enable_thinking" in resp.text.lower() and "chat_template_kwargs" in payload:
+                payload.pop("chat_template_kwargs", None)
+                print("[System] 大脑模型/模板不支持 enable_thinking 参数，已移除 chat_template_kwargs 后重试（保持直接输出）")
+                resp = requests.post(
+                    self.lm_studio_url,
+                    json=payload,
+                    stream=True,
+                    timeout=120,
+                    headers={"Content-Type": "application/json"},
+                )
             if resp.status_code != 200:
                 err = resp.text[:300]
                 print(f"[Error] LM Studio streaming returned {resp.status_code}: {err}")

@@ -86,7 +86,7 @@ class JACRuntime:
         self.brain = LocalBrain(
             model_path="models/Qwen3.5-9B-Q4_K_M.gguf",
             backend=config.brain_backend,
-            lm_studio_model="qwen/qwen3.5-9b",
+            lm_studio_model="qwen/qwen3.6-35b-a3b",
         )
 
         main.memory = MemoryManager(

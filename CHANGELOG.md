@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-08-06 — 大脑模型切换为 qwen/qwen3.6-35b-a3b（LM Studio，原生视觉，禁用思考）
+
+### 1. 改动
+- 大脑模型标识符从 `qwen/qwen3.5-9b` 切换为 `qwen/qwen3.6-35b-a3b`，仍走 LM Studio（`127.0.0.1:12345`）。
+- 三处硬编码同步更新：
+  - `src/brain/llm.py:30` 的 `self.brain_model_name`（模糊匹配首选名）。
+  - `main.py:572` 与 `src/runtime.py:89` 的 `LocalBrain(..., lm_studio_model=...)`（精确匹配优先）。
+- 新增防御兜底（对齐 `src/judgment/judge.py`）：`src/brain/llm.py` 的 `_query_lm_studio` 与 `_query_lm_studio_stream` 在收到 `400` 且报错含 `enable_thinking` 时，自动移除 `chat_template_kwargs` 重试一次，避免个别 LM Studio 模板不支持该参数导致大脑失声。
+
+### 2. 保持不变（已满足需求）
+- **思考模式已禁用**：两处 LM Studio 请求体里本就写死 `"chat_template_kwargs": {"enable_thinking": False}`，换模型后继续生效，直接输出内容。
+- **视觉输入已支持**：`think_with_image()` 对 LM Studio 走 OpenAI 原生多模态消息（`image_url` + base64），`_init_lm_studio` 无条件 `multimodal=True`；新模型原生多模态，无需 `mmproj`。
+- `model_path`（仅 `llama_cpp` 兜底用）未改动——用户模型实际运行在 LM Studio 内，本地 GGUF 不参与。
+
+### 3. 文档
+- `AGENTS.md` / `AGENTS.en.md`：默认大脑描述改为 `qwen/qwen3.6-35b-a3b`，更新"已下载未引用"状态为"已接入为默认大脑"，注明模型在 LM Studio 内运行。
+
+### 4. 前置（用户侧）
+- 在 LM Studio 加载目标模型并把**模型标识符设为 `qwen/qwen3.6-35b-a3b`**（代码精确匹配此 id）。
+
+### 5. 验证
+- 待用户侧在 LM Studio 加载后运行 `python main.py`，确认控制台打印 `[System] Current LM Studio model: qwen/qwen3.6-35b-a3b`；唤醒后问视觉问题确认多模态正常、回复无大段 thinking。
+
+---
+
 ## 2026-08-06 — 记忆向量模型「每次启动都下载」澄清（日志误导，非真重下）
 
 ### 1. 结论

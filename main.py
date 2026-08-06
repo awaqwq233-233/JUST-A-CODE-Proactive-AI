@@ -120,7 +120,7 @@ JUDGMENT_TIMEOUT = float(os.environ.get("JUDGMENT_TIMEOUT", "15.0"))
 JUDGMENT_COOLDOWN = float(os.environ.get("JUDGMENT_COOLDOWN", "20.0"))
 
 # --- 大脑推理后端 ---
-# 默认 lm_studio（需 LM Studio 在 127.0.0.1:12345 加载 qwen3.5-9b）。
+# 默认 lm_studio（需 LM Studio 在 127.0.0.1:12345 加载 qwen/qwen3.6-35b-a3b）。
 # Mac 本地优先也可设为 llama_cpp（直接加载 GGUF，无需 LM Studio，更适合眼镜主机）；或 ollama。
 BRAIN_BACKEND = os.environ.get("JAC_BRAIN_BACKEND", "lm_studio")
 JUDGMENT_ACTIVATED = False         # 判断引擎实际运行标记
@@ -569,7 +569,7 @@ def main():
     recognizer = SpeechRecognizer(model_size="tiny") 
     
     recorder = AudioRecorder()
-    brain = LocalBrain(model_path="models/Qwen3.5-9B-Q4_K_M.gguf", backend=BRAIN_BACKEND, lm_studio_model="qwen/qwen3.5-9b")
+    brain = LocalBrain(model_path="models/Qwen3.5-9B-Q4_K_M.gguf", backend=BRAIN_BACKEND, lm_studio_model="qwen/qwen3.6-35b-a3b")
 
     # --- 记忆子系统（长期记忆）---
     global memory

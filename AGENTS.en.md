@@ -28,7 +28,7 @@ The runnable entry point is `main.py`. It wires together:
 
 ### Runtime flow (`main.py`)
 
-1. Initialize camera, YOLO detector, speaker (`QwenTTSSpeaker`, fall back to `Speaker`), Whisper, VAD recorder, `LocalBrain` (**default `backend="lm_studio"`, model `Qwen3.5-9B-Q4_K_M.gguf`**).
+1. Initialize camera, YOLO detector, speaker (`QwenTTSSpeaker`, fall back to `Speaker`), Whisper, VAD recorder, `LocalBrain` (**default `backend="lm_studio"`, brain model identifier in LM Studio: `qwen/qwen3.6-35b-a3b` (native vision, thinking disabled)**).
 2. Start three threads: audio main loop (listen → transcribe → wake-word check → respond), **console-input thread (new)**, and the judgment-engine thread (daemon).
 3. Main loop per frame: grab frame → YOLO detect → update `SharedContext` (vision summary + cache latest frame) → draw FPS / status light (Listening/Thinking/Speaking) → `cv2.imshow`.
 4. Wake words: `jac` / `j.a.c` / `杰克` / `接客` / `你好` / `hello jac` / `hi jac` / `你好 jac` / `hey jac`.
@@ -84,14 +84,14 @@ Generated or bulky local artifacts that are not usually useful to edit:
 
 Current local reasoning models (4 GGUF files in `models/`):
 
-- `Qwen3.5-9B-Q4_K_M.gguf`: the current "brain" model (~5.6GB), specified by `main.py`, loaded by default via the `lm_studio` backend (127.0.0.1:12345).
+- `Qwen3.5-9B-Q4_K_M.gguf`: former "brain" GGUF (~5.6GB), now only the default `model_path` for the `llama_cpp` fallback backend; not loaded in LM Studio mode. The active brain is `qwen/qwen3.6-35b-a3b` running inside LM Studio.
 - `mmproj-Qwen3.5-9B-BF16.gguf`: Qwen3.5 multimodal projection (~0.9GB), auto-mounted by the `llama_cpp` backend for visual Q&A.
 - `MiniCPM-o-4_5-Q4_K_S.gguf`: the judgment-engine model (~4.8GB), used by `JudgmentEngine` once loaded in LM Studio.
-- `Qwen3.6-35B-A3B-...-IQ2_M.gguf` (~11.6GB): **downloaded but not referenced by code or config** — likely a spare large model or future cloud/server offload. Do not assume it is active.
+- `Qwen3.6-35B-A3B-...-IQ2_M.gguf` (~11.6GB): local GGUF backup (uncensored/aggressive merge). **The current default brain is `qwen/qwen3.6-35b-a3b` loaded in LM Studio** (native vision, `enable_thinking=False`), matched by model identifier; the local GGUF is no longer required at runtime.
 
 > Note: the old `models/qwen1_5-1_8b-chat-q4_k_m.gguf` and `models/README.txt` no longer exist; remove related descriptions.
 
-Current object detector: `yolov8n.pt` (`conf=0.5`). The old NVIDIA LocateAnything-3B vision-understanding model **has been removed** — per `detector.py`'s comment, vision understanding is now handled textually by JACbrain (Qwen3.5-9B); vision consists only of YOLO labels + an LLM text summary.
+Current object detector: `yolov8n.pt` (`conf=0.5`). The old NVIDIA LocateAnything-3B vision-understanding model **has been removed** — vision understanding is now handled natively and multimodally by JACbrain (`qwen/qwen3.6-35b-a3b`): visual Q&A in LM Studio uses OpenAI multimodal messages (`image_url` + base64), no `mmproj` needed.
 
 Current STT: Whisper, `model_size="tiny"`, non-streaming.
 
@@ -127,7 +127,7 @@ python verify_model.py
 
 ### Prerequisites to run (important change)
 
-- **The default `backend="lm_studio"`** means you must start **LM Studio** and load `Qwen3.5-9B` at `127.0.0.1:12345` before running (and optionally MiniCPM-o for proactive judgment). Otherwise every thinking request fails to connect.
+- **The default `backend="lm_studio"`** means you must start **LM Studio** and load `qwen/qwen3.6-35b-a3b` at `127.0.0.1:12345` before running (and optionally MiniCPM-o for proactive judgment). Otherwise every thinking request fails to connect.
 - For pure local GGUF inference, change `LocalBrain(..., backend="lm_studio")` in `main.py` to `"llama_cpp"` or `"auto"` (`auto` probes available backends), and keep the corresponding GGUF in `models/`.
 - Ollama usage: build `jac-qwen3.5` with the bundled `Modelfile`, then set backend to `"ollama"`.
 
@@ -206,13 +206,13 @@ Hardware expectations from docs:
 
 ## Known Limitations
 
-- **Strong LM Studio dependency**: `main.py` hardcodes `backend="lm_studio"`, so LM Studio must be running locally on port 12345 with `Qwen3.5-9B` loaded; otherwise all thinking fails. Pure local GGUF requires changing the backend.
-- **Dual-model memory pressure**: enabling proactive judgment requires LM Studio to load both `Qwen3.5-9B` + `MiniCPM-o`, which is resource-heavy. `JUDGMENT_ENGINE_ENABLED=False` by default; if not detected it silently enters passive mode (no error, no intervention).
+- **Strong LM Studio dependency**: `main.py` hardcodes `backend="lm_studio"`, so LM Studio must be running locally on port 12345 with `qwen/qwen3.6-35b-a3b` loaded; otherwise all thinking fails. Pure local GGUF requires changing the backend.
+- **Dual-model memory pressure**: enabling proactive judgment requires LM Studio to load both `qwen/qwen3.6-35b-a3b` + `MiniCPM-o`, which is resource-heavy. `JUDGMENT_ENGINE_ENABLED=False` by default; if not detected it silently enters passive mode (no error, no intervention).
 - Genie-TTS has been fully removed; Qwen3-TTS is the sole TTS backend.
 - `AudioRecorder.listen_and_record()` can still block waiting for VAD-triggered speech; shutdown responsiveness may need attention.
 - STT/LLM/TTS are all non-streaming, so end-to-end latency remains high.
 - No function calling, no persistent memory, no agent/MCP/OpenClaw integration (goals unimplemented).
-- `Qwen3.6-35B` is downloaded but not wired in — do not assume it is active.
+- `Qwen3.6-35B` (`qwen/qwen3.6-35b-a3b`) **is now wired in as the default brain** (loaded in LM Studio by identifier); the local GGUF is only a backup.
 - `requirements.txt` installs `fastapi`/`uvicorn`/`websockets`, but there is no corresponding server code under `src/` — these are transitive or placeholder deps; do not assume an API server exists.
 - There are no automated tests in the current project tree.
 

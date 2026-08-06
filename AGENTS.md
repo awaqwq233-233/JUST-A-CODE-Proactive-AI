@@ -28,7 +28,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 
 ### 运行流程（`main.py`）
 
-1. 初始化摄像头、YOLO 检测器、扬声器（统一走 `build_speaker` 工厂：**Voicebox** → `QwenTTSSpeaker`（仅 NVIDIA）→ `Speaker` 兜底；macOS 上 Qwen 禁用、由 Voicebox 接管）、Whisper、`AudioRecorder`、`LocalBrain`（**默认 `backend="lm_studio"`，模型 `Qwen3.5-9B-Q4_K_M.gguf`**）。
+1. 初始化摄像头、YOLO 检测器、扬声器（统一走 `build_speaker` 工厂：**Voicebox** → `QwenTTSSpeaker`（仅 NVIDIA）→ `Speaker` 兜底；macOS 上 Qwen 禁用、由 Voicebox 接管）、Whisper、`AudioRecorder`、`LocalBrain`（**默认 `backend="lm_studio"`，大脑模型为 LM Studio 中的标识符 `qwen/qwen3.6-35b-a3b`（原生支持视觉、禁用思考模式）**）。
 2. 启动三条线程：音频主循环（监听→识别→唤醒判断→响应）、**控制台输入线程（新增）**、判断引擎线程（daemon）。
 3. 主循环每帧：取帧 → YOLO 检测 → 更新 `SharedContext`（视觉摘要 + 缓存最新帧）→ 绘制 FPS / 状态灯（Listening/Thinking/Speaking）→ `cv2.imshow`。
 4. 唤醒词集合：`jac` / `j.a.c` / `杰克` / `接客` / `你好` / `hello jac` / `hi jac` / `你好 jac` / `hey jac`。
@@ -88,14 +88,14 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 助手原型*
 
 当前本地推理模型（`models/` 下 4 个 GGUF）：
 
-- `Qwen3.5-9B-Q4_K_M.gguf`：当前「大脑」模型（约 5.6GB），`main.py` 默认指定，默认通过 `lm_studio` 后端加载（127.0.0.1:12345）。
+- `Qwen3.5-9B-Q4_K_M.gguf`：旧「大脑」GGUF（约 5.6GB），现仅作为 `llama_cpp` 兜底后端的默认 `model_path`；LM Studio 模式下不加载此文件，大脑实际运行在 LM Studio 内的 `qwen/qwen3.6-35b-a3b`。
 - `mmproj-Qwen3.5-9B-BF16.gguf`：Qwen3.5 的多模态投影（约 0.9GB），`llama_cpp` 后端做视觉问答时自动挂载。
 - `MiniCPM-o-4_5-Q4_K_S.gguf`：主动判断引擎模型（约 4.8GB），需在 LM Studio 加载后由 `JudgmentEngine` 使用。**注意：磁盘实际文件名可能为 `ggml-model-Q4_K_S.gguf`，与文档命名不一致，以 `ls models/` 为准（加载按模糊匹配探测，文件名差异不影响运行）。**
-- `Qwen3.6-35B-A3B-...-IQ2_M.gguf`（约 11.6GB）：**已下载但代码/配置均未引用**，疑似备用大模型或未来云端/服务器卸载预留——勿误读为已启用。
+- `Qwen3.6-35B-A3B-...-IQ2_M.gguf`（约 11.6GB）：本地 GGUF 备份（uncensored/aggressive 合并版）。**当前默认「大脑」是 LM Studio 中加载的 `qwen/qwen3.6-35b-a3b`**（原生支持视觉、`enable_thinking=False` 禁用思考），代码按模型标识符精确匹配，不再依赖本地 GGUF 文件。
 
 > 注意：旧的 `models/qwen1_5-1_8b-chat-q4_k_m.gguf` 与 `models/README.txt` 已不存在，删去相关描述。
 
-当前物体检测器：`yolov8n.pt`（`conf=0.5`）。旧架构设想的 NVIDIA LocateAnything-3B 视觉理解大模型**已移除**——`detector.py` 注释明确：视觉理解现由 JACbrain（Qwen3.5-9B）以文本方式处理，视觉只靠 YOLO 标签 + LLM 文本摘要。
+当前物体检测器：`yolov8n.pt`（`conf=0.5`）。旧架构设想的 NVIDIA LocateAnything-3B 视觉理解大模型**已移除**——视觉理解现由 JACbrain（`qwen/qwen3.6-35b-a3b`）原生多模态处理：LM Studio 视觉问答走 OpenAI 多模态消息（`image_url` + base64），无需 `mmproj` 投影。
 
 当前 STT：Whisper，`model_size="tiny"`，非流式。
 
@@ -134,7 +134,7 @@ python verify_model.py
 
 ### 运行前置条件（重要变化）
 
-- **默认 `backend="lm_studio"`**，因此运行前需启动 **LM Studio** 并在 `127.0.0.1:12345` 加载 `Qwen3.5-9B`（如需主动判断，另加载 `MiniCPM-o`）。否则所有思考请求会连接失败。
+- **默认 `backend="lm_studio"`**，因此运行前需启动 **LM Studio** 并在 `127.0.0.1:12345` 加载 `qwen/qwen3.6-35b-a3b`（如需主动判断，另加载 `MiniCPM-o`）。否则所有思考请求会连接失败。
 - 若想纯本地 GGUF 推理，需把 `main.py` 中 `LocalBrain(..., backend="lm_studio")` 改为 `"llama_cpp"` 或 `"auto"`（`auto` 会探测可用后端），并确保对应 GGUF 在 `models/`。
 - Ollama 用法：用附带的 `Modelfile` 构建 `jac-qwen3.5`，再把 backend 改为 `"ollama"`。
 
@@ -215,12 +215,12 @@ python main.py
 
 ## 已知限制
 
-- **运行强依赖 LM Studio**：`main.py` 默认 `backend="lm_studio"`，必须本地 12345 端口加载 `Qwen3.5-9B`；否则思考全部失败。纯本地 GGUF 需改 backend。
-- **双模型显存压力**：开启主动判断需 LM Studio 同时加载 `Qwen3.5-9B` + `MiniCPM-o`，资源占用大。默认 `JUDGMENT_ENGINE_ENABLED=False`，未检测到时自动进入被动模式（不报错也不主动）。
+- **运行强依赖 LM Studio**：`main.py` 默认 `backend="lm_studio"`，必须本地 12345 端口加载 `qwen/qwen3.6-35b-a3b`；否则思考全部失败。纯本地 GGUF 需改 backend。
+- **双模型显存压力**：开启主动判断需 LM Studio 同时加载 `qwen/qwen3.6-35b-a3b` + `MiniCPM-o`，资源占用大。默认 `JUDGMENT_ENGINE_ENABLED=False`，未检测到时自动进入被动模式（不报错也不主动）。
 - VAD 录音仍可能阻塞在「等待说话」，影响关闭响应（旧限制仍在）。
 - STT/LLM/TTS **均非流式**，端到端延迟仍高。
 - 无 function calling、无 agent/MCP/OpenClaw 集成（目标未实现）；持久记忆（JSON 长期记忆 + 轻量向量检索）已实现，见 `src/memory/` 与 `docs/memory/`。
-- `Qwen3.6-35B` 大模型已下载但代码未接入，勿误以为已启用。
+- `Qwen3.6-35B` 大模型（`qwen/qwen3.6-35b-a3b`）**现已接入为默认大脑**（经 LM Studio 按标识符加载）；本地同名 GGUF 仅作备份，运行不再依赖它。
 - `requirements.txt` 已装 `fastapi`/`uvicorn`/`websockets` 等 web 栈，但 `src/` 下无对应 server 代码——属依赖传递或预留骨架，勿误读为「已有 API 服务」。
 - 当前项目树**没有自动化测试**。
 
