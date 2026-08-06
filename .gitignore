@@ -26,9 +26,10 @@ output/
 temp_audio.wav
 
 # Large model / media assets (do not commit to GitHub)
-# 项目内 *.gguf 大脑/判断模型随仓库提供，但一律不进 Git（见下方全局 *.gguf 等规则）。
+# 项目不再在仓库内保留任何模型文件：大脑由 LM Studio 管理、TTS 由 Voicebox 管理，
+# 视觉检测 yolov8n.pt 由 ultralytics 首次运行时自动下载到项目根。下方规则仅作兜底，
+# 防止任何意外的大体积模型/权重被误提交（历史上曾用 models/ 与 models/qwen_tts/）。
 models/*
-# qwen_tts 权重由 download_models.py 下载（约 4GB，可随时重拉），务必勿提交。
 models/qwen_tts/
 GenieData/
 genie_assets/onnx/
@@ -40,8 +41,8 @@ genie_assets/*.wav
 *.bin
 *.safetensors
 ffmpeg.exe
-# voices/ 下的参考音（如 silverwalf_voice.wav、zh_vo_Main_Linaxita_2_1_10_26.wav）
-# 是 J.A.C. 音色核心资产、体积很小，有意保留、不忽略——按需 `git add voices/` 提交。
+# voices/ 下的参考音（silverwalf_voice.wav 为 J.A.C. 唯一音色，体积很小）
+# 是 J.A.C. 音色核心资产，有意保留、不忽略——按需 `git add voices/` 提交。
 # 若日后想把参考音也排除，加 `voices/*.wav` 即可。
 
 # PyInstaller build output
@@ -78,6 +79,9 @@ node_modules/
 
 # Local AI assistant memory & config (do not commit to GitHub)
 .workbuddy/
+
+# 用户手动维护的项目笔记（不进 GitHub，由用户手写，避免误发到开源仓库）
+codinglog_by_awaqwq233/
 
 # Claude local config (do not commit)
 .claude/

@@ -268,7 +268,7 @@ class QwenTTSSpeaker:
         """
         返回实际加载用的模型标识：
           - 若 model_name 是仓库 ID（含 '/') 且项目内 models/qwen_tts/<末段> 已存在，
-            优先使用本地副本（离线可用，且 download_models.py 下载即生效）。
+            优先使用本地副本（离线可用，需手动放置权重文件）。
           - 否则原样返回，由 qwen-tts 在 from_pretrained 时自动下载。
         """
         name = self.model_name
@@ -561,7 +561,7 @@ def _safetensors_complete(path):
 
 
 def _maybe_download_weights():
-    """若本地 Qwen3-TTS 权重缺失或不完整，自动运行 download_models.py 补全（clone 模式默认 1.7B-Base）。
+    """若本地 Qwen3-TTS 权重缺失或不完整，打印提示并交由运行时在线拉取（项目已不再内置 download_models.py 下载器；clone 模式默认 1.7B-Base）。
 
     注意：之前仅凭"目录存在"判断已就绪，会导致下载被代理证书中断的【不完整副本】被误判为就绪、
     从而跳过补全（典型报错：speech_tokenizer 缺 preprocessor_config.json）。这里改为校验关键文件，
@@ -604,17 +604,12 @@ def _maybe_download_weights():
         if not missing:
             return
 
-        script = os.path.join(root, "download_models.py")
-        if not os.path.exists(script):
-            return
-        cmd = [sys.executable, script]
-        # 代理自签证书环境：透传 --insecure，让 download_models.py 的 curl 加 -k 完整下载
-        if os.environ.get("JAC_HF_INSECURE") == "1":
-            cmd.append("--insecure")
+        # 项目已不再内置 Qwen3-TTS 权重下载器（download_models.py 已移除）。
+        # 缺失权重时交由运行时走在线拉取或系统 TTS 兜底，不再自动补全本地副本。
         print(f"[TTS] 检测到本地 Qwen3-TTS 权重不完整（缺失变体：{missing}），"
-              f"自动运行 download_models.py 补全…")
-        # 前台运行；超时 30 分钟兜底
-        subprocess.run(cmd, timeout=1800)
+              f"将尝试在线拉取；若仍失败会回退系统 TTS。NVIDIA 平台如需本地克隆音色，"
+              f"请手动准备权重或改用 Voicebox（默认 TTS）。")
+        return
     except Exception as e:
         print(f"[TTS] 权重自动下载失败（已忽略，运行时将尝试在线拉取）：{e}")
 

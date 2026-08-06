@@ -65,7 +65,7 @@ jq '.facts[] | select(.source=="inferred")' "$HOME/.jac/memory/memory.json"
 
 ## 6. 迁移到新机器（§3.6）
 
-复用 `DEPLOY_GUIDE.txt` 思路，记忆相关步骤：
+复用 `new_computer_download/READMEfirst.md` 思路，记忆相关步骤：
 1. 在旧机器导出/复制 `<root>/memory/` 整个目录（务必包含 `consent.json` 与 `.bak`）。
 2. 新机器放置到对应 `<root>/memory/`（路径用 `JAC_MEMORY_DIR` 可改）。
 3. 校验 `version` 为 `1.0.0`、文件权限 600 / 目录 700。

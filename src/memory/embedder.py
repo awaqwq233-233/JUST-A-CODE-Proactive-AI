@@ -13,7 +13,7 @@ J.A.C. 持久记忆子系统 —— 轻量 embedding 生成器（Phase 4，向�
 
 国内首次加载需从 HuggingFace 下载权重，请在运行环境设置：
     HF_ENDPOINT=https://hf-mirror.com
-（详见 DEPLOY_GUIDE.txt）
+（详见 new_computer_download/READMEfirst.md）
 """
 
 from __future__ import annotations

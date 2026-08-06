@@ -92,7 +92,7 @@ from src.utils.net import setup_insecure_ssl
 # 全局状态
 running = True
 conversation_running = False
-DISPLAY_ENABLED = True  # 是否创建 OpenCV 显示窗口；纯终端模式(无 Metal)时置 False
+DISPLAY_ENABLED = True  # 是否创建 OpenCV 显示窗口；纯终端模式(无 GUI 渲染)时置 False
 conversation_lock = threading.Lock()
 # 单飞锁：保证同一时刻只有一个 process_response 在跑（语音/手动输入/判断介入三来源并发时防卡死）
 think_lock = threading.Lock()
@@ -691,8 +691,8 @@ def main():
             # cv2.putText(annotated_frame, summary[:30], (10, 110), 
             #             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-            # 显示渲染：仅在有窗口时(imshow 在 macOS 27 等系统上会触发 Qt/OpenCV 的
-            # Metal 崩溃，纯终端模式 DISPLAY_ENABLED=False 完全跳过，零渲染、零 Metal)。
+            # 显示渲染：仅在有窗口时(imshow 走 GUI 渲染路径，在 Metal 后端存在崩溃风险，
+            # 根因为渲染代码问题、已在 gui.py 修复；纯终端模式 DISPLAY_ENABLED=False 完全跳过，零渲染、零 Metal)。
             if DISPLAY_ENABLED:
                 cv2.imshow('J.A.C Multimodal Interface', annotated_frame)
                 key = cv2.waitKey(1) & 0xFF
@@ -760,9 +760,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="J.A.C. 多模态助手")
     parser.add_argument("--headless", action="store_true",
                         help="纯终端模式：完全不创建任何窗口（无 Qt / 无 OpenCV 窗口），"
-                             "避开 macOS 27 等系统上 Qt/OpenCV 的 Metal 渲染崩溃")
+                             "避开 GUI 渲染路径在 Metal 后端的崩溃风险（根因为渲染代码问题、已修复）")
     parser.add_argument("--console", action="store_true",
-                        help="同 --headless，纯终端模式（推荐在 Metal 不兼容环境使用）")
+                        help="同 --headless，纯终端模式（无需 GUI 渲染，适合只跑后台服务/调试）")
     args = parser.parse_args()
     config = Config.load()
     if args.headless or args.console:

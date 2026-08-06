@@ -13,7 +13,8 @@ J.A.C. 新电脑「一键依赖补全」工具
      已安装的包会自动跳过，只下载/安装缺失项；含 GUI 依赖 PySide6）
   2. 系统级依赖（portaudio 麦克风录音库、ffmpeg 音视频库）
   3. ffmpeg 可执行文件（跨平台放到项目根目录，main.py 能直接找到）
-  4. 大模型权重（Qwen3.5-9B 大脑 / mmproj 投影 / MiniCPM-o 判断引擎 / Qwen3-TTS / YOLOv8）
+  4. 外部 AI 软件指引（大脑 / 判断 / TTS 的模型不再由本工具下载，改由
+     LM Studio / Voicebox 等外部软件管理；本步打印加载指引）
   5. 记忆向量检索的 embedding 模型权重（fastembed + 默认 sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2，
      用于记忆的语义向量召回；国内走 HF 镜像下载，下载失败自动降级关键词检索，不影响主功能）
 
@@ -21,24 +22,19 @@ J.A.C. 新电脑「一键依赖补全」工具
 ------------------------------
   * pip 默认走清华镜像；整批失败自动改逐个安装，仍失败的包再回退官方源 pypi.org 重试一次
     （部分大包如 PySide6 在清华镜像返回 403，官方源通常可用）。
-  * 模型下载优先用系统 curl；仅 Windows 加 --ssl-no-revoke（绕过证书吊销检查），
-    macOS/Linux 自动省略该 Windows 专属选项，避免 "unknown option" 报错、
-    --retry 重试、 -C - 断点续传（中断后可继续，不从头再来）。
-  * 默认走 HuggingFace 国内镜像 hf-mirror.com；证书仍报错可用 --insecure 关校验。
-  * 每个模型独立下载，单个失败不影响其余，最后汇总报告。
+  * embedding 模型权重走 HuggingFace；国内自动设 HF_ENDPOINT=hf-mirror.com 镜像，
+    证书仍报错可用 --insecure 关校验（仅可信内网，有中间人风险）。
 
 用法（任选其一）
 ----------------
   python setup_new_computer.py                 # 默认：全部补全（自动建 venv）
   python setup_new_computer.py --only pip      # 只装 Python 包
-  python setup_new_computer.py --only models   # 只下模型
-  python setup_new_computer.py --skip-models   # 跳过模型（假设已从旧机拷贝 models/）
-  python setup_new_computer.py --include-big   # 连 35B 备用大模型也下（默认跳过，省 ~11.6GB）
+  python setup_new_computer.py --only external # 只打印外部 AI 软件（LM Studio / Voicebox）加载指引
   python setup_new_computer.py --only embed    # 只预下载记忆 embedding 模型
   python setup_new_computer.py --skip-embed    # 跳过 embedding 模型（首次运行 main.py 时自动联网下）
   python setup_new_computer.py --torch cuda    # Linux/Windows 装带 CUDA 的 torch
   python setup_new_computer.py --no-venv       # 不建虚拟环境，直接装到当前 Python
-  python setup_new_computer.py --insecure      # 模型下载关闭 SSL 校验（仅可信内网，有中间人风险）
+  python setup_new_computer.py --insecure      # 联网下载关闭 SSL 校验（仅可信内网，有中间人风险）
   python setup_new_computer.py --dry-run       # 只打印将做什么，不改动任何东西
 
 说明
@@ -46,9 +42,10 @@ J.A.C. 新电脑「一键依赖补全」工具
   * 本工具自身只依赖 Python 标准库 + 系统 curl，可在全新机器上直接跑。
   * 默认会在项目根目录建一个 .venv 虚拟环境并安装进去（避免污染系统 Python / 免 sudo）；
     若你已自己建好 venv 并激活，加 --no-venv 即可直接装进当前解释器。
-  * 若已把旧机器的整个 models/ 目录拷过来，工具会自动检测到文件已存在并跳过下载。
   * 每个 Python 包安装前会先探测是否能 import 成功，已装的自动跳过、只装缺失项，
     既省时间也省流量（PySide6 等 GUI 依赖也在其中）。
+  * 模型文件（大脑 / 判断 / TTS）全部由外部软件管理，项目内不再保留 models/ 目录；
+    详细安装见 new_computer_download/READMEfirst.md。
 """
 
 import argparse
@@ -201,149 +198,9 @@ def run_cmd(cmd, check=True, capture=False, **kw):
     return subprocess.run(cmd, **kw)
 
 
-def download_file(url, dest, insecure, retries=3, timeout=60, quiet=False):
-    """下载文件"""
-    dest = os.path.abspath(dest)
-    parent = os.path.dirname(dest)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-
-    if curl_available():
-        base = ["curl", "-L"] + (["--ssl-no-revoke"] if IS_WINDOWS else []) + [
-            "--retry", str(retries),
-            "--retry-delay", "2", "-C", "-", "--connect-timeout", str(timeout),
-            "-o", dest, url]
-        if insecure:
-            base.append("-k")
-        if quiet:
-            base.append("-s")
-        rc = subprocess.run(base).returncode
-        if rc == 0 and os.path.exists(dest) and os.path.getsize(dest) > 0:
-            return True
-        # 部分服务器对不存在的文件拒绝 -C -，去掉续传参数再试一次
-        if rc != 0 and not os.path.exists(dest):
-            retry = ["curl", "-L"] + (["--ssl-no-revoke"] if IS_WINDOWS else []) + [
-                "--retry", str(retries),
-                "--retry-delay", "2", "--connect-timeout", str(timeout),
-                "-o", dest, url]
-            if insecure:
-                retry.append("-k")
-            if quiet:
-                retry.append("-s")
-            rc = subprocess.run(retry).returncode
-            if rc == 0 and os.path.exists(dest) and os.path.getsize(dest) > 0:
-                return True
-        if rc != 0:
-            log(f"   [curl 失败] 退出码 {rc}：{url}")
-        return False
-
-    # 回退：Python urllib（无续传，仅适合小文件 / 直链）
-    log("   [回退] 未找到 curl，使用 Python urllib 下载（不支持断点续传）")
-    try:
-        ctx = None
-        if insecure:
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-        with urllib.request.urlopen(url, timeout=timeout, context=ctx) as resp, \
-                open(dest, "wb") as f:
-            while True:
-                chunk = resp.read(1 << 20)
-                if not chunk:
-                    break
-                f.write(chunk)
-        return os.path.exists(dest) and os.path.getsize(dest) > 0
-    except Exception as e:  # noqa: BLE001
-        log(f"   [urllib 失败] {e}")
-        return False
-
-
-def hf_list_files(repo_id, host, insecure):
-    """HuggingFace列出文件"""
-    import json
-    api = f"{host}/api/models/{repo_id}"
-    ssl_flag = ["--ssl-no-revoke"] if IS_WINDOWS else []
-    cmd = ["curl", "-fsSL"] + ssl_flag + ["--connect-timeout", "30", api]
-    if insecure:
-        cmd.append("-k")
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        alt = HF_OFFICIAL if host != HF_OFFICIAL else HF_MIRROR
-        api2 = f"{alt}/api/models/{repo_id}"
-        cmd2 = ["curl", "-fsSL"] + ssl_flag + ["--connect-timeout", "30", api2]
-        if insecure:
-            cmd2.append("-k")
-        r = subprocess.run(cmd2, capture_output=True, text=True)
-        if r.returncode != 0:
-            raise RuntimeError(f"无法列出仓库文件: {api}\n{r.stderr[:200]}")
-        host = alt
-    data = json.loads(r.stdout)
-    files = [s["rfilename"] for s in data.get("siblings", [])]
-    return files, host
-
-
-def download_hf_files(repo_id, target_dir, wanted, insecure, use_mirror):
-    """下载HuggingFace文件"""
-    host = HF_MIRROR if use_mirror else HF_OFFICIAL
-    try:
-        all_files, host = hf_list_files(repo_id, host, insecure)
-    except Exception as e:  # noqa: BLE001
-        log(f"   [跳过] 列文件失败：{e}")
-        return False
-
-    # 展开通配
-    targets = []
-    for w in wanted:
-        if w.endswith(".gguf") and "*" in w:
-            pat = w.replace(".gguf", "").rstrip("*").replace("*", "")
-            matched = [f for f in all_files if f.endswith(".gguf") and pat.replace("*", "") in f]
-            targets.extend(matched)
-        elif w in all_files:
-            targets.append(w)
-        else:
-            # 文件名与仓库不一致，仍直接尝试下载（可能只是命名差异）
-            log(f"   [提示] 仓库中未列出 {w}，仍尝试按此文件名下载")
-            targets.append(w)
-    targets = sorted(set(targets))
-    if not targets:
-        log(f"   [跳过] 仓库 {repo_id} 中没有匹配的文件：{wanted}")
-        return False
-
-    base = f"{host}/{repo_id}/resolve/main"
-    ok = True
-    for fn in targets:
-        dst = os.path.join(target_dir, *fn.split("/"))
-        # 用 safetensors 头部完整性校验判断是否已完整：截断的半截下载（存在且非空）
-        # 会被识破并重新下载/续传，避免 TTS 权重"看起来在、实际残缺"导致加载失败。
-        if _safetensors_complete(dst):
-            log(f"   [已完整] 跳过 {fn}")
-            continue
-        url = f"{base}/{fn}"
-        log(f"   ↓ {fn}")
-        if not download_file(url, dst, insecure):
-            ok = False
-    return ok
-
-
-def download_hf_repo_all(repo_id, target_dir, insecure, use_mirror):
-    """下载HuggingFace仓库全部"""
-    host = HF_MIRROR if use_mirror else HF_OFFICIAL
-    try:
-        all_files, host = hf_list_files(repo_id, host, insecure)
-    except Exception as e:  # noqa: BLE001
-        log(f"   [失败] 列文件失败：{e}")
-        return False
-    base = f"{host}/{repo_id}/resolve/main"
-    ok = True
-    for fn in all_files:
-        dst = os.path.join(target_dir, *fn.split("/"))
-        # 同上：safetensors 截断的半截下载需重新下载/续传，不能只看"存在且非空"。
-        if _safetensors_complete(dst):
-            continue
-        log(f"   ↓ {fn}")
-        if not download_file(f"{base}/{fn}", dst, insecure):
-            ok = False
-    return ok
+# 说明：模型权重（大脑 / 判断 / TTS）现已全部交由 LM Studio / Voicebox 等外部软件管理，
+# 项目内不再下载任何本地模型文件，故已移除原有的 download_file / hf_list_files /
+# download_hf_files / download_hf_repo_all 等下载辅助函数（无调用者、无悬空引用）。
 
 
 # ----------------------------------------------------------------------------
@@ -588,186 +445,26 @@ def step_ffmpeg(args):
 
 
 # ----------------------------------------------------------------------------
-# 步骤 4：模型权重
+# 步骤 4：外部 AI 软件指引（模型不再由本工具下载）
 # ----------------------------------------------------------------------------
-def load_models_config(args):
-    path = args.models_config or os.path.join(SCRIPT_DIR, "models_config.json")
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f), path
-
-
-def _already_has(target_dir, files):
-    """已是否有"""
-    if not files:
-        return False
-    return all(os.path.exists(os.path.join(target_dir, *fn.split("/"))) for fn in files)
-
-
-def _safetensors_complete(path):
-    """safetensors 是否完整：头部声明的张量数据总字节必须 <= 磁盘大小。
-
-    只查"存在且非空"会被【截断的半截下载】骗过（头部在、数据只下了一部分），
-    必须比对头部声明大小才能识破。非 safetensors / 读不到头部返回 False。
-    """
-    try:
-        if not path.endswith(".safetensors"):
-            return os.path.exists(path) and os.path.getsize(path) > 0
-        if not os.path.exists(path) or os.path.getsize(path) == 0:
-            return False
-        with open(path, "rb") as f:
-            magic = f.read(8)
-            if len(magic) < 8:
-                return False
-            header_len = struct.unpack("<Q", magic)[0]
-            header = json.loads(f.read(header_len))
-        tensors = {k: v for k, v in header.items() if k != "__metadata__"}
-        if not tensors:
-            return False
-        declared = max(v["data_offsets"][1] for v in tensors.values())
-        return os.path.getsize(path) >= 8 + header_len + declared
-    except Exception:
-        return False
-
-
-# TTS 权重完整性校验：与 src/audio/qwen_tts.py:_maybe_download_weights 保持一致。
-# 仅有 model.safetensors（主权重）不够，缺分词器 / 语音分词器会导致 Qwen3-TTS 加载失败并回退系统 TTS。
-# 注意：Qwen3-TTS-12Hz-1.7B-Base 官方仓库【并不】包含 tokenizer.json（已实测 HF 仓库清单确认），
-# 其文本分词器为 Qwen2Tokenizer（慢速），仅依赖 tokenizer_config.json + vocab.json + merges.txt，
-# 无需 tokenizer.json。把 tokenizer.json 当必需文件会误判"不完整"→ 反复触发补全且永远无法满足。
-# 两个权重文件（model.safetensors、speech_tokenizer/model.safetensors）必须做 safetensors
-# 头部完整性校验，防止"存在但被截断"的半截下载骗过校验、导致加载失败。
-TTS_REQUIRED_FILES = (
-    "config.json",
-    "model.safetensors",
-    "tokenizer_config.json",
-    "vocab.json",
-    "merges.txt",
-    "speech_tokenizer/preprocessor_config.json",
-    "speech_tokenizer/model.safetensors",
-)
-
-
-def _tts_variant_dir(size, mode):
-    """变体目录名（suffix 映射同 _download_tts）。"""
-    suffix = {"clone": "Base", "custom": "CustomVoice", "design": "VoiceDesign"}.get(mode, "Base")
-    return f"Qwen3-TTS-12Hz-{size}-{suffix}"
-
-
-def _tts_complete(tdir, size, mode):
-    """TTS 权重是否已完整下载（目录存在且关键文件齐全、safetensors 未被截断）。"""
-    variant_dir = os.path.join(tdir, _tts_variant_dir(size, mode))
-    if not os.path.isdir(variant_dir):
-        return False
-    for rel in TTS_REQUIRED_FILES:
-        full = os.path.join(variant_dir, *rel.split("/"))
-        if not _safetensors_complete(full):
-            return False
-    return True
-
-
-def step_models(args):
-    """step模型"""
-    hr("步骤 4/6  下载模型权重")
-    if args.skip_models:
-        log("[models] 已指定 --skip-models，跳过所有模型下载（假设已从旧机拷贝 models/）。")
+def step_external_software(args):
+    """打印外部 AI 软件的加载指引（大脑 / 判断 / TTS 由 LM Studio / Voicebox 管理）。"""
+    hr("步骤 4/6  外部 AI 软件指引（模型不在项目中下载）")
+    if args.dry_run:
+        log("  [dry-run] 将打印 LM Studio / Voicebox 的安装与模型加载指引。")
         return True
-
-    cfg, cfg_path = load_models_config(args)
-    use_mirror = not args.no_mirror
-    insecure = args.insecure
-    any_failed = False
-
-    for m in cfg.get("models", []):
-        name = m.get("name", "?")
-        mtype = m.get("type")
-        required = m.get("required", False)
-        # 默认跳过的“大文件”模型
-        if m.get("skip_by_default") and not args.include_big:
-            log(f"\n[models] 跳过（默认不下载，用 --include-big 可包含）：{name}")
-            log(f"         说明：{m.get('note','')}")
-            continue
-        # 已存在则跳过
-        tdir = os.path.join(PROJECT_ROOT, m.get("target_dir", "."))
-        if mtype in ("hf_files",) and _already_has(tdir, m.get("files")):
-            log(f"\n[models] 已存在，跳过：{name}")
-            continue
-        if mtype == "direct" and os.path.exists(os.path.join(PROJECT_ROOT, m.get("target", ""))):
-            log(f"\n[models] 已存在，跳过：{name}")
-            continue
-        if mtype == "tts":
-            # 不能只判断 models/qwen_tts 目录存在就跳过：该目录可能只含 Tokenizer 或
-            # 主权重下完但分词器/语音分词器缺失（中断的半截下载）。必须校验关键文件齐全。
-            size = m.get("size") or args.ts_size
-            mode = m.get("mode") or args.ts_mode
-            tdir_tts = os.path.join(PROJECT_ROOT, m.get("target_dir", "models/qwen_tts"))
-            if _tts_complete(tdir_tts, size, mode):
-                log(f"\n[models] TTS 权重已完整，跳过：{name}")
-                continue
-            log(f"\n[models] TTS 权重不完整（缺失分词器/语音分词器），将补全：{name}")
-
-        log(f"\n[models] 处理：{name}")
-        log(f"         说明：{m.get('note','')}")
-        ok = False
-        try:
-            if mtype == "hf_files":
-                repo = m.get("repo_id")
-                ok = download_hf_files(repo, tdir, m.get("files", []), insecure, use_mirror)
-            elif mtype == "tts":
-                ok = _download_tts(m, tdir, insecure, use_mirror, args)
-            elif mtype == "direct":
-                url = m.get("url")
-                dst = os.path.join(PROJECT_ROOT, m.get("target", os.path.basename(url)))
-                if not os.path.exists(dst):
-                    log(f"   ↓ {url}")
-                    ok = download_file(url, dst, insecure)
-                else:
-                    ok = True
-            else:
-                log(f"   [未知类型] {mtype}，跳过")
-        except Exception as e:  # noqa: BLE001
-            log(f"   [异常] {e}")
-            ok = False
-
-        if not ok:
-            any_failed = True
-            if required:
-                log(f"   [!] 必需模型下载失败：{name}（可用 --insecure 重试，或手动按部署指南下载）")
-            else:
-                log(f"   [!] 下载失败（非必需，可忽略或稍后手动补）：{name}")
-
-    if any_failed:
-        log("\n[models] 部分模型未下载成功，详见上方。可加 --insecure 重试，或手动按部署指南/配置文件下载。")
-    else:
-        log("\n[models] 模型下载处理完成 ✅（已存在的自动跳过）")
-    return not any_failed
-
-
-def _download_tts(m, tdir, insecure, use_mirror, args):
-    """下载语音合成"""
-    size = m.get("size") or args.ts_size
-    mode = m.get("mode") or args.ts_mode
-    # 变体后缀映射：clone->Base / custom->CustomVoice / design->VoiceDesign。
-    # 注意：绝不能直接用 mode.capitalize()（会得到 Clone / Customvoice），与官方
-    # 仓库名不符；正确的 clone 变体仓库是 "...-1.7B-Base"（见 download_models.py /
-    # src/audio/qwen_tts.py 的 MODEL_FOR_MODE）。
-    suffix = {"clone": "Base", "custom": "CustomVoice", "design": "VoiceDesign"}.get(mode, "Base")
-    repos = []
-    if mode == "all":
-        repos = [
-            f"Qwen/Qwen3-TTS-12Hz-{size}-Base",
-            f"Qwen/Qwen3-TTS-12Hz-{size}-CustomVoice",
-            f"Qwen/Qwen3-TTS-12Hz-{size}-VoiceDesign",
-        ]
-    else:
-        repos = [f"Qwen/Qwen3-TTS-12Hz-{size}-{suffix}"]
-    repos.append(f"Qwen/Qwen3-TTS-Tokenizer-12Hz")
-    ok = True
-    for repo in repos:
-        local = os.path.join(tdir, repo.split("/")[-1])
-        log(f"   ↓ {repo} -> {local}")
-        if not download_hf_repo_all(repo, local, insecure, use_mirror):
-            ok = False
-    return ok
+    log(
+        "J.A.C. 的模型文件全部由外部软件管理，本工具不下载任何本地模型权重：\n"
+        "  1) 大脑（LLM）：安装 LM Studio，加载模型标识符 `qwen/qwen3.6-35b-a3b`\n"
+        "     （原生多模态、禁用思考），并启动本地服务（默认 127.0.0.1:12345）。\n"
+        "  2) 主动判断（可选）：如需主动介入，在 LM Studio 额外加载 MiniCPM-o；\n"
+        "     默认 JUDGMENT_ENGINE_ENABLED=False，未加载时自动进入被动模式。\n"
+        "  3) TTS（语音）：安装 Voicebox App，导入 voices/silverwalf_voice.wav\n"
+        "     建立名为 JAC 的克隆声纹；macOS 上 Qwen3-TTS 不可用，由 Voicebox 接管。\n"
+        "  4) 视觉检测：yolov8n.pt 在首次运行 main.py 时由 ultralytics 自动下载到项目根。\n"
+        "详细安装步骤见 new_computer_download/READMEfirst.md。"
+    )
+    return True
 
 
 # ----------------------------------------------------------------------------
@@ -850,28 +547,9 @@ def step_verify(args):
         found = shutil.which("ffmpeg")
     log(f"[自检] ffmpeg：{'找到 ' + found if found else '未找到（请检查步骤 3）'}")
 
-    # 模型（部分模型落盘在子目录下，允许多候选路径，避免误报缺失）
-    def _tts_ready():
-        variant = os.path.join(PROJECT_ROOT, "models", "qwen_tts", "Qwen3-TTS-12Hz-1.7B-Base")
-        if not os.path.isdir(variant):
-            return False
-        # 用 _safetensors_complete 做完整性校验（含 safetensors 截断检测），
-        # 避免"存在但被截断"的半截权重被误判为就绪。
-        return all(_safetensors_complete(os.path.join(variant, *f.split("/"))) for f in TTS_REQUIRED_FILES)
-
-    expect_models = {
-        "大脑模型 Qwen3.5-9B": [os.path.join("models", "Qwen3.5-9B-Q4_K_M.gguf")],
-        "TTS 模型 Qwen3-TTS-12Hz-1.7B-Base": "tts",  # 特殊：走 _tts_ready 校验关键文件
-    }
-    for name, cands in expect_models.items():
-        if cands == "tts":
-            ok = _tts_ready()
-        else:
-            ok = any(os.path.exists(os.path.join(PROJECT_ROOT, c)) for c in cands)
-        if ok:
-            log(f"[自检] 模型就绪：{name}")
-        else:
-            log(f"[自检] 模型缺失（不影响装包，运行前需补）：{name}")
+    # 模型由外部软件（LM Studio / Voicebox）管理，项目内不再落盘模型文件，
+    # 故不再做本地模型自检；运行前请确保对应外部软件已加载所需模型（见 READMEfirst.md）。
+    log("[自检] 模型由外部软件管理，跳过本地模型文件检查（详见 READMEfirst.md）。")
     return True
 
 
@@ -883,21 +561,15 @@ def parse_args():
         description="J.A.C. 新电脑一键依赖补全工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "models", "embed", "verify"],
+    p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "external", "embed", "verify"],
                    default="all", help="只运行指定阶段（默认 all）")
-    p.add_argument("--skip-models", action="store_true", help="跳过所有大模型下载（假设已从旧机拷贝）")
     p.add_argument("--skip-embed", action="store_true", help="跳过记忆 embedding 模型预下载（首次运行 main.py 时自动联网下）")
-    p.add_argument("--include-big", action="store_true", help="连 35B 备用大模型也下载（默认跳过）")
     p.add_argument("--torch", choices=["auto", "cpu", "cuda"], default="auto",
                    help="torch 安装变体（auto: macOS=MPS, 其他=CPU）")
-    p.add_argument("--ts-size", choices=["1.7B", "0.6B"], default="1.7B", help="Qwen3-TTS 尺寸")
-    p.add_argument("--ts-mode", choices=["clone", "custom", "design", "all"], default="clone",
-                   help="Qwen3-TTS 变体")
     p.add_argument("--no-venv", action="store_true", help="不建虚拟环境，装到当前 Python")
     p.add_argument("--mirror", default=None, help="pip 镜像地址（默认清华）")
     p.add_argument("--no-mirror", action="store_true", help="pip 不使用镜像")
-    p.add_argument("--insecure", action="store_true", help="模型下载关闭 SSL 校验（仅可信内网）")
-    p.add_argument("--models-config", default=None, help="自定义 models_config.json 路径")
+    p.add_argument("--insecure", action="store_true", help="联网下载关闭 SSL 校验（仅可信内网，有中间人风险）")
     p.add_argument("--dry-run", action="store_true", help="只打印将做什么，不改动")
     return p.parse_args()
 
@@ -923,12 +595,12 @@ def main():
         "pip": step_pip,
         "system": step_system,
         "ffmpeg": step_ffmpeg,
-        "models": step_models,
+        "external": step_external_software,
         "embed": step_embed_model,
         "verify": step_verify,
     }
     if args.only == "all":
-        order = ["pip", "system", "ffmpeg", "models", "embed", "verify"]
+        order = ["pip", "system", "ffmpeg", "external", "embed", "verify"]
     else:
         order = [args.only]
 

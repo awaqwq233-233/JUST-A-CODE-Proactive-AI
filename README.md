@@ -1,132 +1,167 @@
-J.A.C.核心由“J.A.C. Brain”驱动，通过“Agent”单元调度任务，并集成多种外部API服务，形成一个具备主动服务能力的人工智能系统
-输入层：
- 系统支持三类实时环境输入源：
-•	设备信号输入：电脑 / 眼镜 / MR设备 至“米家AI / 全局搜索”模块
-•	音频输入：外部声音 → 实时采集进入语音处理流程
-•	视觉输入：AI眼镜 · Apple Vision Pro → 提供画面元素用于CNN图像分析
-感知与预处理模块：
-•	外部声音经语音转文字模块转换为文本后，暂存于内存中
-•	视觉画面通过CNN进行图像分析，提取关键画面元素（可能需人工标定）
-•	所有初步解析后的信息统一暂存于内存，供后续模型调用
-核心判断与推理模块：
-•	名称：多模态小型判断模型（Qwen 3.5 2.7b）
-•	功能特性：
-•	支持多层重复、重叠识别理解文字（目的：连续识别环境声音信息，以提供及时的介入判断）
-•	判断周期设定：“人类语言表意周期”，每轮长度大于周期的1.5倍
-•	调用策略：“顺序调用排序”，若检测出可能要介入的信息，则切换其它小模型继续监听，确保就算误判也不中断监听
-•	工作状态：在主判断完成前，判断模型集群保持持续工作状态
-•	安全调节机制：
-•	设有“调节”子模块，负责判定判断是否正确
-•	若判为正确：保持静默，允许J.A.C. Brain进行运算思考以解决问题
-•	若判为不正确：停止J.A.C. Brain运行，转向控制台显示，阻断静默执行，回归判断周期
-•	配备备用小模型辅助上述正确性判断
-主控大脑（J.A.C. Brain）：
-•	核心模型：Qwen 3.5 27b 4bit MoE 架构  我觉得是不是应该优先采用魔改的小米miloco 2.0模型，这个模型也完全开源
-•	显存占用：预设30–33GB
-•	功能定位：作为主程序，负责复杂问题的分析与解决
-•	输出策略：当模型能力或效果不足时，输出最优大模型建议、MCP提示词及严格遵守的输出格式要求
-智能体与执行分支：
-•	Agent为核心执行单元，由J.A.C. Brain驱动，负责任务调度与执行
-•	延伸出两条主要执行路径：
-•	技能调用路径：调用内部Skills模块执行具体操作
-•	API调用路径：通过openclaw API（远程或本地）调用外部服务，输出提交文件
-•	外部API集成（APIs）支持接入以下主流大模型服务：
-•	Gemini
-•	ChatGPT
-•	Grok
-•	Claude
-•	Qwen
-•	DeepSeek
-输出与反馈机制：
-•	结果呈现层：结果/显卡层（APP）接收校验后的输出并展示
-•	语音合成输出：统一由 `build_speaker` 工厂选择引擎——**Voicebox（开源克隆引擎，macOS 主力）** 或 Qwen3-TTS（仅 NVIDIA）或系统 TTS 兜底；Voicebox 用参考音 voices/silverwalf_voice.wav 克隆 J.A.C. 音色，**合成时不指定引擎、由 JAC 声纹在 App 中绑定的模型发声**，情绪通过引擎支持的副语言标签（如 Chatterbox 的 [laugh]/[sigh]）+ 自然语言指令表达（详见 AGENTS.md）。macOS 上 Qwen3-TTS 因无 NVIDIA GPU 不可用，已默认由 Voicebox 接管。
-•	闭环反馈路径：从“结果/显卡层”指向“开始判断周期”，实现持续感知与主动服务的动态循环
-硬件部署与运行环境:
-•	主机设备：MacBook Pro 14" M5PRO芯片，18+20核心，48gb统一内存
-•	配置要求：48GB+ RAM，1TB SSD 
-•	外设连接：Apple Vision Pro或随身摄像头设备通过雷电5（Thunderbolt 5）与MacBook Pro有线连接，兼顾数据传输与供电
-•	便携方案：可收容于Xiaomi Life 10L背包中，搭配若干酷客科10号电能桩（10000mAh, 最大输出175W）实现移动运行
+# J.A.C. — Just A Code
 
+> A local-first, multimodal **Proactive AI Butler** prototype. Perceives your environment through camera + microphone, reasons about the scene, and replies with emotion-aware TTS — aiming to act *before* you ask, like a JARVIS-style assistant.
 
+[中文说明](#中文说明)
 
-要注意可能的风险：
-1.	AI幻觉的出现降低准确性
-2.	隐私？
+---
 
+## English
 
+### What it is
 
-很深刻的一句话总结，也是我想实现的效果：实现无需用户触发的持续运行与任务闭环  就像JARVIS一样（漫威那个）
+J.A.C. is a **local-first multimodal AI butler** inspired by JARVIS. The long-term vision is a **strong-AI butler** that proactively perceives the world, plans ahead, warns of hazards *before* they happen, and can take over in emergencies. Wearable terminals (smart glasses / MR headsets) are **optional peripherals**, not the core goal — J.A.C. is fundamentally an **AI architecture, system, and end-to-end proactive-service framework**; the wearable is just one way to carry it.
 
+The current codebase is a **macOS-first Python desktop prototype** (Windows/Linux compatibility code is kept, but the dev machine is macOS). It is not yet the final glasses/cloud architecture.
 
+### Features
 
-总之，缺少一个实际的判断模型，agent已经出现不少可用的了（小米最近还推出了miloco 2.0，这是个重要模型），执行部分也有像openclaw一样工具能用来办事，现在的重点是怎么实现主动感知性，即多模态小型判断模型怎么搞。搞出多模态小型判断模型，只需将所有模块整合起来应该就可用了（至少可以有大致效果）
+- **Multimodal perception** — OpenCV camera + YOLOv8 detection, PyAudio + WebRTC VAD microphone capture, OpenAI Whisper STT.
+- **Local brain** — `qwen/qwen3.6-35b-a3b` loaded in **LM Studio** (native multimodal, thinking disabled), via a multi-backend `LocalBrain` (lm_studio / ollama / llama_cpp / auto).
+- **Emotion-aware TTS** — Voicebox (open-source cloning engine, macOS primary) cloning the J.A.C. voice from `voices/silverwalf_voice.wav`, with Qwen3-TTS (NVIDIA-only) and system-TTS fallbacks.
+- **Proactive judgment engine** — `src/judgment/judge.py` (MiniCPM-o via LM Studio) continuously decides whether to intervene; off by default (`JUDGMENT_ENGINE_ENABLED=False`).
+- **Multimodal Q&A** — sends the real camera frame to the brain for vision questions.
+- **Wake-word + console input** — wake words (`jac` / `杰克` / `你好` …) or just type in the console to talk.
+- **Persistent memory** — JSON long-term memory + lightweight local vector retrieval (`src/memory/`).
 
+### Architecture (what's inside)
 
+| Module | Path |
+| --- | --- |
+| Camera capture | `src/capture/camera.py` |
+| YOLOv8 detector | `src/analysis/detector.py` |
+| Shared context (thread-safe) | `src/utils/context.py` |
+| VAD recorder | `src/audio/recorder.py` |
+| Whisper STT | `src/audio/stt.py` |
+| Local brain (multi-backend) | `src/brain/llm.py` |
+| TTS (Voicebox → Qwen3-TTS → system) | `src/audio/voicebox_tts.py`, `src/audio/qwen_tts.py`, `src/audio/speaker_factory.py` |
+| Judgment engine | `src/judgment/judge.py` |
+| Entry point | `main.py` |
 
+### Requirements & Setup
 
-J.A.C. Brain — Proactive AI System Architecture
-The core is driven by "J.A.C. Brain", which dispatches tasks through "Agent" units and integrates multiple external API services, forming an AI system with proactive service capabilities.
-________________________________________
-Input Layer
-The system supports three types of real-time environmental input sources:
-•	Device Signal Input: Computer / Glasses / MR devices → routed to the "Mijia AI / Global Search" module
-•	Audio Input: External sound → captured in real-time and fed into the speech processing pipeline
-•	Visual Input: AI Glasses · Apple Vision Pro → provides visual frames for CNN-based image analysis
-________________________________________
-Perception & Preprocessing Module
-•	External audio is converted to text via a Speech-to-Text module and temporarily stored in memory
-•	Visual frames are analyzed through a CNN for image analysis, extracting key visual elements (may require manual annotation)
-•	All initially parsed information is uniformly buffered in memory for subsequent model consumption
-________________________________________
-Core Judgment & Reasoning Module
-•	Name: Multimodal Small Judgment Model (Qwen 3.5 2.7B)
-•	Functional Characteristics:
-o	Supports multi-layered, overlapping recognition and comprehension of text (Purpose: continuous recognition of environmental audio information to provide timely intervention judgments)
-o	Judgment Cycle Setting: "Human linguistic semantic cycle" — each round's length is greater than 1.5× the cycle duration
-o	Invocation Strategy: "Sequential invocation sorting" — if potentially intervention-worthy information is detected, the system switches to other small models to continue listening, ensuring that even in the event of a false positive, listening is never interrupted
-o	Working State: The judgment model cluster remains in continuous operation until the primary judgment is complete
-•	Safety Regulation Mechanism:
-o	A "Regulation" sub-module is responsible for determining whether a judgment is correct
-o	If judged correct: Remain silent; allow J.A.C. Brain to compute and reason through the problem
-o	If judged incorrect: Halt J.A.C. Brain execution, redirect to the console display, block silent execution, and return to the judgment cycle
-o	A backup small model is equipped to assist with the above correctness determination
-________________________________________
-Main Control Brain (J.A.C. Brain)
-•	Core Model: Qwen 3.5 27B 4-bit MoE architecture — I think priority should be given to adopting the modified Xiaomi MiLoco 2.0 model, which is also fully open-source
-•	VRAM Usage: Preset at 30–33 GB
-•	Functional Role: Serves as the main program, responsible for complex problem analysis and resolution
-•	Output Strategy: When model capability or performance is insufficient, output recommendations for the best available large model, MCP prompts, and strictly adhered-to output format requirements
-________________________________________
-Agents & Execution Branches
-•	Agent is the core execution unit, driven by J.A.C. Brain, responsible for task scheduling and execution
-•	Two primary execution paths extend from it:
-o	Skill Invocation Path: Calls internal Skills modules to perform specific operations
-o	API Invocation Path: Calls external services via the OpenClaw API (remote or local), outputting submitted files
-•	External API Integration (APIs) supports connection to the following mainstream large model services:
-o	Gemini
-o	ChatGPT
-o	Grok
-o	Claude
-o	Qwen
-o	DeepSeek
-________________________________________
-Output & Feedback Mechanism
-•	Result Presentation Layer: The Result/Display Layer (APP) receives validated output and presents it
-•	Speech Synthesis Output: a unified `build_speaker` factory picks the engine — **Voicebox (open-source cloning engine, macOS primary)** or Qwen3-TTS (NVIDIA only) or system TTS fallback. Voicebox controls timbre, emotion (Chatterbox paralinguistic tags + natural-language instructions), speech rate, and pauses, cloning the J.A.C. voice from voices/silverwalf_voice.wav (see AGENTS.md). On macOS, Qwen3-TTS is unavailable without an NVIDIA GPU and is replaced by Voicebox by default.
-•	Closed-Loop Feedback Path: From the "Result/Display Layer" back to "Start Judgment Cycle," achieving continuous perception and a dynamic loop of proactive service
-________________________________________
-Hardware Deployment & Runtime Environment
-•	Host Device: MacBook Pro 14" with M5 Pro chip, 18+20 cores, 48 GB unified memory
-•	Configuration Requirements: 48 GB+ RAM, 1 TB SSD
-•	Peripheral Connection: Apple Vision Pro or portable camera device connected to the MacBook Pro via Thunderbolt 5 wired connection, supporting both data transfer and power delivery
-•	Portable Solution: Can be housed in a Xiaomi Life 10L backpack, paired with several Cuktech No. 10 power banks (10,000 mAh, max output 175W) for mobile operation
-________________________________________
-Risk Considerations
-1.	AI hallucinations may reduce accuracy
-2.	Privacy?
-________________________________________
-A profoundly meaningful summary — and the effect I want to achieve: Achieve continuous, user-trigger-free operation with closed-loop task completion — just like JARVIS (the one from Marvel).
-________________________________________
-In Summary
-What's missing is a practical judgment model. Agent frameworks are already plentiful and usable (Xiaomi recently released MiLoco 2.0, which is an important model). The execution layer also has tools like OpenClaw that can get things done. The current priority is how to achieve proactive perception — that is, how to build the multimodal small judgment model. Once the multimodal small judgment model is developed, it should only be a matter of integrating all the modules to get a working system (or at least a rough proof-of-concept).
+All models live in **external AI software** (LM Studio / Voicebox) — the project ships **no model weights**.
 
+Full bilingual install guide (English official method + Chinese with domestic-mirror method): **`new_computer_download/READMEfirst.md`**.
+
+Quick start:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python setup_ffmpeg.py          # copies ffmpeg if missing
+# 1) LM Studio: load qwen/qwen3.6-35b-a3b, start server at 127.0.0.1:12345
+# 2) Voicebox App: clone voices/silverwalf_voice.wav as the "JAC" voice
+python main.py
+```
+
+### Running
+
+```bash
+python main.py
+```
+
+- `q` quit · `SPACE` manual wake · console text input talks directly (bypasses wake word).
+
+### Models
+
+- **Brain**: `qwen/qwen3.6-35b-a3b` in **LM Studio** (default `backend="lm_studio"`, `127.0.0.1:12345`). Identifier must match exactly.
+- **Judgment**: MiniCPM-o in LM Studio (optional, enables proactive mode).
+- **TTS**: Voicebox App clones `voices/silverwalf_voice.wav` → **JAC** voiceprofile. No in-project TTS weights.
+- **Detection**: `yolov8n.pt` auto-downloaded by `ultralytics` on first run.
+
+### Status & Roadmap
+
+Implemented: multi-backend brain, proactive judgment engine, multimodal Q&A, SLEEP/AWAKE state machine, console input, persistent memory.
+Not yet: function calling / tool layer, agent framework, MCP/OpenClaw integration, streaming STT/LLM/TTS. See `codingLOG.md` for the gap notes (read `CHANGELOG.md` + `codingLOG.md` for the latest changes).
+
+### Docs map
+
+- `AGENTS.md` — developer contract (architecture, run model, deps).
+- `CHANGELOG.md` — change log.
+- `codingLOG.md` — gap notes vs. final goal.
+- `docs/memory/` — memory subsystem docs.
+- `new_computer_download/READMEfirst.md` — install guide.
+
+> Project background docs in `codinglog_by_awaqwq233/` are maintained manually by the owner and are git-ignored.
+
+---
+
+## 中文说明
+
+### 项目是什么
+
+J.A.C. 是一个**本地优先的多模态 AI 管家**原型，灵感来自 JARVIS。长期愿景是打造一个**强人工智能管家**：主动感知环境、提前规划与预警、在危险发生前发出警示、并能应急接管。智能眼镜 / MR 等可穿戴终端只是**可选的随身外设**，并非核心目标——J.A.C. 的本质是 **AI 架构、系统与整套主动服务框架**，可穿戴终端只是承载它的一种形态。
+
+当前代码库是一个 **macOS 优先的 Python 桌面原型**（保留 Windows/Linux 兼容代码，但开发机为 macOS），还不是最终的眼镜/云端架构。
+
+### 功能特性
+
+- **多模态感知** —— OpenCV 摄像头 + YOLOv8 检测、PyAudio + WebRTC VAD 麦克风采集、OpenAI Whisper 语音识别。
+- **本地大脑** —— 在 **LM Studio** 中加载 `qwen/qwen3.6-35b-a3b`（原生多模态、禁用思考），走多后端 `LocalBrain`（lm_studio / ollama / llama_cpp / auto）。
+- **带情绪 TTS** —— Voicebox（开源克隆引擎，macOS 主力）克隆 `voices/silverwalf_voice.wav` 得到 J.A.C. 音色，Qwen3-TTS（仅 NVIDIA）与系统 TTS 兜底。
+- **主动判断引擎** —— `src/judgment/judge.py`（LM Studio 上的 MiniCPM-o）持续判断是否介入，默认关闭（`JUDGMENT_ENGINE_ENABLED=False`）。
+- **多模态问答** —— 视觉问题时把真实摄像头帧发给大脑。
+- **唤醒词 + 控制台输入** —— 唤醒词（`jac` / `杰克` / `你好` …）或直接控制台输入对话。
+- **持久记忆** —— JSON 长期记忆 + 轻量本地向量检索（`src/memory/`）。
+
+### 架构（模块一览）
+
+| 模块 | 路径 |
+| --- | --- |
+| 摄像头采集 | `src/capture/camera.py` |
+| YOLOv8 检测 | `src/analysis/detector.py` |
+| 共享上下文（线程安全） | `src/utils/context.py` |
+| VAD 录音 | `src/audio/recorder.py` |
+| Whisper 识别 | `src/audio/stt.py` |
+| 本地大脑（多后端） | `src/brain/llm.py` |
+| TTS（Voicebox → Qwen3-TTS → 系统） | `src/audio/voicebox_tts.py`、`src/audio/qwen_tts.py`、`src/audio/speaker_factory.py` |
+| 判断引擎 | `src/judgment/judge.py` |
+| 入口 | `main.py` |
+
+### 环境要求与安装
+
+所有模型均在**外部 AI 软件**（LM Studio / Voicebox）中管理——**项目不内置任何模型权重**。
+
+完整双语安装指南（英文官方方法 + 中文含国内镜像方法）：**`new_computer_download/READMEfirst.md`**。
+
+快速开始：
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python setup_ffmpeg.py          # 缺失时复制 ffmpeg
+# 1) LM Studio：加载 qwen/qwen3.6-35b-a3b，在 127.0.0.1:12345 开启服务器
+# 2) Voicebox App：克隆 voices/silverwalf_voice.wav 为 “JAC” 声纹
+python main.py
+```
+
+### 运行
+
+```bash
+python main.py
+```
+
+- `q` 退出 · `空格` 手动唤醒 · 控制台输入文字直接对话（绕过唤醒词）。
+
+### 模型
+
+- **大脑**：LM Studio 中的 `qwen/qwen3.6-35b-a3b`（默认 `backend="lm_studio"`，`127.0.0.1:12345`），标识符须精确匹配。
+- **判断**：LM Studio 中的 MiniCPM-o（可选，开启主动模式）。
+- **TTS**：Voicebox App 克隆 `voices/silverwalf_voice.wav` → **JAC** 声纹，项目内无 TTS 权重。
+- **检测**：`yolov8n.pt` 首次运行由 `ultralytics` 自动下载。
+
+### 当前状态与路线图
+
+已实现：多后端大脑、主动判断引擎、多模态问答、SLEEP/AWAKE 状态机、控制台输入、持久记忆。
+尚未实现：function calling / 工具执行层、agent 框架、MCP/OpenClaw 集成、流式 STT/LLM/TTS。差距笔记见 `codingLOG.md`（了解最新改动请读 `CHANGELOG.md` 与 `codingLOG.md`）。
+
+### 文档导航
+
+- `AGENTS.md` —— 开发者契约（架构、运行方式、依赖）。
+- `CHANGELOG.md` —— 变更日志。
+- `codingLOG.md` —— 与最终目标的差距笔记。
+- `docs/memory/` —— 记忆子系统文档。
+- `new_computer_download/READMEfirst.md` —— 安装指南。
+
+> `codinglog_by_awaqwq233/` 下的项目背景文档由 bo s s 手动维护，已加入 `.gitignore`，不自动同步。

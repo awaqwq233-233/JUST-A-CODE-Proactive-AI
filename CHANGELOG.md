@@ -4,6 +4,36 @@
 
 ---
 
+> **更正声明（2026-08-06）**：此前部分文档曾将 GUI 渲染崩溃、TTS 异常归咎于「macOS 27 不稳定 / Metal 不兼容」。经核实，macOS 27 适配良好——GUI 崩溃根因为渲染代码 bug（已在 gui.py 修复），TTS 异常为本机代理导致 Voicebox 连不上 HuggingFace（已通过改用本地 Voicebox 解决）。特此更正，后续文档不再归咎系统。
+
+## 2026-08-06 — 治理清理：去除项目内模型下载、统一文档与安装指南
+
+### 1. 删除的过时文件（git rm，未提交）
+- `AGENTS.en.md`：陈旧英文孤儿文档。
+- `DEPLOY_GUIDE.txt` / `new_computer_download/DEPLOY_GUIDE_NEW.md`：旧模型/GGUF 下载指南，已无用途。
+- `build.py`：PyInstaller Windows 打包辅助（开发期暂不需要）。
+- `fix_install.py`：Windows-only PyAudio/llama-cpp-python 修复（Windows 开发机已弃用）。
+- `download_models.py`：仅下载 Qwen3-TTS 权重到 `models/qwen_tts/`，默认 Voicebox 路径不需要。
+- `voices/zh_vo_Main_Linaxita_2_1_10_26.wav`：旧 TTS 克隆音色（仅保留 `silverwalf_voice.wav`）。
+
+### 2. 代码 / 脚本
+- `src/audio/qwen_tts.py`：移除对 `download_models.py` 的子进程调用；权重缺失时改由运行时在线拉取或系统 TTS 兜底。清理残留注释。
+- `new_computer_download/models_config.json`：重写为说明型（模型由 LM Studio/Voicebox 管理，不再含 GGUF/TTS 条目）。
+- `new_computer_download/setup_new_computer.py`：删除全部模型下载代码（步骤 4 改为「外部 AI 软件加载指引」）；仅保留 embedding 模型预下载为项目内合法下载；镜像/回退逻辑保留。
+
+### 3. 文档（一次性重写 / 新建，满足文档同步硬规定）
+- `AGENTS.md`：愿景改为「强人工智能管家」（智能眼镜/MR 仅为外设）；删除 `models/` GGUF 段与已删文件引用；新增「文档同步硬性规定」段——四类文档 {README, AGENTS, CHANGELOG, codingLOG} 随改动同步，且 Agent 查看改动时必读 `CHANGELOG.md` + `codingLOG.md`；补 macOS 27 更正说明。
+- `README.md`：整篇重写为双语（英文在前、中文在后）；愿景/平台/TTS/模型/macOS 27 均按治理口径。
+- `new_computer_download/READMEfirst.md`（**新建**）：双语安装首页——英文走官方方法；中文提供「海外源」与「国内镜像」两种方法；明确项目内不下载本地模型权重；含代理/Voicebox/HF、torch 版本、PySide6 403 回退、fastembed 钉死 0.5.1、麦克风/摄像头权限、模型标识符必须为 `qwen/qwen3.6-35b-a3b` 等排错。
+
+### 4. 配置
+- `.gitignore`：新增 `codinglog_by_awaqwq233/`（只由用户手动维护，不进仓库）；`models/*` / `models/qwen_tts/` 标注为历史遗留、权重现由外部软件管理。
+
+### 5. 残留引用清理
+- 复检全仓：`download_models.py` / `DEPLOY_GUIDE.txt` / `fix_install.py` / `build.py` 仅以「已删除/已移除」说明性文字出现，无功能性引用；`zh_vo_Main_Linaxita` 全仓无残留。
+
+---
+
 ## 2026-08-06 — 大脑模型切换为 qwen/qwen3.6-35b-a3b（LM Studio，原生视觉，禁用思考）
 
 ### 1. 改动

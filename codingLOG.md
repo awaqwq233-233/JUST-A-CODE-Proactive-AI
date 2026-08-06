@@ -61,6 +61,6 @@
 - **修复**：`qwen_tts.py` 导入阶段用 `warnings.filterwarnings` 屏蔽该提示，并设置 `TRANSFORMERS_VERBOSITY=error`。
 
 ### 运行建议
-- 若坚持用 Qwen3-TTS：确保 `models/qwen_tts/Qwen3-TTS-12Hz-1.7B-Base` 权重完整（可重跑 `python download_models.py` 补全）；不完整会自动回退系统 TTS，仍可正常发声。
+- 若坚持用 Qwen3-TTS（仅 NVIDIA）：确保 `models/qwen_tts/Qwen3-TTS-12Hz-1.7B-Base` 权重完整；项目已不再内置 `download_models.py` 下载器，缺失时运行时尝试在线拉取、失败则回退系统 TTS 或改用 Voicebox（macOS 默认 TTS），仍可正常发声。
 - 国内网络首次启用向量记忆检索：建议启动前 `export HF_ENDPOINT=https://hf-mirror.com`；代理自签证书环境加 `export JAC_HF_INSECURE=1`。
 
