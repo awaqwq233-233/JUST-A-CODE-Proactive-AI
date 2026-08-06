@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-08-06 — 记忆向量模型「每次启动都下载」澄清（日志误导，非真重下）
+
+### 1. 结论
+- 记忆子系统的 fastembed 向量模型（`qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q`，约 240MB）
+  **已缓存在 `~/.cache/fastembed`，每次启动都在复用，并未真正重复下载**。
+- 用户感知到的"每次都下载一遍"是 `src/memory/embedder.py` 启动日志文案误导：无论是否命中缓存都打印了
+  "下载向量模型"字样。**无需、也无法用仓库 `.gitignore` 控制**（缓存与 `~/.jac/memory` 记忆数据均在仓库外）。
+
+### 2. 改动（`src/memory/embedder.py`）
+- 新增模块级辅助函数 `_is_model_cached(cache_path)`：扫描 `FASTEMBED_CACHE_PATH` 下是否存在 `*.onnx`，
+  粗略判断模型已缓存（避免依赖具体 HF 仓库名映射）。
+- 在 `_ensure_loaded()` 中、`TextEmbedding(...)` 之前插入显式二态打印：
+  - 命中缓存：`向量模型已缓存于 <path>，跳过下载，直接从磁盘加载。`
+  - 未命中：`未检测到本地缓存，开始从镜像下载向量模型（首次较慢，约 240MB）...`
+- 软化 `_apply_hf_mirror()` 中的误导文案（去掉无条件的"下载"二字，改为"获取向量模型（已缓存则直接复用）"）。
+
+### 3. 预下载方式（新机器 / 清过缓存后）
+- 一行命令：`HF_ENDPOINT=https://hf-mirror.com python -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"`
+- 或用项目已有脚本 `new_computer_download/setup_new_computer.py`（其预下载步骤已封装同上逻辑）。
+
+### 4. 验证
+- `py_compile` 通过；`_is_model_cached` 对真实 `~/.cache/fastembed` 返回 `True`，对空/不存在路径返回 `False`。
+- `.gitignore` 未改动；`FASTEMBED_CACHE_PATH` 默认值（`~/.cache/fastembed`）保持不变。
+
+---
+
 ## 2026-08-05 — 修复 Voicebox「合成成功但 J.A.C. 播不到声音」（typ?）+ GUI 停止/复制/闪退
 
 ### 1. Voicebox 发声 bug（调用契约错误，根因坐实）

@@ -40,9 +40,9 @@ def _apply_hf_mirror():
     """
     if not os.environ.get("HF_ENDPOINT"):
         os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        print("[Embedder] 未检测到 HF_ENDPOINT，已默认使用镜像 https://hf-mirror.com 下载向量模型。")
+        print("[Embedder] 未检测到 HF_ENDPOINT，已默认使用镜像 https://hf-mirror.com 获取向量模型（已缓存则直接复用，不重复下载）。")
     else:
-        print(f"[Embedder] 使用现有 HF_ENDPOINT={os.environ['HF_ENDPOINT']} 下载向量模型。")
+        print(f"[Embedder] 使用现有 HF_ENDPOINT={os.environ['HF_ENDPOINT']} 获取向量模型（已缓存则直接复用）。")
 
     # 向量模型缓存目录：fastembed 在未显式设置 FASTEMBED_CACHE_PATH 时，默认会把
     # 权重落到系统临时目录（macOS 为 /var/folders/.../T/fastembed_cache）。该目录在
@@ -64,6 +64,22 @@ def _apply_hf_mirror():
         except Exception:
             pass
         print("[Embedder] JAC_HF_INSECURE=1：已关闭 SSL 证书校验（仅限可信内网/代理环境）。")
+
+
+def _is_model_cached(cache_path: str) -> bool:
+    """粗略判断 fastembed 是否已把模型权重缓存到 cache_path。
+
+    fastembed 的缓存结构为 ``<cache>/models--<org>--<name>/snapshots/<commit>/*.onnx``。
+    这里不依赖具体仓库名（``sentence-transformers`` 会被 fastembed 内部映射到
+    ``qdrant`` 仓库），直接扫描缓存目录下是否存在任意 ``.onnx`` 文件，命中即视为已缓存。
+    """
+    if not cache_path or not os.path.isdir(cache_path):
+        return False
+    for _root, _dirs, files in os.walk(cache_path):
+        for f in files:
+            if f.endswith(".onnx"):
+                return True
+    return False
 
 
 class MemoryEmbedder:
@@ -99,6 +115,16 @@ class MemoryEmbedder:
             _apply_hf_mirror()
         except Exception as e:
             print(f"[Embedder] 配置 HF 镜像失败（可忽略）：{e}")
+
+        # 明确告知本次启动是否会真正下载，避免日志误导：命中缓存时仍可能因文案出现
+        # “下载”字样而让人误以为每次启动都在重下。权重已缓存在 FASTEMBED_CACHE_PATH，
+        # 复用即可，无需联网。
+        _fb_cache = os.environ.get("FASTEMBED_CACHE_PATH", "")
+        if _is_model_cached(_fb_cache):
+            print(f"[Embedder] 向量模型已缓存于 {_fb_cache}，跳过下载，直接从磁盘加载。")
+        else:
+            print(f"[Embedder] 未检测到本地缓存，开始从镜像下载向量模型（首次较慢，约 240MB）...")
+
         try:
             from fastembed import TextEmbedding  # 延迟 import，缺包时不崩
         except Exception as e:
