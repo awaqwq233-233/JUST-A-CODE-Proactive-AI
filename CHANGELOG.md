@@ -32,6 +32,10 @@
 ### 5. 残留引用清理
 - 复检全仓：`download_models.py` / `DEPLOY_GUIDE.txt` / `fix_install.py` / `build.py` 仅以「已删除/已移除」说明性文字出现，无功能性引用；`zh_vo_Main_Linaxita` 全仓无残留。
 
+### 6. 对外官网同步（`/Users/awaqwq233/Downloads/index.html`，不在本仓库）
+- 技术描述对齐治理后口径：TTS 由「GPT TTS」改为 **Voicebox 本地克隆引擎（默认 macOS）+ 系统 TTS 兜底**；视觉由「CNN 图像分析」改为 **YOLOv8 检测 + J.A.C. Brain 原生多模态理解**；眼镜 / MR 明确为**可选外设**（摄像头为默认感知源）；大脑精确为 **qwen/qwen3.6-35b-a3b（LM Studio 加载，权重不进仓库）**，移除「30–33GB 本地显存 GGUF」旧描述；新增「本地优先 AI 管家 + 主动服务」定位。
+- 该文件位于用户 Downloads 目录，需手动上传/部署到官网，不纳入本仓库 git。
+
 ---
 
 ## 2026-08-06 — 大脑模型切换为 qwen/qwen3.6-35b-a3b（LM Studio，原生视觉，禁用思考）
