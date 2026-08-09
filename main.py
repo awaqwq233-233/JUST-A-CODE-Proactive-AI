@@ -159,8 +159,7 @@ def build_text_only_vision_reply(user_text, vision_info, brain, temperature):
         "你看不到原始图片，只能依据下面这份实时检测摘要回答，不能编造未检测到的细节。"
         f"\n【检测摘要】{vision_info}"
         f"\n【用户问题】{user_text}"
-        "\n【格式】第一句必须是 [情绪]（情绪可选：热情、平静、关怀、鼓励、开心、惊讶），随后紧跟一句口语化回答。"
-        "【铁律】必须且仅用简体中文；不得输出推理过程、Markdown、列表或编号；"
+        "\n【铁律】必须且仅用简体中文；不得输出推理过程、Markdown、列表或编号；"
         "回答控制在 250 字以内，自然流畅即可。若摘要信息不足，请明确说明只能根据检测结果判断。"
     )
 
@@ -175,8 +174,8 @@ def build_text_only_vision_reply(user_text, vision_info, brain, temperature):
         return response
 
     if "一片漆黑" in vision_info:
-        return "[平静] 我眼前暂时没有拿到最新画面，你可以稍等一下再问我一次。"
-    return f"[平静] {vision_info}"
+        return "我眼前暂时没有拿到最新画面，你可以稍等一下再问我一次。"
+    return vision_info
 
 def _strip_boilerplate(text):
     """
@@ -238,11 +237,6 @@ def process_response(text, brain, speaker):
             "你是一个叫 J.A.C. 的全功能语音助手，J.A.C. 的全称是 Just A Code。"
             "你不仅拥有广博的知识，还具备智能眼镜的视觉感知能力，可以通过摄像头看到周围的环境。"
             f"【当前视觉信息】：{vision_info}\n"
-            "请根据视觉信息和用户的提问，选择最合适的情绪（可选：热情、平静、关怀、鼓励、开心、惊讶、悲伤、生气）。"
-            "【重要】请严格按照以下格式回复："
-            "[情绪] 回复内容"
-            "例如：[开心] 哇，这只猫真可爱！"
-            "例如：[关怀] 你看起来有点累，要注意休息哦。"
             "【输出铁律（必须严格遵守）】："
             "1. 必须且仅用简体中文回答，不得出现英文、繁体中文或其他语言。"
             "2. 不要输出任何推理过程、思考链、Markdown 标题、项目符号、编号列表、分隔线或代码块。"
@@ -267,9 +261,8 @@ def process_response(text, brain, speaker):
                     vision_prompt = "请详细描述这张图片中有什么物体、人物和环境。"
 
                 img_system_prompt = (
-                    "你是一个视觉分析助手。请准确描述图像内容。"
-                    "【格式】第一句必须是 [情绪]（情绪可选：热情、平静、关怀、鼓励、开心、惊讶），随后紧跟一句口语化描述。"
-                    "【铁律】必须且仅用简体中文；不得输出推理过程、Markdown、列表或编号；"
+                "你是一个视觉分析助手。请准确描述图像内容。"
+            "【铁律】必须且仅用简体中文；不得输出推理过程、Markdown、列表或编号；"
                     "视觉描述控制在 250 字以内，自然流畅即可。"
                 )
                 if mem_block:
@@ -311,26 +304,12 @@ def process_response(text, brain, speaker):
             print("[提示] 大脑返回为空，跳过回复。")
             return
 
-        # 解析情绪与内容（鲁棒抽取）
-        # 模型偶尔把系统提示词 / 思考链一起吐出来（content 为空、真正答句在输出末尾），
-        # 此时「[情绪] 描述」在末尾。优先取【最后一个情绪标记】之后，其次取最后一个
-        # 「情绪词，」之后，最后兜底取最后一段；并剔除提示词式废话。
+        # 解析内容（纯文本，不再抽取情绪标签）
+        # 模型偶尔把系统提示词 / 思考链一起吐出来，这里剔除提示词式废话。
         import re
-        EMOTIONS = "热情|平静|关怀|鼓励|开心|惊讶|悲伤|生气"
-        emotion = "平静"  # 默认
-        em_bracket = list(re.finditer(r"[\[【](%s)[\]】]" % EMOTIONS, full_response))
-        em_word = list(re.finditer(r"(%s)[，:,：]" % EMOTIONS, full_response))
-        if em_bracket:
-            emotion = em_bracket[-1].group(1)
-            after = full_response[em_bracket[-1].end():]
-        elif em_word:
-            emotion = em_word[-1].group(1)
-            after = full_response[em_word[-1].end():]
-        else:
-            after = full_response
-        after = _strip_boilerplate(after)
-        response_text = after.strip() if after.strip() else full_response.strip()
-        # 清掉可能残留的 [xxx]/【xxx】 标签，避免把「[平静]」读出来
+        response_text = _strip_boilerplate(full_response)
+        response_text = response_text.strip() if response_text.strip() else full_response.strip()
+        # 清掉可能残留的 [xxx]/【xxx】 标签，避免把标签读出来
         response_text = re.sub(r"\s*[\[【][^\[\]【】]*[\]】]\s*", "", response_text).strip()
 
         # TTS 安全截断：仅当模型抽风产出极端超长文本（>400 字）时才截断，
@@ -339,14 +318,11 @@ def process_response(text, brain, speaker):
             print(f"[提示] 回复过长（{len(response_text)} 字），截断到 400 字后朗读。")
             response_text = response_text[:400]
 
-        print(f"[解析结果] 情绪: {emotion}, 内容: {response_text}")
+        print(f"[解析结果] 内容: {response_text}")
 
-        # 回答
+        # 回答（纯文本，中性朗读，不再传 emotion_hint）
         context.is_speaking = True
-        try:
-            speaker.speak(response_text, emotion_hint=emotion)
-        except TypeError:
-            speaker.speak(response_text)
+        speaker.speak(response_text)
         context.is_speaking = False
 
         # 记录判定（后台线程，非阻塞）：把本轮对话交给记忆子系统评估是否值得长期记住
@@ -400,7 +376,7 @@ def handle_user_text(text, speaker, brain, source="语音", bypass_wake=False):
             print("[系统] 检测到唤醒词！进入唤醒状态。")
             SYSTEM_STATE = "AWAKE"
             LAST_INTERACTION_TIME = current_time
-            speaker.speak("我在。", emotion_hint="热情")
+            speaker.speak("我在。")
 
             if len(text) > 5:
                 process_response(text, brain, speaker)
@@ -408,7 +384,7 @@ def handle_user_text(text, speaker, brain, source="语音", bypass_wake=False):
 
     LAST_INTERACTION_TIME = current_time
     if "再见" in text or "休息" in text:
-        speaker.speak("好的，有需要随时叫我。", emotion_hint="平静")
+        speaker.speak("好的，有需要随时叫我。")
         SYSTEM_STATE = "SLEEP"
         if memory is not None:
             memory.flush()
@@ -706,7 +682,7 @@ def main():
                     SYSTEM_STATE = "AWAKE"
                     LAST_INTERACTION_TIME = time.time()
                     if speaker:
-                        speaker.speak("我在，请讲。", emotion_hint="热情")
+                        speaker.speak("我在，请讲。")
             else:
                 # 纯终端模式：不创建任何窗口。退出用 Ctrl+C(KeyboardInterrupt)；
                 # 对话用语音唤醒或直接在控制台输入文字回车。

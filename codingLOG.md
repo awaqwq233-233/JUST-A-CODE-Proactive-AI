@@ -10,7 +10,7 @@
 ## 2. 缺乏"手"——Function Calling（未解决）
 
 - **目标**：工具调用能力，例如查实时天气、控制电脑音量、打开网页、管理日程、搜索文件等。
-- **现状**：LLM 仍只输出 `[情绪] 文本`，没有执行系统命令 / 调用工具的能力。代码中**无 function calling / 工具执行层**。
+- **现状**：LLM 现只输出**纯文本**（已移除 `[情绪]` 标签，详见下方 2026-08-09 变更），仍没有执行系统命令 / 调用工具的能力。代码中**无 function calling / 工具执行层**。
 
 ## 3. 记忆力有限（未解决）
 
@@ -26,7 +26,7 @@
 
 - 无 agent 执行框架；无 MCP / OpenClaw 集成；无云端/局域网卸载（虽有 `Qwen3.6-35B` 模型已下载但未接入代码，这个模型是无限制的模型，但目前显存不足）。
 - 视觉理解仍只有 **YOLO 标签 + LLM 文本摘要**，无 OCR / 人脸识别 / 深度 / 场景图 / 视觉语言理解（旧的 LocateAnything-3B 方案已移除）。
-- TTS 语音栈已从 Genie-TTS（GPT-SoVITS）全面切换为开源本地 Qwen3-TTS（已删除 genie_tts.py 与 genie_assets/、GenieData/），支持情绪控制与声音克隆。
+- TTS 语音栈已从 Genie-TTS（GPT-SoVITS）全面切换为开源本地 Qwen3-TTS（已删除 genie_tts.py 与 genie_assets/、GenieData/），支持情绪控制与声音克隆；实际选用链为 Voicebox（macOS 主力）→ Qwen3-TTS（仅 NVIDIA）→ 系统 TTS 兜底。注：2026-08-09 起 brain 输出改为纯文本，情绪化语音能力（各 TTS 仍支持 `emotion_hint`）当前未被调用，统一走中性朗读。
 - 当前项目树**没有自动化测试**。
 
 > 注：本文件是"差距笔记"，不是精确实现状态。已落地的进展（主动判断引擎雏形、多模态图像问答、多后端大脑）以 `AGENTS.md` 为准。
@@ -63,4 +63,24 @@
 ### 运行建议
 - 若坚持用 Qwen3-TTS（仅 NVIDIA）：确保 `models/qwen_tts/Qwen3-TTS-12Hz-1.7B-Base` 权重完整；项目已不再内置 `download_models.py` 下载器，缺失时运行时尝试在线拉取、失败则回退系统 TTS 或改用 Voicebox（macOS 默认 TTS），仍可正常发声。
 - 国内网络首次启用向量记忆检索：建议启动前 `export HF_ENDPOINT=https://hf-mirror.com`；代理自签证书环境加 `export JAC_HF_INSECURE=1`。
+
+
+---
+
+## 变更记录（2026-08-09）：语音输出去情绪标签（纯文本化）
+
+按需求移除 brain 回复里的 `[情绪] 内容` 标签，语音只输出纯文本、TTS 中性朗读。动机：简化输出、避免情绪解析偶发错位，统一走干净文本。
+
+### 改动范围
+- `main.py`：3 处 prompt（主对话 / 图像问答 / 视觉降级）删掉「`[情绪] 回复内容`」格式约束；解析段移除情绪正则抽取，改为 `_strip_boilerplate` + 去残留括号 + 截断后直接 `speaker.speak(text)`（不再传 `emotion_hint`）；唤醒/休眠固定话术去掉 `emotion_hint`；视觉降级兜底的 `[平静]` 硬编码前缀一并清掉。
+- `src/runtime.py`：`manual_wake` 去掉 `emotion_hint="热情"`。
+- `src/brain/llm.py`：`_query_lm_studio` 的 content 为空恢复逻辑去掉情绪标记分支（简化为取 thinking 链最后段落）；`_mock_response` 去掉 `[happy]`/`[calm]` 前缀。
+- 文档：`AGENTS.md`、`CHANGELOG.md`、本文件同步更新。
+
+### 刻意保留
+- TTS 各实现的 `speak(text, emotion_hint=None)` 接口保留（`emotion_hint` 仍可选，传 `None` 即中性），不破坏抽象与现有单测。
+
+### 对"差距"的影响
+- 语音表达力：J.A.C. 现在始终是中性音色，不再带情绪起伏。若最终愿景要求"有情绪的陪伴感"，这属于**表达能力缺口（未解决）**——情绪化语音引擎能力仍在，只是 brain 不再驱动它。
+- 附带修正：`tests/test_voicebox_speaker.py` 的 mock 桩原本让 `/generate` 返回音频字节，与 2026-08-05 生效的异步契约（`/generate` 返 JSON `id` → `GET /audio/{id}` 取音频 + 验 RIFF/WAVE）不符，导致一用例预存失败；已对齐真实契约，7 个用例全过。
 

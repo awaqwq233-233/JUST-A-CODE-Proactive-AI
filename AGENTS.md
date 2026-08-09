@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型**，灵感来自 JARVIS：通过摄像头/麦克风感知用户的环境，基于当前场景做推理，用带情绪的 TTS 回应，目标是无需用户显式触发即可主动行动。
+J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型**，灵感来自 JARVIS：通过摄像头/麦克风感知用户的环境，基于当前场景做推理，用语音 TTS 回应，目标是无需用户显式触发即可主动行动。
 
 长期产品愿景是**打造一个强人工智能管家（Proactive AI Butler）**：
 
@@ -53,7 +53,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 4. 唤醒词集合：`jac` / `j.a.c` / `杰克` / `接客` / `你好` / `hello jac` / `hi jac` / `你好 jac` / `hey jac`。
 5. 唤醒后进入 `AWAKE` 状态；`SYSTEM_STATE` 在 **20 秒（AWAKE_TIMEOUT）** 无交互后自动回到 `SLEEP`；用户说「再见/休息」立即休眠。
 6. 用户输入进入 `handle_user_text` → `process_response`：取视觉摘要 → 若判定为视觉相关问题（看到/看见/有什么/画面/是谁…）且后端支持图像，则把真实摄像头帧发给 `brain.think_with_image()`；否则用文本 `brain.think()`（带上视觉摘要）。
-7. 模型回复格式为 `[情绪] 回复内容`，解析情绪标签后交给扬声器（`emotion_hint`）。
+7. 模型输出**纯文本回复**（不再带 `[情绪]` 标签），经 `_strip_boilerplate` 清洗与残留括号清除后，直接交给扬声器**中性朗读**（不再传 `emotion_hint`）。
 8. 若主动判断引擎已激活，主循环每帧检查介入请求，确认后新开 daemon 线程主动回应（绕过唤醒词）。
 
 ### 多模态图像问答
@@ -192,7 +192,7 @@ python main.py
 - J.A.C. Brain：更大的推理模型（可能 Qwen 系或改进版小米 MiLoco 2.0），负责复杂分析与任务规划。
 - Agent 执行：内部技能与外部 API，可能通过 OpenClaw/MCP 类集成。
 - 外部模型 API：Gemini、ChatGPT、Grok、Claude、Qwen、DeepSeek 等。
-- 输出层：App/HUD 结果展示 + 情绪化 TTS。
+- 输出层：App/HUD 结果展示 + 语音 TTS（纯文本中性朗读）。
 - 闭环：输出反馈到下一轮判断，形成持续主动服务。
 
 硬件预期（来自文档，可穿戴终端仅为外设）：

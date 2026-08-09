@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-09 — 语音输出去情绪标签：模型纯文本输出、TTS 中性朗读
+
+- **目标**：移除 brain 回复中的 `[情绪] 内容` 标签，语音只输出纯文本。
+- **Prompt 调整**（`main.py`）：删除 `process_response` 主对话、`img_system_prompt`、`build_text_only_vision_reply` 三处要求模型按 `[情绪] 回复内容` 格式输出的指令；同步清理视觉降级兜底的 `[平静]` 硬编码前缀。
+- **解析精简**（`main.py` `process_response`）：移除情绪正则抽取逻辑，回复经 `_strip_boilerplate` 清洗 + 残留括号清除 + 超长截断后，直接 `speaker.speak(response_text)` 中性朗读（不再传 `emotion_hint`）；终端打印不再显示 `情绪:` 字段。
+- **固定话术中性化**（`main.py` / `src/runtime.py`）：唤醒词「我在。」「我在，请讲。」与休眠词「好的，有需要随时叫我。」去掉 `emotion_hint` 语音风格。
+- **兜底清理**（`src/brain/llm.py`）：`_query_lm_studio` 在 content 为空时改为直接取 thinking 链最后一段非空内容（去掉基于情绪标记的恢复分支）；`_mock_response` 去掉 `[happy]`/`[calm]` 前缀。
+- **未改动**：TTS 各实现的 `speak(text, emotion_hint=None)` 接口保留（`emotion_hint` 仍可选，传 `None` 即中性）。
+- **测试修正（顺带）**：`tests/test_voicebox_speaker.py` 的 `_make_session` 桩原本让 `/generate` 直接返回音频字节，与 2026-08-05 起生效的异步契约（`/generate` 返回 JSON `id` → 再 `GET /audio/{id}` 取音频）不符，导致 `test_speak_injects_emotion_tags_and_plays` 预存失败。已把桩对齐为真实契约（并补最小合法 WAV 头通过魔数校验），全部 7 个用例通过。
+- **文档**：`AGENTS.md` 同步更新回复格式与输出层描述；本日志追加本条。
+
+---
+
 > **更正声明（2026-08-06）**：此前部分文档曾将 GUI 渲染崩溃、TTS 异常归咎于「macOS 27 不稳定 / Metal 不兼容」。经核实，macOS 27 适配良好——GUI 崩溃根因为渲染代码 bug（已在 gui.py 修复），TTS 异常为本机代理导致 Voicebox 连不上 HuggingFace（已通过改用本地 Voicebox 解决）。特此更正，后续文档不再归咎系统。
 
 ## 2026-08-06 — 治理清理：去除项目内模型下载、统一文档与安装指南

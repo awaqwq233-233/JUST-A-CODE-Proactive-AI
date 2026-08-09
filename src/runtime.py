@@ -271,6 +271,6 @@ class JACRuntime:
         main.LAST_INTERACTION_TIME = time.time()
         if self.speaker is not None:
             try:
-                self.speaker.speak("我在，请讲。", emotion_hint="热情")
+                self.speaker.speak("我在，请讲。")
             except Exception:
                 pass

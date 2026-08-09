@@ -45,8 +45,15 @@ class TestVoiceboxSpeaker(unittest.TestCase):
     """VoiceboxSpeaker 行为测试（全程 mock 网络）。"""
 
     def _make_session(self, health_ok=True, profiles=None,
-                      create_id="pid1", generate_content=b"0" * 100):
-        """构造一个模拟的 requests.Session，按 URL 后缀返回对应 FakeResponse。"""
+                      create_id="pid1", generate_id="gen1", audio_content=None):
+        """构造一个模拟的 requests.Session，按 URL 后缀返回对应 FakeResponse。
+
+        对齐 voicebox_tts 的真实异步契约（2026-08-05 实测）：
+        POST /generate 返回 JSON {"id"}，再 GET /audio/{id} 取音频字节。
+        """
+        # 最小合法 WAV（RIFF....WAVE 头 + 填充），满足 speak() 的魔数校验
+        if audio_content is None:
+            audio_content = b"RIFF\x24\x00\x00\x00WAVE" + b"\x00" * 40
         session = MagicMock()
 
         def _get(url, **kw):
@@ -54,6 +61,8 @@ class TestVoiceboxSpeaker(unittest.TestCase):
                 return _FakeResponse(status_code=200 if health_ok else 503)
             if url.rstrip("/").endswith("/profiles"):
                 return _FakeResponse(json_data={"profiles": profiles or []})
+            if "/audio/" in url:
+                return _FakeResponse(content=audio_content)
             return _FakeResponse()
 
         def _post(url, **kw):
@@ -62,7 +71,7 @@ class TestVoiceboxSpeaker(unittest.TestCase):
             if "/samples" in url:
                 return _FakeResponse(json_data={"ok": True})
             if url.rstrip("/").endswith("/generate"):
-                return _FakeResponse(content=generate_content)
+                return _FakeResponse(json_data={"id": generate_id})
             return _FakeResponse()
 
         session.get.side_effect = _get
