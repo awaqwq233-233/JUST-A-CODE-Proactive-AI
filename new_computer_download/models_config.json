@@ -2,7 +2,7 @@
   "说明": "J.A.C. 不再在项目中下载/存放任何本地大模型权重。大脑模型由用户在 LM Studio 中加载并运行，TTS 由用户在 Voicebox App 中加载（JAC 声纹 + silverwalf_voice.wav），YOLOv8 检测模型在首次运行时由 ultralytics 自动下载到项目根目录。本配置文件仅作说明用途，setup_new_computer.py 不再执行任何模型下载步骤。",
   "模型来源": {
     "大脑 (LLM)": "LM Studio 加载 qwen/qwen3.6-35b-a3b（原生多模态、禁用思考）；运行前需启动 LM Studio 并加载该模型。",
-    "主动判断 (Judgment)": "可选：在 LM Studio 额外加载 MiniCPM-o；默认 JUDGMENT_ENGINE_ENABLED=False。",
+    "主动判断 (Judgment)": "可选：在 LM Studio 额外加载 MiniCPM-o；J.A.C. 默认开启判断引擎（JUDGMENT_ENGINE_ENABLED=True），未加载则自动进入被动模式。",
     "TTS": "Voicebox App（外部软件）克隆 silverwalf_voice.wav 音色；macOS 上 Qwen3-TTS 不可用，由 Voicebox 接管。",
     "视觉检测": "yolov8n.pt，首次运行 ultralytics 自动下载到项目根。"
   },

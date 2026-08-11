@@ -43,7 +43,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - Whisper 语音识别：`src/audio/stt.py`（默认 `model_size="tiny"`，**非流式**）。
 - 本地大脑推理：`src/brain/llm.py`（`LocalBrain`，多后端：lm_studio / ollama / llama_cpp / auto）。
 - 语音合成：统一走 `build_speaker` 工厂——**Voicebox（开源克隆引擎，macOS 主力）→ Qwen3-TTS（仅 NVIDIA）→ 系统 TTS 兜底**。克隆参考音固定为 `voices/silverwalf_voice.wav`（唯一音色）。
-- **主动判断引擎**：`src/judgment/judge.py`（`JudgmentEngine`，连接 LM Studio 上的 MiniCPM-o，持续判断是否需要主动介入，默认 `JUDGMENT_ENGINE_ENABLED=False`）。
+- **主动判断引擎**：`src/judgment/judge.py`（`JudgmentEngine`，连接 LM Studio 上的 MiniCPM-o，持续判断是否需要主动介入，**默认开启** `JUDGMENT_ENGINE_ENABLED=True`；若 LM Studio 未加载 MiniCPM-o 则自动进入被动模式，不报错也不主动）。
 
 ### 运行流程（`main.py`）
 
@@ -52,9 +52,19 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 3. 主循环每帧：取帧 → YOLO 检测 → 更新 `SharedContext`（视觉摘要 + 缓存最新帧）→ 绘制 FPS / 状态灯（Listening/Thinking/Speaking）→ `cv2.imshow`。
 4. 唤醒词集合：`jac` / `j.a.c` / `杰克` / `接客` / `你好` / `hello jac` / `hi jac` / `你好 jac` / `hey jac`。
 5. 唤醒后进入 `AWAKE` 状态；`SYSTEM_STATE` 在 **20 秒（AWAKE_TIMEOUT）** 无交互后自动回到 `SLEEP`；用户说「再见/休息」立即休眠。
-6. 用户输入进入 `handle_user_text` → `process_response`：取视觉摘要 → 若判定为视觉相关问题（看到/看见/有什么/画面/是谁…）且后端支持图像，则把真实摄像头帧发给 `brain.think_with_image()`；否则用文本 `brain.think()`（带上视觉摘要）。
+6. 用户输入进入 `handle_user_text` → `process_response`：取视觉摘要 → 若判定为视觉相关问题（看到/看见/有什么/画面/是谁…）且后端支持图像，则把真实摄像头帧发给 `brain.think_with_image()`；否则用文本分支处理（见下「Function Calling（装手）」）。
 7. 模型输出**纯文本回复**（不再带 `[情绪]` 标签），经 `_strip_boilerplate` 清洗与残留括号清除后，直接交给扬声器**中性朗读**（不再传 `emotion_hint`）。
 8. 若主动判断引擎已激活，主循环每帧检查介入请求，确认后新开 daemon 线程主动回应（绕过唤醒词）。
+
+### Function Calling（装手）
+
+非视觉文本分支在 `process_response` 中接入了 agent 式工具调用（2026-08-11 落地），让 J.A.C. 真正"有手"：
+
+- **开关与前提**：默认开启（`TOOLS_ENABLED` 环境变量可关）；仅当后端支持结构化 function calling（`brain.supports_tools()`，当前 `lm_studio` / `ollama`）且 `src/tools` 有工具时启用，否则降级为普通流式对话。
+- **大脑侧**：`src/brain/llm.py` 新增 `think_with_tools(messages, tools)`（发送 `tools` + `tool_choice=auto`，解析 `tool_calls`）与 `run_agentic(prompt, tools, tool_executor)`（工具调用循环生成器，流式吐出最终回答，保留打字机效果）。
+- **工具层**：`src/tools/` 提供四个白名单工具——`open_url` / `open_app`（打开网页/应用）、`search_files`（只读本地文件搜索，限定用户目录）、`get_system_info`（时间/电池/CPU/内存）、`run_command`（**受限 shell**：仅白名单命令，拦截 `rm`/`sudo` 等危险操作）。所有工具经 `get_tool_schemas()` 生成 OpenAI 风格 schema 发给模型，`execute_tool(name, arguments)` 执行并回喂结果。
+- **循环**：模型要调工具 → `execute_tool` 执行 → 结果作为 `tool` 消息回喂模型 → 重复直到模型给出最终自然语言回答 → TTS 朗读。工具执行任何异常都被转成错误文本回喂，不让整轮对话崩溃。
+- **安全边界**：工具只做打开应用/网页、只读搜索、状态查询、受限命令；绝不做删除/提权/任意写；`search_files` 仅扫用户目录，`run_command` 白名单 + `shell=False` 双重防注入。
 
 ### 多模态图像问答
 
@@ -78,7 +88,8 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - `src/audio/voicebox_tts.py`：Voicebox 克隆 TTS（开源，REST API `http://127.0.0.1:17493`，macOS 友好主力 TTS），自动克隆 JAC 声纹 + 8 种情绪映射 + 系统 TTS 兜底。
 - `src/audio/speaker_factory.py`：统一扬声器选择工厂 `build_speaker(config)`（Voicebox → Qwen3-TTS → 系统 TTS）。
 - `src/audio/qwen_tts.py`：Qwen3-TTS 语音合成（开源本地 TTS，支持情绪/语气控制与声音克隆，仅 NVIDIA 平台启用），带系统 TTS 兜底降级。
-- `src/brain/llm.py`：`LocalBrain`，llama.cpp / LM Studio / Ollama / auto 多后端，含 `think_with_image`。
+- `src/brain/llm.py`：`LocalBrain`，llama.cpp / LM Studio / Ollama / auto 多后端，含 `think_with_image` 与 Function Calling 的 `think_with_tools` / `run_agentic`。
+- `src/tools/`：**Function Calling 工具层（装手）**——`registry.py`（工具注册表 + OpenAI schema）、`executor.py`（安全分发执行）、`open_actions.py` / `search_files.py` / `system_info.py` / `shell.py`（四个白名单工具）。
 - `src/judgment/judge.py`：主动判断引擎（MiniCPM-o via LM Studio）。
 - `src/utils/context.py`：线程安全的共享上下文（视觉摘要、状态标志、转录缓冲、帧缓存、介入标志）。
 - `voices/`：TTS 声音克隆参考音。`silverwalf_voice.wav` 为唯一克隆音色参考（体积小、有意保留进版本库，见 `.gitignore` 注释）。
@@ -221,7 +232,7 @@ python main.py
 ## 已知限制
 
 - **运行强依赖 LM Studio**：`main.py` 默认 `backend="lm_studio"`，必须本地 12345 端口加载 `qwen/qwen3.6-35b-a3b`；否则思考全部失败。纯本地 GGUF 需改 backend。
-- **双模型显存压力**：开启主动判断需 LM Studio 同时加载 `qwen/qwen3.6-35b-a3b` + `MiniCPM-o`，资源占用大。默认 `JUDGMENT_ENGINE_ENABLED=False`，未检测到时自动进入被动模式（不报错也不主动）。
+- **双模型资源**：开启主动判断需 LM Studio 同时加载 `qwen/qwen3.6-35b-a3b` + `MiniCPM-o`；当前 M5 Pro 48G 统一内存已验证可同时承载（2026-08-11）。默认 `JUDGMENT_ENGINE_ENABLED=True`，未检测到 MiniCPM-o 时自动进入被动模式（不报错也不主动）。
 - VAD 录音仍可能阻塞在「等待说话」，影响关闭响应（旧限制仍在）。
 - STT/LLM/TTS **均非流式**，端到端延迟仍高。
 - 无 function calling、无 agent/MCP/OpenClaw 集成（目标未实现）；持久记忆（JSON 长期记忆 + 轻量向量检索）已实现，见 `src/memory/` 与 `docs/memory/`。

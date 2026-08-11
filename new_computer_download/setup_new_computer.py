@@ -458,7 +458,7 @@ def step_external_software(args):
         "  1) 大脑（LLM）：安装 LM Studio，加载模型标识符 `qwen/qwen3.6-35b-a3b`\n"
         "     （原生多模态、禁用思考），并启动本地服务（默认 127.0.0.1:12345）。\n"
         "  2) 主动判断（可选）：如需主动介入，在 LM Studio 额外加载 MiniCPM-o；\n"
-        "     默认 JUDGMENT_ENGINE_ENABLED=False，未加载时自动进入被动模式。\n"
+        "     默认 JUDGMENT_ENGINE_ENABLED=True，未加载 MiniCPM-o 时自动进入被动模式。\n"
         "  3) TTS（语音）：安装 Voicebox App，导入 voices/silverwalf_voice.wav\n"
         "     建立名为 JAC 的克隆声纹；macOS 上 Qwen3-TTS 不可用，由 Voicebox 接管。\n"
         "  4) 视觉检测：yolov8n.pt 在首次运行 main.py 时由 ultralytics 自动下载到项目根。\n"

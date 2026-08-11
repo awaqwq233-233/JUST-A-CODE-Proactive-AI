@@ -63,7 +63,7 @@ If download fails, memory automatically falls back to keyword retrieval — the 
    - The identifier **must match exactly** (code matches it precisely; a different id won't be picked up).
    - It is **natively multimodal** and **thinking is disabled** (`enable_thinking=False`).
 2. Start the local server on **`127.0.0.1:12345`** (Developer tab → Start Server).
-3. (Optional, for proactive mode) Also load **MiniCPM-o** in LM Studio. If not loaded, J.A.C. auto-enters passive mode (`JUDGMENT_ENGINE_ENABLED=False` by default).
+3. (Optional, for proactive mode) Also load **MiniCPM-o** in LM Studio. J.A.C. enables the judgment engine by default (`JUDGMENT_ENGINE_ENABLED=True`); if MiniCPM-o is not loaded, it auto-enters passive mode.
 
 ### 7. Set up the TTS voice in Voicebox
 
@@ -161,7 +161,7 @@ python new_computer_download/setup_new_computer.py --only embed
    - **标识符必须精确匹配**（代码按此 id 精确匹配；填错不会被识别）。
    - 该模型**原生多模态**、且**禁用思考模式**（`enable_thinking=False`）。
 2. 在 Developer 页签启动本地服务器，地址 **`127.0.0.1:12345`**。
-3. （可选，开启主动模式）在 LM Studio 额外加载 **MiniCPM-o**；不加载则自动进入被动模式（默认 `JUDGMENT_ENGINE_ENABLED=False`）。
+3. （可选，开启主动模式）在 LM Studio 额外加载 **MiniCPM-o**；J.A.C. 默认开启判断引擎（`JUDGMENT_ENGINE_ENABLED=True`），不加载则自动进入被动模式。
 
 **② 在 Voicebox 配置 TTS 声纹**
 

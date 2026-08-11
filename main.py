@@ -83,6 +83,8 @@ from src.brain.llm import LocalBrain
 from src.utils.context import SharedContext
 from src.memory import MemoryManager, seed_base_memories
 from src.utils.net import setup_insecure_ssl
+# Function Calling 工具层（装手）：get_tool_schemas 提供 tools 定义，execute_tool 执行具体工具
+from src.tools import get_tool_schemas, execute_tool
 
 
 # 注：Qwen3-TTS 的懒加载逻辑已统一收进 src/audio/speaker_factory.build_speaker，
@@ -131,6 +133,10 @@ MEMORY_ENABLED = os.environ.get("MEMORY_ENABLED", "true").lower() not in ("0", "
 # 人物身份捕获：默认关闭（不记具体人物身份，PII 双层门控第一层）。
 MEMORY_CAPTURE_PERSON_ID = os.environ.get("MEMORY_CAPTURE_PERSON_ID", "false").lower() in ("1", "true", "yes", "on")
 memory = None  # MemoryManager 实例，在 main() 中初始化
+
+# --- Function Calling（装手 / agent 工具层）---
+# 总开关：默认开启；设 TOOLS_ENABLED=false 可禁用（模型退化为纯对话）。
+TOOLS_ENABLED = os.environ.get("TOOLS_ENABLED", "true").lower() not in ("0", "false", "no", "off")
 
 def check_wake_word(text):
     """检查文本中是否包含唤醒词"""
@@ -283,18 +289,42 @@ def process_response(text, brain, speaker):
                 print("[警告] 没有可用的摄像头帧，改用检测摘要回答视觉问题。")
                 full_response = build_text_only_vision_reply(text, vision_info, brain, temperature)
         else:
-            # 流式文本思考：逐 token 打印，形成"持续思考"的打字机效果
-            for chunk in brain.think_stream(text, system_prompt=system_prompt, temperature=temperature, max_tokens=256):
-                full_response += chunk
-                # 终端下 end="" 营造打字机效果；GUI 下每个 chunk 也会实时进入控制台队列
-                print(chunk, end="", flush=True)
-            print()  # 流式结束后补一个换行
-            # 兜底：流式偶发返回空（LM Studio 并发/繁忙）时，补一次非流式请求重试，
-            # 避免 full_response 为空导致本轮直接"跳过回复"。
-            if not full_response or not full_response.strip():
-                print("[提示] 流式返回为空，改用非流式请求重试一次。")
-                full_response = brain.think(text, system_prompt=system_prompt,
-                                            temperature=temperature, max_tokens=256)
+            # 非视觉问题：优先走 Function Calling（装手）流程；
+            # 若后端不支持或功能关闭，则降级为普通流式对话。
+            if TOOLS_ENABLED and brain.supports_tools() and get_tool_schemas():
+                try:
+                    # 给模型补充一句"你有工具可用"的提示，引导它在合适时主动调用
+                    fc_system_prompt = (
+                        system_prompt
+                        + "\n你拥有若干工具可用：打开应用/网页、搜索本地文件、查询系统状态、执行受限 shell 命令。"
+                          "当用户明确要求这些动作（如'打开 Safari'、'现在几点了'、'搜一下报告'），请直接调用对应工具，不要只描述步骤。"
+                    )
+                    print("[工具] 启用 Function Calling，模型可主动调用工具。")
+                    for chunk in brain.run_agentic(
+                        text,
+                        tools=get_tool_schemas(),
+                        tool_executor=execute_tool,
+                        system_prompt=fc_system_prompt,
+                        temperature=temperature,
+                        max_tokens=768,
+                    ):
+                        full_response += chunk
+                        print(chunk, end="", flush=True)
+                    print()
+                except Exception as e:
+                    print(f"[工具] Function Calling 执行异常（降级为普通流式对话）: {e}")
+                    full_response = ""  # 清空，走下方普通流式降级
+            # 降级 / 非 FC 分支：普通流式文本思考（逐 token 打印，打字机效果）
+            if not full_response:
+                for chunk in brain.think_stream(text, system_prompt=system_prompt, temperature=temperature, max_tokens=256):
+                    full_response += chunk
+                    print(chunk, end="", flush=True)
+                print()  # 流式结束后补一个换行
+                # 兜底：流式偶发返回空（LM Studio 并发/繁忙）时，补一次非流式请求重试
+                if not full_response or not full_response.strip():
+                    print("[提示] 流式返回为空，改用非流式请求重试一次。")
+                    full_response = brain.think(text, system_prompt=system_prompt,
+                                                temperature=temperature, max_tokens=256)
 
         print(f"[J.A.C 原始回复] {full_response}")
 

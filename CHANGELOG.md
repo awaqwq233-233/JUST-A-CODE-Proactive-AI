@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-08-11 — Function Calling 工具层实现（给 J.A.C. 装手）
+
+- **背景**：大脑 `qwen/qwen3.6-35b-a3b` 经 `verify_toolcall.py` 验证支持 OpenAI 风格 function calling（M5 Pro 48G 机器，LM Studio `127.0.0.1:12345`）。
+- **改动（业务代码）**：
+  - `src/brain/llm.py`：新增 `ThinkResult` / `parse_tool_calls`（兼容 LM Studio 的 `arguments` 字符串格式与 Ollama 的 `arguments` dict 格式）；`_query_lm_studio` / `_query_ollama` 支持 `tools` 参数并在工具模式返回 `ThinkResult`；新增 `think_with_tools`（带工具推理）、`supports_tools`（后端能力判断）、`run_agentic`（工具调用循环生成器，流式吐出最终回答、保留打字机效果）、`_stream_final`。
+  - `src/tools/`（**新建**）：`registry.py`（白名单工具注册 + OpenAI schema）、`executor.py`（安全分发执行）、`open_actions.py`（`open_url` / `open_app`）、`search_files.py`（只读本地文件搜索，限定用户目录）、`system_info.py`（时间/电池/CPU/内存）、`shell.py`（**受限 shell**：白名单命令 + `shell=False` 防注入，拦截 `rm`/`sudo` 等）。
+  - `main.py`：`process_response` 非视觉分支接入 Function Calling（`TOOLS_ENABLED` 开关，默认开；后端不支持时降级普通流式对话）；新增模块级 `TOOLS_ENABLED` 常量。
+  - `src/utils/config.py`：新增 `tools_enabled` 配置项（默认 `True`，环境变量 `TOOLS_ENABLED` 覆盖）。
+  - `tests/unit/test_tools.py`（**新建**）：10 个单测覆盖 schema 格式、受限 shell 放行/拦截、本地搜索与越权拦截、系统状态、未知工具、`parse_tool_calls` 两种格式、`run_agentic` 在 mock 后端降级，全部通过。
+- **安全边界**：工具只做打开应用/网页、只读搜索、状态查询、受限命令；`search_files` 仅扫用户目录、`run_command` 白名单 + `shell=False` 双重防注入；**不联网、不写文件、不删除、不提权**。
+- **文档**：`codingLOG.md`（§2 未解决→部分解决；§5 agent 框架缺位→已落地；"无测试"→已有 `tests/unit/test_tools.py`）、`AGENTS.md`（新增「Function Calling（装手）」小节 + 文件条目）、`README.md`（已实现列表加入工具层）。
+
+---
+
+## 2026-08-11 — 文档同步：修正「显存不足 / 待验证 / 默认 False / 35B 未接入」过时描述
+
+- **背景**：开发机已升级 M5 Pro 48G 统一内存，MiniCPM-o 主动判断引擎与 `qwen/qwen3.6-35b-a3b` 大脑均已实跑验证通过；原文档中「显存不足 / 待验证 / 默认 `JUDGMENT_ENGINE_ENABLED=False` / 35B 未接入代码」描述已过时。
+- **改动**：
+  - `codingLOG.md`：§1 主动引擎「显存不足暂未验证」→「已实跑验证通过」；§3 记忆「待验证（显存不足）」→「已落地、具备端到端验证条件」；§4 流式「理论上可以实现」→「已实跑验证」；§5「无 agent 执行框架 / 35B 未接入 / 显存不足」→「35B 已完整接入并验证；agent 执行框架缺位，Function Calling 工具层正在补齐」。
+  - `AGENTS.md`：主动判断引擎「默认 `JUDGMENT_ENGINE_ENABLED=False`」→「默认开启 `True`；未加载 MiniCPM-o 自动被动」；「双模型显存压力…默认 False」→「M5 Pro 48G 已验证可同时承载，默认 `True`」。
+  - `README.md`：主动判断引擎「off by default / 默认关闭」→「on by default / 默认开启」。
+  - 安装文档 `new_computer_download/READMEfirst.md`（EN/L66、中/L164）、`models_config.json`、`new_computer_download/setup_new_computer.py`：同步「默认 `JUDGMENT_ENGINE_ENABLED=False`」→「默认 `True`，未加载 MiniCPM-o 自动被动」。
+- **说明**：本次仅同步文档反映已验证的真实状态，未改动业务代码；Function Calling 工具层实现待 LM Studio tool calling 验证通过后开工（见 `verify_toolcall.py`）。
+
+---
+
 ## 2026-08-09 — 语音输出去情绪标签：模型纯文本输出、TTS 中性朗读
 
 - **目标**：移除 brain 回复中的 `[情绪] 内容` 标签，语音只输出纯文本。

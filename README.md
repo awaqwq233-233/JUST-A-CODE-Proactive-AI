@@ -19,7 +19,7 @@ The current codebase is a **macOS-first Python desktop prototype** (Windows/Linu
 - **Multimodal perception** — OpenCV camera + YOLOv8 detection, PyAudio + WebRTC VAD microphone capture, OpenAI Whisper STT.
 - **Local brain** — `qwen/qwen3.6-35b-a3b` loaded in **LM Studio** (native multimodal, thinking disabled), via a multi-backend `LocalBrain` (lm_studio / ollama / llama_cpp / auto).
 - **Emotion-aware TTS** — Voicebox (open-source cloning engine, macOS primary) cloning the J.A.C. voice from `voices/silverwalf_voice.wav`, with Qwen3-TTS (NVIDIA-only) and system-TTS fallbacks.
-- **Proactive judgment engine** — `src/judgment/judge.py` (MiniCPM-o via LM Studio) continuously decides whether to intervene; off by default (`JUDGMENT_ENGINE_ENABLED=False`).
+- **Proactive judgment engine** — `src/judgment/judge.py` (MiniCPM-o via LM Studio) continuously decides whether to intervene; **on by default** (`JUDGMENT_ENGINE_ENABLED=True`); auto passive mode if MiniCPM-o not loaded.
 - **Multimodal Q&A** — sends the real camera frame to the brain for vision questions.
 - **Wake-word + console input** — wake words (`jac` / `杰克` / `你好` …) or just type in the console to talk.
 - **Persistent memory** — JSON long-term memory + lightweight local vector retrieval (`src/memory/`).
@@ -72,8 +72,8 @@ python main.py
 
 ### Status & Roadmap
 
-Implemented: multi-backend brain, proactive judgment engine, multimodal Q&A, SLEEP/AWAKE state machine, console input, persistent memory.
-Not yet: function calling / tool layer, agent framework, MCP/OpenClaw integration, streaming STT/LLM/TTS. See `codingLOG.md` for the gap notes (read `CHANGELOG.md` + `codingLOG.md` for the latest changes).
+Implemented: multi-backend brain, proactive judgment engine, multimodal Q&A, SLEEP/AWAKE state machine, console input, persistent memory, **Function Calling tool layer (open apps/web, read-only file search, system info, restricted shell)**.
+Not yet: agent framework beyond the tool loop, MCP/OpenClaw integration, live web tools (weather/calendar), streaming STT/LLM/TTS. See `codingLOG.md` for the gap notes (read `CHANGELOG.md` + `codingLOG.md` for the latest changes).
 
 ### Docs map
 
@@ -100,7 +100,7 @@ J.A.C. 是一个**本地优先的多模态 AI 管家**原型，灵感来自 JARV
 - **多模态感知** —— OpenCV 摄像头 + YOLOv8 检测、PyAudio + WebRTC VAD 麦克风采集、OpenAI Whisper 语音识别。
 - **本地大脑** —— 在 **LM Studio** 中加载 `qwen/qwen3.6-35b-a3b`（原生多模态、禁用思考），走多后端 `LocalBrain`（lm_studio / ollama / llama_cpp / auto）。
 - **带情绪 TTS** —— Voicebox（开源克隆引擎，macOS 主力）克隆 `voices/silverwalf_voice.wav` 得到 J.A.C. 音色，Qwen3-TTS（仅 NVIDIA）与系统 TTS 兜底。
-- **主动判断引擎** —— `src/judgment/judge.py`（LM Studio 上的 MiniCPM-o）持续判断是否介入，默认关闭（`JUDGMENT_ENGINE_ENABLED=False`）。
+- **主动判断引擎** —— `src/judgment/judge.py`（LM Studio 上的 MiniCPM-o）持续判断是否介入，**默认开启**（`JUDGMENT_ENGINE_ENABLED=True`）；未加载 MiniCPM-o 时自动进入被动模式。
 - **多模态问答** —— 视觉问题时把真实摄像头帧发给大脑。
 - **唤醒词 + 控制台输入** —— 唤醒词（`jac` / `杰克` / `你好` …）或直接控制台输入对话。
 - **持久记忆** —— JSON 长期记忆 + 轻量本地向量检索（`src/memory/`）。
@@ -153,8 +153,8 @@ python main.py
 
 ### 当前状态与路线图
 
-已实现：多后端大脑、主动判断引擎、多模态问答、SLEEP/AWAKE 状态机、控制台输入、持久记忆。
-尚未实现：function calling / 工具执行层、agent 框架、MCP/OpenClaw 集成、流式 STT/LLM/TTS。差距笔记见 `codingLOG.md`（了解最新改动请读 `CHANGELOG.md` 与 `codingLOG.md`）。
+已实现：多后端大脑、主动判断引擎、多模态问答、SLEEP/AWAKE 状态机、控制台输入、持久记忆、**Function Calling 工具层（打开应用/网页、只读本地文件搜索、系统状态查询、受限 shell）**。
+尚未实现：工具循环之外的 agent 框架、MCP/OpenClaw 集成、实时联网工具（天气/日程）、流式 STT/LLM/TTS。差距笔记见 `codingLOG.md`（了解最新改动请读 `CHANGELOG.md` 与 `codingLOG.md`）。
 
 ### 文档导航
 

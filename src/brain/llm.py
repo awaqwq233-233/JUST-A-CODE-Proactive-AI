@@ -6,11 +6,62 @@ except ImportError:
 import os
 import sys
 import re
+import json
 import platform
 import base64
 import cv2
 import requests
-import json
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ThinkResult:
+    """带工具调用的推理结果。
+
+    content     最终/中间自然语言文本
+    tool_calls  解析后的工具调用列表：[{name, arguments(dict)}]
+    raw_tool_calls 原样回传模型所需的格式（含 id / function.arguments 字符串），用于下一轮携带工具结果
+    has_tools   本次是否真的触发了工具调用
+    """
+    content: str = ""
+    tool_calls: list = field(default_factory=list)
+    raw_tool_calls: list = field(default_factory=list)
+    has_tools: bool = False
+
+
+def parse_tool_calls(message):
+    """把模型返回的 message.tool_calls 解析成两项：
+    - parsed：训练循环用的 [{name, arguments(dict)}]
+    - clean：原样回传 LM Studio 的格式（含 id 与 function.arguments 字符串）
+
+    兼容两种来源：
+    - LM Studio：arguments 是 JSON 字符串，id 由模型给出
+    - Ollama：   arguments 直接是 dict，id 可能缺失（此处补一个）
+    """
+    raw = message.get("tool_calls") or []
+    parsed, clean = [], []
+    for idx, tc in enumerate(raw):
+        fn = tc.get("function", {})
+        name = fn.get("name")
+        args_raw = fn.get("arguments", {})
+        if isinstance(args_raw, str):
+            try:
+                args = json.loads(args_raw) if args_raw else {}
+            except Exception:
+                args = {}
+            args_str = args_raw
+        elif isinstance(args_raw, dict):
+            args = args_raw
+            args_str = json.dumps(args_raw, ensure_ascii=False)
+        else:
+            args, args_str = {}, "{}"
+        parsed.append({"name": name, "arguments": args})
+        clean.append({
+            "id": tc.get("id") or f"call_{idx}",
+            "type": tc.get("type", "function"),
+            "function": {"name": name, "arguments": args_str},
+        })
+    return parsed, clean
 
 
 class LocalBrain:
@@ -260,9 +311,9 @@ class LocalBrain:
         else:
             return self._query_llama_cpp(messages, temperature, max_tokens)
 
-    def _query_lm_studio(self, messages, temperature, max_tokens):
+    def _query_lm_studio(self, messages, temperature, max_tokens, tools=None):
         # 只保证一个合理下限，尊重调用方传入值（原来强拉到 2048 会让每次生成都极慢）
-        """查询lmstudio"""
+        """查询 LM Studio（非流式）。tools 不为空时进入 function calling 模式，返回 ThinkResult。"""
         if max_tokens < 512:
             max_tokens = 512
         try:
@@ -274,6 +325,9 @@ class LocalBrain:
                 # 禁用 Qwen3 思考链：避免模型先吐大段 thinking 占满 token，大幅降低延迟
                 "chat_template_kwargs": {"enable_thinking": False}
             }
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
             if self.active_model_id:
                 payload["model"] = self.active_model_id
             resp = requests.post(
@@ -295,9 +349,17 @@ class LocalBrain:
                 )
             if resp.status_code != 200:
                 print(f"[Error] LM Studio API returned {resp.status_code}: {resp.text}")
-                return "Sorry, brain connection has an issue."
+                return ThinkResult(content="Sorry, brain connection has an issue.") if tools else \
+                    "Sorry, brain connection has an issue."
             data = resp.json()
-            content = data["choices"][0]["message"]["content"]
+            message = data["choices"][0]["message"]
+            content = message.get("content") or ""
+            # function calling 分支：模型要求调用工具，返回 ThinkResult 让上层执行
+            if tools and message.get("tool_calls"):
+                parsed, raw = parse_tool_calls(message)
+                if parsed:
+                    return ThinkResult(content=content, tool_calls=parsed, raw_tool_calls=raw, has_tools=True)
+            # 普通纯文本分支
             if not content:
                 reasoning = data.get("choices", [{}])[0].get("message", {}).get("reasoning_content", "")
                 if reasoning:
@@ -307,20 +369,24 @@ class LocalBrain:
                     tail = [s for s in reasoning.split("\n\n") if s.strip()]
                     recovered = tail[-1].strip() if tail else ""
                     if recovered:
-                        return recovered
+                        return ThinkResult(content=recovered) if tools else recovered
                 print(f"[Debug] LM Studio returned empty content: {json.dumps(data, ensure_ascii=False)[:500]}")
-                return "（刚才走神了，能再问一次吗？）"
-            return content
+                fallback = "（刚才走神了，能再问一次吗？）"
+                return ThinkResult(content=fallback) if tools else fallback
+            return ThinkResult(content=content) if tools else content
         except requests.exceptions.ReadTimeout:
             print("[Error] 大脑推理超时：模型可能仍在加载，或设备资源不足导致推理过慢。"
                   "请确认模型已在 LM Studio 完全加载；Mac 上可检查内存压力，或调大 llm.py 的 timeout。")
-            return "My brain is thinking too slowly. Please try again later."
+            return ThinkResult(content="My brain is thinking too slowly. Please try again later.") if tools else \
+                "My brain is thinking too slowly. Please try again later."
         except requests.exceptions.ConnectionError:
             print("[Error] Cannot connect to LM Studio (127.0.0.1:12345)")
-            return "Sorry, cannot connect to brain server."
+            return ThinkResult(content="Sorry, cannot connect to brain server.") if tools else \
+                "Sorry, cannot connect to brain server."
         except Exception as e:
             print(f"[Error] LM Studio request failed: {e}")
-            return "My brain is having trouble, please try again later."
+            return ThinkResult(content="My brain is having trouble, please try again later.") if tools else \
+                "My brain is having trouble, please try again later."
 
     def _query_lm_studio_stream(self, messages, temperature, max_tokens):
         """流式查询 LM Studio（SSE）。逐块 yield 文本片段，首个 token 即开始返回，降低感知延迟。"""
@@ -390,37 +456,53 @@ class LocalBrain:
         except Exception as e:
             yield f"My brain is having trouble: {e}"
 
-    def _query_ollama(self, messages, temperature, max_tokens):
-        """查询Ollama"""
+    def _query_ollama(self, messages, temperature, max_tokens, tools=None):
+        """查询 Ollama。支持可选 tools 参数做 function calling。"""
         try:
+            body = {
+                "model": self.ollama_model_name,
+                "messages": messages,
+                "stream": False,
+                "think": False,  # 禁用 Qwen3 思考链，直接输出结果
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": max_tokens
+                },
+            }
+            if tools:
+                body["tools"] = tools
             resp = requests.post(
                 f"{self.ollama_base_url}/api/chat",
-                json={
-                    "model": self.ollama_model_name,
-                    "messages": messages,
-                    "stream": False,
-                    "think": False,  # 禁用 Qwen3 思考链，直接输出结果
-                    "options": {
-                        "temperature": temperature,
-                        "num_predict": max_tokens
-                    }
-                },
+                json=body,
                 timeout=120
             )
             if resp.status_code != 200:
                 print(f"[Error] Ollama API returned {resp.status_code}: {resp.text}")
-                return "Sorry, brain connection has an issue."
+                return ThinkResult(content="Sorry, brain connection has an issue.") if tools else \
+                    "Sorry, brain connection has an issue."
             data = resp.json()
-            return data["message"]["content"]
+            message = data.get("message", {})
+            content = message.get("content") or ""
+            # function calling 分支：Ollama 的 tool_calls.arguments 已是 dict
+            if tools and message.get("tool_calls"):
+                parsed, raw = parse_tool_calls(message)
+                if parsed:
+                    return ThinkResult(content=content, tool_calls=parsed, raw_tool_calls=raw, has_tools=True)
+            if not content:
+                fallback = "（刚才走神了，能再问一次吗？）"
+                return ThinkResult(content=fallback) if tools else fallback
+            return ThinkResult(content=content) if tools else content
         except requests.exceptions.ConnectionError:
             print("[Error] Cannot connect to Ollama service (127.0.0.1:11434)")
-            return "Sorry, cannot connect to brain server."
+            return ThinkResult(content="Sorry, cannot connect to brain server.") if tools else \
+                "Sorry, cannot connect to brain server."
         except Exception as e:
             print(f"[Error] Ollama request failed: {e}")
-            return "My brain is having trouble, please try again later."
+            return ThinkResult(content="My brain is having trouble, please try again later.") if tools else \
+                "My brain is having trouble, please try again later."
 
-    def _query_llama_cpp(self, messages, temperature, max_tokens):
-        """查询llamacpp"""
+    def _query_llama_cpp(self, messages, temperature, max_tokens, tools=None):
+        """查询llamacpp（暂不支持结构化 tool_calls，tools 参数被忽略）。"""
         if self.llm is None:
             text = "".join(m.get("content","") for m in messages if m.get("role")=="user")
             if isinstance(text, list):
@@ -434,6 +516,70 @@ class LocalBrain:
         except Exception as e:
             print(f"[Error] Thinking failed: {e}")
             return "My brain is having trouble, please try again later."
+
+    def supports_tools(self):
+        """当前后端是否支持结构化 function calling（装手能力）。"""
+        return self.backend in ("lm_studio", "ollama")
+
+    def think_with_tools(self, messages, tools, temperature=0.7, max_tokens=1024):
+        """带工具调用的推理（非流式）：返回 ThinkResult（可能含 tool_calls）。"""
+        if self.backend == "mock":
+            text = messages[-1].get("content", "") if messages else ""
+            return ThinkResult(content=self._mock_response(text))
+        if self.backend == "lm_studio":
+            return self._query_lm_studio(messages, temperature, max_tokens, tools=tools)
+        elif self.backend == "ollama":
+            return self._query_ollama(messages, temperature, max_tokens, tools=tools)
+        else:
+            # llama_cpp 暂不支持结构化 tool_calls，直接当普通文本返回
+            content = self._query_llama_cpp(messages, temperature, max_tokens)
+            return ThinkResult(content=content)
+
+    def run_agentic(self, prompt, tools, tool_executor,
+                    system_prompt="You are J.A.C., a helpful AI assistant.",
+                    temperature=0.7, max_tokens=512, max_iterations=3):
+        """工具调用循环（agent 执行）。生成器，流式 yield 最终回答文本（打字机效果）。
+
+        流程：用户问题 -> 模型决定是否调工具 -> 执行并把结果回喂 -> 重复，
+        直到模型给出最终自然语言回答；全程只把最后一轮回答流式吐出。
+        """
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+        for _ in range(max_iterations):
+            result = self.think_with_tools(messages, tools, temperature, max_tokens)
+            if not result.tool_calls:
+                # 没有更多工具调用：把当前消息（含工具结果）交给模型，流式输出最终回答
+                yield from self._stream_final(messages, temperature, max_tokens)
+                return
+            # 把 assistant 的工具调用消息追加进上下文（原样回传格式，供下一轮携带工具结果）
+            messages.append({
+                "role": "assistant",
+                "content": result.content or "",
+                "tool_calls": result.raw_tool_calls,
+            })
+            for tc, raw in zip(result.tool_calls, result.raw_tool_calls):
+                print(f"[工具] 调用 {tc['name']}({json.dumps(tc['arguments'], ensure_ascii=False)})")
+                tool_output = tool_executor(tc["name"], tc["arguments"])
+                print(f"[工具] 结果: {str(tool_output)[:200]}")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": raw.get("id"),
+                    "name": tc["name"],
+                    "content": str(tool_output),
+                })
+        # 超出迭代上限：再请求一次要尽量给出总结
+        yield from self._stream_final(messages, temperature, max_tokens)
+
+    def _stream_final(self, messages, temperature, max_tokens):
+        """工具循环结束后，用带工具结果的消息再请求一次，流式输出最终自然语言回答。"""
+        if self.backend == "lm_studio":
+            # 复用流式查询；payload 不带 tools，避免模型又想调工具
+            yield from self._query_lm_studio_stream(messages, temperature, max_tokens)
+        else:
+            r = self.think_with_tools(messages, None, temperature, max_tokens)
+            yield r.content
 
     def _mock_response(self, text):
         """模拟响应（纯文本，不带情绪标签）"""
