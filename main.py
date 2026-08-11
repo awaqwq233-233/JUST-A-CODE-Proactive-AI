@@ -138,6 +138,58 @@ memory = None  # MemoryManager 实例，在 main() 中初始化
 # 总开关：默认开启；设 TOOLS_ENABLED=false 可禁用（模型退化为纯对话）。
 TOOLS_ENABLED = os.environ.get("TOOLS_ENABLED", "true").lower() not in ("0", "false", "no", "off")
 
+# --- 兜底回复语音（复用现成音频，不再每次重新合成）---
+# 当大脑返回"（刚才走神了，能再问一次吗？）"这类兜底文本时，直接播放预生成的音频，
+# 避免每次都走 TTS 合成、既慢又浪费。error.wav 已上传仓库（voices/ 不忽略）。
+FALLBACK_STT_TEXT = "（刚才走神了，能再问一次吗？）"
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+FALLBACK_ERROR_WAV = os.path.join(_PROJECT_ROOT, "voices", "voice_resources", "error.wav")
+
+# 介入过滤：危险/异常类关键词——命中则即使含"等待/困惑"也必须交给大脑处理
+_DANGER_KEYWORDS = [
+    "危险", "异常", "紧急", "摔倒", "火", "受伤", "伤害", "求救", "求助", "痛苦",
+    "焦急", "出血", "烟雾", "碰撞", "事故", "安全", "报警", "晕", "窒息", "触电",
+]
+# 用户提问类信号：命中且 transcript 非空 → 视为用户发问，应当介入
+_QUESTION_KEYWORDS = [
+    "？", "?", "吗", "多少", "几", "什么", "怎么", "哪里", "几点", "为什么", "何时",
+    "如何", "哪个", "谁", "是不是", "能不能", "可以吗", "有没有",
+]
+# 纯等待/困惑类信号：reason 命中且上面两类都不满足 → 跳过介入，避免打扰
+_WAIT_KEYWORDS = ["等待", "困惑", "发呆", "发愣", "犹豫", "茫然", "无所事事"]
+
+
+def _should_skip_intervention(reason, transcript):
+    """判断引擎请求是否应当被拦截（不发给大脑）。
+
+    规则（按用户要求）：
+      - 仅"等待/困惑"本身：不打扰，拦截（返回 True）。
+      - "等待/困惑" 且：用户发出提问 → 放行；识别出危险/异常 → 放行。
+      - 其他明确介入信号（含危险/异常/唤醒/提问等）一律放行。
+
+    Args:
+        reason (str): 判断引擎给出的介入原因。
+        transcript (str): 最近音频转录（用户是否说话）。
+
+    Returns:
+        bool: True 表示拦截（不发给大脑），False 表示放行（交给大脑）。
+    """
+    if not reason:
+        return True
+    # 危险/异常类：必须介入
+    if any(kw in reason for kw in _DANGER_KEYWORDS):
+        return False
+    # 纯等待/困惑信号：需进一步看用户是否发问
+    is_wait_only = any(kw in reason for kw in _WAIT_KEYWORDS)
+    if is_wait_only:
+        # 用户有提问 → 放行；否则纯等待/困惑，拦截
+        if transcript and any(q in transcript for q in _QUESTION_KEYWORDS):
+            return False
+        return True
+    # 其他介入原因（唤醒词、明确提问、对话参与等）一律放行
+    return False
+
+
 def check_wake_word(text):
     """检查文本中是否包含唤醒词"""
     text_lower = text.lower()
@@ -298,6 +350,8 @@ def process_response(text, brain, speaker):
                         system_prompt
                         + "\n你拥有若干工具可用：打开应用/网页、搜索本地文件、查询系统状态、执行受限 shell 命令。"
                           "当用户明确要求这些动作（如'打开 Safari'、'现在几点了'、'搜一下报告'），请直接调用对应工具，不要只描述步骤。"
+                          "【输出格式铁律】回答必须是正常连续的文本，保持自然段落；日期、数字、时间等绝对不要逐字或逐行拆分输出"
+                          "（例如'2026年8月11日13点01分25秒'要一次性连续输出，不要拆成'2''0''2''6'…每个字符一行）。"
                     )
                     print("[工具] 启用 Function Calling，模型可主动调用工具。")
                     for chunk in brain.run_agentic(
@@ -352,7 +406,18 @@ def process_response(text, brain, speaker):
 
         # 回答（纯文本，中性朗读，不再传 emotion_hint）
         context.is_speaking = True
-        speaker.speak(response_text)
+        # 兜底回复（如"刚才走神了"）直接播放预生成音频，不再每次重新合成 TTS
+        if response_text == FALLBACK_STT_TEXT and os.path.exists(FALLBACK_ERROR_WAV):
+            try:
+                from src.audio.playback import play_wav
+                if play_wav(FALLBACK_ERROR_WAV):
+                    pass
+                else:
+                    speaker.speak(response_text)
+            except Exception:
+                speaker.speak(response_text)
+        else:
+            speaker.speak(response_text)
         context.is_speaking = False
 
         # 记录判定（后台线程，非阻塞）：把本轮对话交给记忆子系统评估是否值得长期记住
@@ -722,6 +787,10 @@ def main():
             if JUDGMENT_ACTIVATED:
                 intervention = judge_engine.get_intervention()
                 if intervention is not None and not conversation_running:
+                    # 兜底过滤：仅"等待/困惑"且用户未提问、无危险 → 跳过，不叫醒大脑，避免打扰
+                    if _should_skip_intervention(intervention.reason, intervention.transcript):
+                        print(f"[主动介入] 拦截纯等待/困惑（用户未提问、无危险），不唤醒大脑: {intervention.reason}")
+                        continue
                     print(f"[主动介入] 判断引擎: {intervention.reason}")
                     context.is_listening = False
                     context.is_thinking = False

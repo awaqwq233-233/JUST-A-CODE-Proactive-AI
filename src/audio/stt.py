@@ -61,8 +61,25 @@ _TRAD_TO_SIMP = {
     "絡": "络", "給": "给", "緒": "绪", "綱": "纲", "納": "纳",
 }
 
-# 仅提示一次：未安装 OpenCC 时给出完整转换的安装建议
-_WARNED_OPENCC = False
+# OpenCC 可用性（模块级检测一次，供 __init__ 打印状态，避免每次转录都尝试 import）
+_OPENCC_AVAILABLE = None
+
+
+def _check_opencc():
+    """检测 OpenCC 是否可用（完整繁→简转换）。
+
+    仅在模块内调用一次并缓存结果，避免每次转录都 import 探测。
+    返回 True 表示可用（完整转换），False 表示回退内置字表。
+    """
+    global _OPENCC_AVAILABLE
+    if _OPENCC_AVAILABLE is not None:
+        return _OPENCC_AVAILABLE
+    try:
+        from opencc import OpenCC  # noqa: F401  仅探测可用性
+        _OPENCC_AVAILABLE = True
+    except Exception:
+        _OPENCC_AVAILABLE = False
+    return _OPENCC_AVAILABLE
 
 
 def _pick_device():
@@ -106,6 +123,12 @@ class SpeechRecognizer:
             # 加载模型（首次会从网络下载权重到 ~/.cache/whisper/，之后复用本地缓存）
             self.model = whisper.load_model(model_size, device=device)
             print("[系统] Whisper 模型加载成功！")
+            # 打印繁→简转换引擎状态：OpenCC 提供完整转换，未安装则回退内置字表兜底
+            if _check_opencc():
+                print("[系统] 繁→简转换引擎：OpenCC 已启用（完整转换）。识别结果将直接以简体中文交给大脑。")
+            else:
+                print("[系统] 繁→简转换引擎：未安装 OpenCC，使用内置常用字表兜底（可能存在漏字）。"
+                      "建议安装：pip install opencc-python-reimplemented")
         except Exception as e:
             print(f"[错误] Whisper 模型加载失败: {e}")
             print("[提示] 若报 CERTIFICATE_VERIFY_FAILED（代理自签证书环境），请先执行：")
@@ -150,21 +173,15 @@ class SpeechRecognizer:
         """
         if not text:
             return text
-        global _WARNED_OPENCC
         # 1) 优先用 OpenCC 做完整转换（需 pip install opencc-python-reimplemented）
-        try:
-            from opencc import OpenCC
-            return OpenCC("t2s").convert(text)
-        except Exception:
-            pass
+        if _OPENCC_AVAILABLE:
+            try:
+                from opencc import OpenCC
+                return OpenCC("t2s").convert(text)
+            except Exception:
+                pass
         # 2) 内置常用繁→简映射兜底（覆盖口语高频字，含已实测出现的繁体残字）
-        converted = "".join(_TRAD_TO_SIMP.get(ch, ch) for ch in text)
-        # 若确实发生了繁→简转换且 OpenCC 未安装，仅提示一次，引导安装以获得完整覆盖
-        if converted != text and not _WARNED_OPENCC:
-            _WARNED_OPENCC = True
-            print("[提示] 检测到繁体残字并已用内置映射转简体；"
-                  "如需完整繁→简转换，建议安装：pip install opencc-python-reimplemented")
-        return converted
+        return "".join(_TRAD_TO_SIMP.get(ch, ch) for ch in text)
 
 if __name__ == "__main__":
     # 测试代码

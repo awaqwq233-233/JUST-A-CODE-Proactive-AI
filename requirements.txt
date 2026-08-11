@@ -107,3 +107,4 @@ websockets==15.0.1
 fastembed==0.5.1  # 轻量本地 embedding 生成（基于 ONNX Runtime，无需 torch），用于记忆向量检索；首次使用需联网下载模型权重。
                  # 注意：锁 0.5.1——新版 fastembed 对 paraphrase-multilingual-MiniLM-L12-v2 改了文件映射（onnx/model.onnx），
                  # 而 HF 镜像仓库只有 model_optimized.onnx，会导致下载 404；0.5.1 用 model_optimized.onnx，与镜像匹配。
+opencc-python-reimplemented==0.2.1  # 完整繁→简中文转换（STT 识别结果归一化，确保发给大脑的始终是简体）；未安装时回退内置字表兜底。

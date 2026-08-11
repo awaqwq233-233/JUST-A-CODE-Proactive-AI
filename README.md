@@ -153,7 +153,7 @@ python main.py
 
 ### 当前状态与路线图
 
-已实现：多后端大脑、主动判断引擎、多模态问答、SLEEP/AWAKE 状态机、控制台输入、持久记忆、**Function Calling 工具层（打开应用/网页、只读本地文件搜索、系统状态查询、受限 shell）**。
+已实现：多后端大脑、主动判断引擎、多模态问答、SLEEP/AWAKE 状态机、控制台输入、持久记忆、**Function Calling 工具层（打开应用/网页、只读本地文件搜索、系统状态查询、受限 shell，GUI 右侧面板可开关）**。
 尚未实现：工具循环之外的 agent 框架、MCP/OpenClaw 集成、实时联网工具（天气/日程）、流式 STT/LLM/TTS。差距笔记见 `codingLOG.md`（了解最新改动请读 `CHANGELOG.md` 与 `codingLOG.md`）。
 
 ### 文档导航

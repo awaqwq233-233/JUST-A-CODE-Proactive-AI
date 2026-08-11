@@ -40,9 +40,7 @@ def _apply_hf_mirror():
     """
     if not os.environ.get("HF_ENDPOINT"):
         os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-        print("[Embedder] 未检测到 HF_ENDPOINT，已默认使用镜像 https://hf-mirror.com 获取向量模型（已缓存则直接复用，不重复下载）。")
-    else:
-        print(f"[Embedder] 使用现有 HF_ENDPOINT={os.environ['HF_ENDPOINT']} 获取向量模型（已缓存则直接复用）。")
+    # 注：HF 镜像与缓存目录设置仅执行一次，不再每次启动刷屏打印。
 
     # 向量模型缓存目录：fastembed 在未显式设置 FASTEMBED_CACHE_PATH 时，默认会把
     # 权重落到系统临时目录（macOS 为 /var/folders/.../T/fastembed_cache）。该目录在
@@ -53,7 +51,6 @@ def _apply_hf_mirror():
         _fb_cache = os.path.join(os.path.expanduser("~"), ".cache", "fastembed")
         os.makedirs(_fb_cache, exist_ok=True)
         os.environ["FASTEMBED_CACHE_PATH"] = _fb_cache
-        print(f"[Embedder] 向量模型缓存目录固定为 {_fb_cache}（避免临时目录被清理后重复下载）")
 
     if os.environ.get("JAC_HF_INSECURE") == "1":
         os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
@@ -146,7 +143,9 @@ class MemoryEmbedder:
             hint = ""
             err = str(e)
             if "Connection" in err or "HF" in err or "download" in err.lower():
-                hint = "（已自动尝试 HF 镜像 hf-mirror.com；若仍失败可设置 JAC_HF_INSECURE=1 处理代理自签证书，或保持关键词检索）"
+                hint = ("（已自动尝试 HF 镜像 hf-mirror.com；若仍失败，请检查网络后手动安装/更新依赖："
+                        "pip install --upgrade fastembed，或设置 JAC_HF_INSECURE=1 处理代理自签证书，"
+                        "也可保持关键词检索模式）")
             print(f"[Embedder] 模型加载失败，向量检索降级为关键词：{e}{hint}")
         return self.available
 

@@ -105,3 +105,4 @@ uvicorn==0.40.0
 watchfiles==1.1.1
 webrtcvad-wheels==2.0.14
 websockets==15.0.1
+opencc-python-reimplemented==0.2.1  # 完整繁→简中文转换（STT 识别结果归一化）；未安装时回退内置字表兜底。
