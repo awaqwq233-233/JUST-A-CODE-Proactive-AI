@@ -60,7 +60,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 
 非视觉文本分支在 `process_response` 中接入了 agent 式工具调用（2026-08-11 落地），让 J.A.C. 真正"有手"：
 
-- **开关与前提**：默认开启（`TOOLS_ENABLED` 环境变量可关）；仅当后端支持结构化 function calling（`brain.supports_tools()`，当前 `lm_studio` / `ollama`）且 `src/tools` 有工具时启用，否则降级为普通流式对话。
+- **开关与前提**：默认开启（`TOOLS_ENABLED` 环境变量可关）；仅当后端支持结构化 function calling（`brain.supports_tools()`，当前 `lm_studio` / `ollama`）且 `src/tools` 有工具时启用，否则降级为普通流式对话。**GUI 右侧可折叠选项面板提供「工具功能（Function Calling）」勾选框**（启动前配置，与主动模型/TTS 开关一致），由 `JACRuntime.start` 桥接到 `main.TOOLS_ENABLED` 生效。
 - **大脑侧**：`src/brain/llm.py` 新增 `think_with_tools(messages, tools)`（发送 `tools` + `tool_choice=auto`，解析 `tool_calls`）与 `run_agentic(prompt, tools, tool_executor)`（工具调用循环生成器，流式吐出最终回答，保留打字机效果）。
 - **工具层**：`src/tools/` 提供四个白名单工具——`open_url` / `open_app`（打开网页/应用）、`search_files`（只读本地文件搜索，限定用户目录）、`get_system_info`（时间/电池/CPU/内存）、`run_command`（**受限 shell**：仅白名单命令，拦截 `rm`/`sudo` 等危险操作）。所有工具经 `get_tool_schemas()` 生成 OpenAI 风格 schema 发给模型，`execute_tool(name, arguments)` 执行并回喂结果。
 - **循环**：模型要调工具 → `execute_tool` 执行 → 结果作为 `tool` 消息回喂模型 → 重复直到模型给出最终自然语言回答 → TTS 朗读。工具执行任何异常都被转成错误文本回喂，不让整轮对话崩溃。

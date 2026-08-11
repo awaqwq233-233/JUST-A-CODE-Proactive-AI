@@ -326,6 +326,11 @@ class MainWindow(QMainWindow):
         self.tts_chk.setChecked(self.config.use_qwen_tts)
         op.addWidget(self.tts_chk)
 
+        # 工具功能（Function Calling）开关：与主动模型/TTS 一致，属于启动前配置
+        self.tools_chk = QCheckBox("工具功能（Function Calling）")
+        self.tools_chk.setChecked(self.config.tools_enabled)
+        op.addWidget(self.tools_chk)
+
         op.addWidget(self._labeled_slider(
             "判断间隔（秒）", self._make_interval_slider(), self.interval_label,
         ))
@@ -540,7 +545,8 @@ class MainWindow(QMainWindow):
 
     def _set_options_enabled(self, en):
         """设置选项已启用"""
-        for w in (self.judge_chk, self.tts_chk, self.interval_slider, self.timeout_slider):
+        for w in (self.judge_chk, self.tts_chk, self.tools_chk,
+                  self.interval_slider, self.timeout_slider):
             w.setEnabled(en)
 
     def _collect_config(self):
@@ -550,6 +556,7 @@ class MainWindow(QMainWindow):
             judgment_interval=self.interval_slider.value() / 2.0,
             judgment_timeout=self.timeout_slider.value() / 2.0,
             use_qwen_tts=self.tts_chk.isChecked(),
+            tools_enabled=self.tools_chk.isChecked(),
             brain_backend=self.config.brain_backend,
             awake_timeout=self.config.awake_timeout,
             memory_enabled=self.config.memory_enabled,

@@ -4,6 +4,17 @@
 
 ---
 
+## 2026-08-11 — GUI 右侧面板新增「工具功能」开关
+
+- **背景**：此前 Function Calling 总开关是 `main.py` 模块级常量 `TOOLS_ENABLED`（由环境变量决定），GUI 选项面板无对应控件，导致 GUI 模式下无法开关工具功能（UI 改不了、始终按环境变量默认生效）。
+- **改动**：
+  - `gui.py`：右侧可折叠选项面板新增 `tools_chk`（"工具功能（Function Calling）"）勾选框，初始读 `config.tools_enabled`；纳入 `_set_options_enabled`（运行时与其他开关一同禁用）与 `_collect_config`（启动前写回 `tools_enabled`，与主动模型/TTS 开关一致的"启动前配置"模式）。
+  - `src/runtime.py`：`JACRuntime.start()` 把 `config.tools_enabled` 桥接到 `main.TOOLS_ENABLED`，使 `process_response` 在 GUI 模式下真正按 UI 配置启用/禁用 Function Calling（修复此前开关形同虚设的问题）。
+- **验证**：`py_compile` 通过；静态校验确认"右侧开关添加 + `_collect_config` 收集 + `runtime.start` 桥接"三者齐备。
+- **说明**：与主动模型/TTS 开关一致，为启动前配置——修改后需点「启动」重新加载生效。FC 本身是 `process_response` 每次请求实时读取 `main.TOOLS_ENABLED`，具备运行时热切换的技术条件；如需"运行中点开关即时生效"可再加一行 `toggled` 回调，暂未做以保持与现有开关行为一致。
+
+---
+
 ## 2026-08-11 — STT 语音识别修复：强制简体中文 + 繁→简兜底归一化
 
 - **背景**：实测运行时 Whisper（`model_size="tiny"`）自动语言检测漂移，把中文识别成繁体（`現在天氣怎麼樣`）或乱码（`politikand`），导致唤醒词/视觉判断/LLM 拿到脏文本。

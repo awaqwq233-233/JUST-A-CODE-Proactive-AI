@@ -58,6 +58,15 @@ class JACRuntime:
         main.running = True
         self.running = True
         self.config = config
+        # 把 GUI 选项面板的「工具功能」开关桥接到 main 的 FC 总开关：
+        # process_response 在判定是否走 Function Calling 时读的是模块级
+        # main.TOOLS_ENABLED（非 config 对象），GUI 路径必须在此覆盖它，
+        # 否则 UI 开关形同虚设（始终按环境变量默认值生效）。
+        main.TOOLS_ENABLED = config.tools_enabled
+        if config.tools_enabled:
+            print("[系统] 工具功能（Function Calling）已启用")
+        else:
+            print("[系统] 工具功能（Function Calling）已禁用")
         # 在任何网络下载（Whisper / Qwen3-TTS 权重）之前应用 SSL 设置；
         # 仅在环境变量 JAC_HF_INSECURE=1 时关闭证书校验（应对代理自签证书环境）
         setup_insecure_ssl()
