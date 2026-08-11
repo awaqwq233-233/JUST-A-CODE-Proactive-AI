@@ -40,7 +40,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - YOLOv8 物体检测：`src/analysis/detector.py`（仅 YOLOv8，`conf=0.5`；权重首次运行由 ultralytics 自动下载，不进仓库）。
 - 线程安全共享上下文：`src/utils/context.py`（转录环形缓冲、最新帧缓存、介入标志）。
 - VAD 麦克风录音：`src/audio/recorder.py`（PyAudio + WebRTC VAD，阈值/预热/最短时长已调优）。
-- Whisper 语音识别：`src/audio/stt.py`（默认 `model_size="tiny"`，**非流式**）。
+- Whisper 语音识别：`src/audio/stt.py`（默认 `model_size="tiny"`，**非流式**；强制 `language="zh"` 简体中文，并内置繁→简兜底归一化，根治自动检测漂移导致的繁体/乱码）。
 - 本地大脑推理：`src/brain/llm.py`（`LocalBrain`，多后端：lm_studio / ollama / llama_cpp / auto）。
 - 语音合成：统一走 `build_speaker` 工厂——**Voicebox（开源克隆引擎，macOS 主力）→ Qwen3-TTS（仅 NVIDIA）→ 系统 TTS 兜底**。克隆参考音固定为 `voices/silverwalf_voice.wav`（唯一音色）。
 - **主动判断引擎**：`src/judgment/judge.py`（`JudgmentEngine`，连接 LM Studio 上的 MiniCPM-o，持续判断是否需要主动介入，**默认开启** `JUDGMENT_ENGINE_ENABLED=True`；若 LM Studio 未加载 MiniCPM-o 则自动进入被动模式，不报错也不主动）。
@@ -82,7 +82,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - `src/capture/camera.py`：摄像头封装，Windows/macOS 感知。
 - `src/analysis/detector.py`：YOLOv8 检测器封装。
 - `src/audio/recorder.py`：PyAudio + WebRTC VAD 录音器。
-- `src/audio/stt.py`：OpenAI Whisper 封装。
+- `src/audio/stt.py`：OpenAI Whisper 封装；`SpeechRecognizer` 强制 `language="zh"`（环境变量 `STT_LANGUAGE` 可覆盖），`_to_simplified()` 兜底把繁体残字统一为简体（优先 `opencc`，否则内置常用字映射）。
 - `src/audio/tts.py`：跨平台系统 TTS 兜底封装。
 - `src/audio/playback.py`：共享 WAV 播放工具（`afplay` / PowerShell / `aplay`），Voicebox 与系统 TTS 共用。
 - `src/audio/voicebox_tts.py`：Voicebox 克隆 TTS（开源，REST API `http://127.0.0.1:17493`，macOS 友好主力 TTS），自动克隆 JAC 声纹 + 8 种情绪映射 + 系统 TTS 兜底。
@@ -120,7 +120,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 
 > 旧版 `models/` 目录（GGUF / Qwen3-TTS 权重）已移除：项目不再内置任何大模型权重，所有模型走 LM Studio / Voicebox 等外部软件。`build.py` / `fix_install.py` / `download_models.py` / `DEPLOY_GUIDE.txt` 等旧 Windows/模型下载脚本已删除。
 
-当前 STT：Whisper，`model_size="tiny"`，非流式。
+当前 STT：Whisper，`model_size="tiny"`，非流式；强制简体中文输出并兜底繁→简归一化（避免识别成繁体/乱码）。
 
 当前 TTS：默认走 `build_speaker` 工厂，选择链 **Voicebox（开源克隆引擎，REST API）→ Qwen3-TTS（仅 NVIDIA）→ 系统 TTS 兜底**。
 

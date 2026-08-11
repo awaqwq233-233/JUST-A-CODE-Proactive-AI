@@ -49,6 +49,9 @@ class Config:
     # --- Function Calling（装手 / agent 工具层）---
     tools_enabled: bool = True
 
+    # --- STT 语音识别语言（强制锁定，根治自动检测漂移导致的繁体/乱码）---
+    stt_language: str = "zh"              # 默认简体中文；可用 STT_LANGUAGE 环境变量覆盖
+
     # --- 摄像头（采集分辨率固定，绝不随 GUI 缩放变化）---
     camera_width: int = 1280
     camera_height: int = 720
@@ -85,4 +88,5 @@ class Config:
             memory_enabled=truthy("MEMORY_ENABLED", True),
             memory_capture_person_id=truthy("MEMORY_CAPTURE_PERSON_ID", False),
             tools_enabled=truthy("TOOLS_ENABLED", True),
+            stt_language=os.environ.get("STT_LANGUAGE", "zh"),
         )

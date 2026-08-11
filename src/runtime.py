@@ -81,7 +81,7 @@ class JACRuntime:
         self.speaker = build_speaker(config)
         preload_if_needed(self.speaker)
 
-        recognizer = SpeechRecognizer(model_size="tiny")
+        recognizer = SpeechRecognizer(model_size="tiny", language=config.stt_language)
         recorder = AudioRecorder()
         self.brain = LocalBrain(
             model_path="models/Qwen3.5-9B-Q4_K_M.gguf",

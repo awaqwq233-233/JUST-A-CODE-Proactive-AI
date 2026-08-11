@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-11 — STT 语音识别修复：强制简体中文 + 繁→简兜底归一化
+
+- **背景**：实测运行时 Whisper（`model_size="tiny"`）自动语言检测漂移，把中文识别成繁体（`現在天氣怎麼樣`）或乱码（`politikand`），导致唤醒词/视觉判断/LLM 拿到脏文本。
+- **根因**：`SpeechRecognizer.transcribe()` 未传 `language`，Whisper 走自动检测；`tiny` 模型中文分辨力弱，检测一旦误判即吐繁体/乱码。
+- **改动（业务代码）**：
+  - `src/audio/stt.py`：`SpeechRecognizer.__init__` 新增 `language` 参数（默认读环境变量 `STT_LANGUAGE`，缺省 `"zh"`）；`transcribe()` 调用 `self.model.transcribe(..., language=self.language)` **强制简体中文**；新增 `_to_simplified()` 兜底归一化——优先用 `opencc`（完整转换，需 `pip install opencc-python-reimplemented`），未装则走内置常用繁→简映射表（覆盖口语高频字 + 实测残字），并将结果统一为简体。
+  - `src/utils/config.py`：新增 `stt_language: str = "zh"` 配置项（环境变量 `STT_LANGUAGE` 覆盖），供 GUI 绑定。
+  - `src/runtime.py`：构造识别器时传入 `language=config.stt_language`。
+  - `main.py`：构造点 `SpeechRecognizer(model_size="tiny")` 默认继承 `STT_LANGUAGE` 环境变量（无需改动即生效）。
+- **验证**：离线单测确认 `現在天氣怎麼樣 → 现在天气怎么样`、`這是我們的會議記錄 → 这是我们的会议记录` 等繁体残字正确归一；`py_compile` 全部改动文件通过；既有 `tests/unit/test_tools.py` 10/10 无回归。
+- **未含（后续可选）**：`politikand` 这类纯小模型误听属 `tiny` 模型分辨力问题，非语言检测问题；如仍频繁出现可把 `model_size` 升到 `base`/`small`（更准但更慢/更占资源）。`opencc` 为可选依赖，未写入 `requirements.txt` 以免国内网络安装失败拖垮整包。
+
+---
+
 ## 2026-08-11 — Function Calling 工具层实现（给 J.A.C. 装手）
 
 - **背景**：大脑 `qwen/qwen3.6-35b-a3b` 经 `verify_toolcall.py` 验证支持 OpenAI 风格 function calling（M5 Pro 48G 机器，LM Studio `127.0.0.1:12345`）。
