@@ -31,7 +31,15 @@ async def _speak_turnbased(url: str, ref_audio_b64: str, text: str, play: bool =
         text: 要播报的中文文本。
         play: 是否真的播放（False 仅拉取，用于测试）。
     """
-    player = _PyAudioPlayer(rate=TARGET_SR) if play else None
+    # 播放器创建可能因 macOS 音频硬件瞬时状态（插拔/蓝牙切换）失败；_PyAudioPlayer 内部已重试，
+    # 仍失败则降级为「仅拉取不播放」（player=None），不让回灌线程崩溃、主流程仍能拿到文本结果
+    player = None
+    if play:
+        try:
+            player = _PyAudioPlayer(rate=TARGET_SR)
+        except Exception as e:  # noqa: BLE001
+            print(f"[回灌] ⚠️ 播放器创建失败（仅文本输出，不语音播报）: {e}", flush=True)
+            player = None
     try:
         async with websockets.connect(
             url, max_size=None, open_timeout=30,

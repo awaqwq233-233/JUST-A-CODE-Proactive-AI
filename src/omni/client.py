@@ -77,20 +77,34 @@ class _PyAudioPlayer:
     收到的 omni TTS 是 16k float32 原始字节，直接喂输出流即可，无需重采样。
     """
 
-    def __init__(self, rate: int = TARGET_SR, frames_per_buffer: int = 1024):
-        """初始化 PyAudio 输出流。"""
+    def __init__(self, rate: int = TARGET_SR, frames_per_buffer: int = 1024, retries: int = 4):
+        """初始化 PyAudio 输出流（打开失败时重试，应对 macOS 音频硬件插拔/蓝牙切换的瞬时错误）。
+
+        macOS 上 PaMacCore/AUHAL 在音频设备列表变化（如 AirPods 断开/重连）瞬间打开默认
+        输出流会抛 `OSError: [Errno -9986] Internal PortAudio error`，短暂重试通常可恢复；
+        重试用尽仍失败则把异常抛给调用方（由调用方降级为仅文本输出，不让线程崩溃）。
+        """
         self.p = pyaudio.PyAudio()
         self.rate = rate
         self.q: "queue.Queue[bytes]" = queue.Queue()
-        self._stream = self.p.open(
-            format=pyaudio.paFloat32,
-            channels=1,
-            rate=rate,
-            output=True,
-            frames_per_buffer=frames_per_buffer,
-            stream_callback=self._callback,
-        )
-        self._stream.start_stream()
+        self._stream = None
+        last_err = None
+        for _ in range(max(1, retries)):
+            try:
+                self._stream = self.p.open(
+                    format=pyaudio.paFloat32,
+                    channels=1,
+                    rate=rate,
+                    output=True,
+                    frames_per_buffer=frames_per_buffer,
+                    stream_callback=self._callback,
+                )
+                self._stream.start_stream()
+                return
+            except OSError as e:
+                last_err = e
+                time.sleep(0.3)
+        raise last_err
 
     def _callback(self, in_data, frame_count, time_info, status):
         """PyAudio 回调：凑齐 frame_count*4 字节返回，不足补静音。"""
