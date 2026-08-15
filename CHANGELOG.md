@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-08-15 — M5 真机验收收尾（主链路通过 + 戴耳机切麦根因 + 待办步骤）
+
+- **M5 主链路真机验收通过（中午）**：修复 CLI 回调属性名 bug（`client.callbacks`→`client.cb`，`src/omni/__main__.py`）后，bo s s 手动重跑确认全链路通：状态 connecting→ready→`🎧 聆听中…`→文本输出→omni 主动打招呼「你好，有什么需要帮忙的吗」；纯闲聊（"你好"）**不吐 `<<CALL_QWEN>>` 令牌**（系统提示词硬化生效）。已移除调试探针（`[omni-dbg]` 与 `_dbg_rx`），控制台恢复干净。
+- **三问解答已给 bo s s**：①"语音没读出"=`--no-play` 就是关 omni 语音播放（听 omni 开口需去掉 `--no-play` 并戴耳机防回授）；②"🎧重复"=探针刷屏已移除，`🎧聆听中…`每回合结束重现一次是正常聆听态回显；③GUI「主动判断模型开关」=旧 `judge.py`（MiniCPM-o via LM Studio），`runtime._start_omni` 注释明确 OMNI 与传统**互斥、OMNI 下不启动判断引擎**，故 OMNI 模式该开关不生效，仅传统被动模式有用。
+- **戴耳机「听不到」根因定位（午后）**：bo s s 戴耳机说「你好」也听不到，疑误听。对照 server 日志铁证——成功会话有 `listen=0`+`speek_done=1`（开口说了），失败会话整段（93 round 直到 sliding window 触发）全是 `listen=1`+`speek_done=0`+`llm_text.len=0`（**从头到尾只 listen 从未 speak**）→ omni 一直没检测到有效用户语音。根因 = `src/omni/client.py:_start_capture` 开麦克风用 `pyaudio.open(input=True)` **未指定 `input_device_index`**，取 macOS 默认输入；戴耳机（带麦/蓝牙）时 mac 自动把默认输入切到耳机麦，若耳机麦未授权/静音/增益低则采静音 → VAD 永判无人说话。代码无回归（录音逻辑未改），是设备切换问题。
+- **已加排查辅助**：`_start_capture` 在 open 前打印 `[omni] 麦克风输入设备: <name> (index=.., 采样率≈..)`，戴/不戴耳机重跑即可一眼看到采的是哪个设备。py_compile 通过。
+- **当前待办步骤（见下方 memory「断点续做清单」）**：① 摘耳机对照（server 还开着，重跑 `python -m src.omni --no-auto-launch`，看设备行是否为"内建麦克风"、说"你好"是否回应）；② 若坐实切麦→macOS 系统设置→声音→输入固定选"内建麦克风"；③ 固定麦后带 `--no-play` 验令牌触发（问"查电池电量"应吐 `[升级→大脑]`+`⚡`）；④ 开 LM Studio 加载 35B 测升级回灌出声（争 GPU，建议用完即退）；⑤ M6 文档同步（codingLOG.md §4「全双工=未解决」stale）。
+
+---
+
 ## 2026-08-15 — M5 真机验收修复（三）：CLI 路径接通升级回灌
 
 - **背景**：bo s s 真机戴耳机跑 `python -m src.omni --no-auto-launch --no-play`，full_duplex 令牌触发成功（"查电池"→`<<CALL_QWEN>>`+`⚡升级令牌触发`），但**结果没读出来、没反馈**。根因 = CLI 演示路径 `src/omni/__main__.py` 的 `on_call_qwen` 只打印令牌、**没接升级路由**（GUI 路径 `src/runtime.py._handle_escalation` 接了，CLI 漏了），故令牌触发后无人调 qwen+tools、也无人回灌播报。

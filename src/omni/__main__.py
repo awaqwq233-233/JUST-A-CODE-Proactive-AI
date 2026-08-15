@@ -15,6 +15,9 @@
   python -m src.omni --no-auto-launch      # 假定服务已在跑（9060）
   python -m src.omni --no-play             # 不播放 omni 语音（避免回授啸叫）
   python -m src.omni --preview             # 额外开 OpenCV 窗口看摄像头
+  python -m src.omni --list-mics           # 列出所有麦克风输入设备 index 后退出
+  python -m src.omni --mic 1               # 强制绑定 index=1 的麦克风（规避 AirPods 切麦）
+  python -m src.omni --mic 2 --mic-gain 8  # 绑定内建麦并放大 8 倍能量（内建麦离嘴远触发不了 VAD 时用）
   python -m src.omni --url ws://... --model-dir /path
 """
 import argparse
@@ -117,6 +120,14 @@ class _ConsoleCallbacks(OmniCallbacks):
                     self._client.mark_escalation_done()
         threading.Thread(target=_worker, daemon=True, name="omni-escalation").start()
 
+    def on_mic_level(self, rms):
+        # 实时麦克风音量电平条（行内刷新），用于诊断「说话但 omni 无反应」到底是
+        # 麦没采到声音（电平不动）还是 omni 端 VAD/ASR 没触发（电平动但不回）
+        level = min(1.0, rms / 0.15)
+        filled = int(level * 24)
+        bar = "█" * filled + "·" * (24 - filled)
+        print(f"\r[mic] {bar} RMS={rms:.4f}", end="", flush=True)
+
     def on_error(self, err):
         print(f"\n[omni] ⚠️ 错误: {err}")
 
@@ -159,7 +170,19 @@ def main():
     ap.add_argument("--no-auto-launch", action="store_true", help="不自动启动服务（假定已在跑）")
     ap.add_argument("--no-play", action="store_true", help="不播放 omni 语音")
     ap.add_argument("--preview", action="store_true", help="额外开 OpenCV 窗口预览摄像头")
+    ap.add_argument("--mic", type=int, default=None,
+                    help="强制绑定指定 index 的麦克风输入设备（避免 macOS 跟随蓝牙耳机切换）")
+    ap.add_argument("--mic-gain", type=float, default=1.0,
+                    help="麦克风采集增益倍数（默认 1.0）。内建麦离嘴远能量不足触发不了服务端 "
+                         "VAD 时，适当放大（如 6~10）抬到可触发水平")
+    ap.add_argument("--list-mics", action="store_true", help="列出所有麦克风输入设备并退出")
     args = ap.parse_args()
+
+    # 列出麦克风设备后直接退出（便于定位内建麦 index）
+    if args.list_mics:
+        from src.omni.client import list_input_devices
+        list_input_devices()
+        return 0
 
     # 1) 启动服务
     launcher = OmniServerLauncher(
@@ -176,6 +199,8 @@ def main():
         ref_audio_path=args.ref,
         system_prompt=SYSTEM_PROMPT,
         enable_playback=not args.no_play,
+        mic_index=args.mic,
+        mic_gain=args.mic_gain,
     )
     cb = _ConsoleCallbacks(client)
     # client 内部读的是 self.cb（__init__: self.cb = callbacks or OmniCallbacks()）；

@@ -131,6 +131,8 @@ class OmniClient:
                  callbacks: OmniCallbacks = None,
                  camera: Camera = None, enable_mic: bool = True,
                  enable_camera: bool = True, enable_playback: bool = True,
+                 mic_index: int = None,
+                 mic_gain: float = 1.0,
                  push_interval: float = 0.4, video_fps: int = 5,
                  camera_width: int = 1280, camera_height: int = 720,
                  video_quality: int = 80):
@@ -143,6 +145,12 @@ class OmniClient:
             callbacks: 事件回调（默认空实现，打印到控制台）。
             camera: 复用外部摄像头对象；为 None 且 enable_camera 时自建。
             enable_mic/camera/playback: 采集/播放开关（便于测试时关闭某项）。
+            mic_index: 强制绑定的麦克风输入设备 index；为 None 时跟随系统默认输入
+                （macOS 戴蓝牙耳机时默认输入常被自动切换成耳机麦，导致采到弱信号/静音，
+                可显式指定「内建麦克风」的 index 规避切麦问题）。
+            mic_gain: 麦克风采集增益倍数（默认 1.0 = 不变）。内建麦在屏幕顶部、离嘴远，
+                送上去的音频能量低于服务端 VAD 触发阈值时会「只听不说」，适当放大（如 6~10）
+                可抬到可触发水平；增益会限幅到 [-1,1] 防削波失真。
             push_interval: 每多少秒把累积音频 + 最新视频帧推一次（≈实时节奏）。
             video_fps: 视频上行帧率（仅影响最新帧刷新频率，与 push 解耦）。
             camera_width/height: 自建摄像头分辨率。
@@ -157,6 +165,8 @@ class OmniClient:
         self.enable_mic = enable_mic
         self.enable_camera = enable_camera
         self.enable_playback = enable_playback
+        self.mic_index = mic_index            # 强制绑定的麦克风 index（None=跟随系统默认输入）
+        self.mic_gain = mic_gain             # 麦克风采集增益（1.0=不变，>1 放大能量触发服务端 VAD）
         self.push_interval = push_interval
         self.video_fps = video_fps
         self.camera_width = camera_width
@@ -191,7 +201,6 @@ class OmniClient:
         # 首个 listen 事件信号：omni 真正进入聆听（模型加载完成）的可靠标志，
         # 用于 start() 等待「真正就绪」，避免自动启动时模型还在后台加载就误报就绪。
         self._listen_ev = threading.Event()
-        self._dbg_rx = 0  # 调试探针：下行事件计数（确认真机 server 是否下发 listen/text，定位后可移除）
 
         # 采集资源
         self._pyaudio = None
@@ -377,13 +386,31 @@ class OmniClient:
         if self.enable_mic:
             try:
                 self._pyaudio = pyaudio.PyAudio()
-                self._mic_stream = self._pyaudio.open(
+                # 打印当前默认输入设备，方便排查戴耳机后麦克风被切换/失效导致 omni 听不到声音的问题
+                try:
+                    _dev = self._pyaudio.get_default_input_device_info()
+                    print(f"[omni] 默认输入设备: {_dev.get('name')} "
+                          f"(index={_dev.get('index')}, "
+                          f"采样率≈{int(_dev.get('defaultSampleRate', 0))})", flush=True)
+                except Exception:
+                    pass
+                # 若显式指定 mic_index，则强制绑定该硬件输入设备，避免 macOS 默认输入
+                # 跟随蓝牙耳机（AirPods 等）自动切换、导致采到静音/远场弱信号的问题
+                _open_kwargs = dict(
                     format=pyaudio.paFloat32,
                     channels=1,
                     rate=TARGET_SR,
                     input=True,
                     frames_per_buffer=1024,
                 )
+                if self.mic_index is not None:
+                    _open_kwargs["input_device_index"] = self.mic_index
+                    print(f"[omni] 已强制绑定麦克风设备 index={self.mic_index}（忽略系统默认输入）",
+                          flush=True)
+                if self.mic_gain and self.mic_gain != 1.0:
+                    print(f"[omni] 已应用麦克风增益 ×{self.mic_gain}（提升内建麦能量以触发服务端 VAD）",
+                          flush=True)
+                self._mic_stream = self._pyaudio.open(**_open_kwargs)
                 self._mic_stream.start_stream()
                 self._mic_thread = threading.Thread(target=self._mic_loop, daemon=True)
                 self._mic_thread.start()
@@ -479,6 +506,11 @@ class OmniClient:
             if audio:
                 arr = np.frombuffer(audio, dtype=np.float32)
                 rms = float(np.sqrt(np.mean(arr * arr))) if arr.size else 0.0
+                # 麦克风增益：内建麦离嘴远、能量不足时，服务端 VAD 阈值触发不了回复；
+                # 乘增益并限幅到 [-1,1] 防削波，把低能量抬到可触发水平（默认 1.0 = 不变）
+                if self.mic_gain and self.mic_gain != 1.0:
+                    arr = np.clip(arr * self.mic_gain, -1.0, 1.0).astype(np.float32)
+                    audio = arr.tobytes()
             else:
                 rms = 0.0
             self.cb.on_mic_level(rms)
@@ -517,12 +549,6 @@ class OmniClient:
                 except Exception:
                     continue
                 et = e.get("type", "")
-                # 调试探针：打印下行事件（跳过 audio 刷屏，前 40 条），确认真机 server 是否下发 listen/text
-                _k = e.get("kind", "")
-                if _k != "audio" and self._dbg_rx < 40:
-                    self._dbg_rx += 1
-                    _snip = (e.get("text", "") or "")[:30] if _k == "text" else ""
-                    print(f"[omni-dbg] 下行#{self._dbg_rx}: type={et} kind={_k} {_snip}", flush=True)
                 if et == "response.output.delta":
                     kind = e.get("kind", "")
                     if kind == "text":
@@ -658,3 +684,22 @@ def _ensure_no_proxy():
         val = os.environ.get(key, "")
         if "127.0.0.1" not in val:
             os.environ[key] = (val + ",127.0.0.1,localhost").strip(",")
+
+
+def list_input_devices():
+    """打印所有可用的音频输入设备（index + 名称 + 采样率），用于定位内建麦克风 index。
+
+    用法：先 `python -m src.omni --list-mics` 找到「内建麦克风」对应的 index，
+    再 `python -m src.omni --mic <该index>` 强制绑定，规避 macOS 跟随蓝牙耳机切麦。
+    """
+    _p = pyaudio.PyAudio()
+    try:
+        n = _p.get_device_count()
+        print("可用麦克风输入设备：")
+        for i in range(n):
+            d = _p.get_device_info_by_index(i)
+            if int(d.get("maxInputChannels", 0)) > 0:
+                print(f"  index={i}  {d.get('name')}  "
+                      f"(采样率≈{int(d.get('defaultSampleRate', 0))})")
+    finally:
+        _p.terminate()
