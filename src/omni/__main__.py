@@ -178,7 +178,9 @@ def main():
         enable_playback=not args.no_play,
     )
     cb = _ConsoleCallbacks(client)
-    client.callbacks = cb
+    # client 内部读的是 self.cb（__init__: self.cb = callbacks or OmniCallbacks()）；
+    # 若挂到 client.callbacks 是另一个属性、client 永远读不到，会导致🎧/文本/令牌回调全部静默。
+    client.cb = cb
     print("[演示] 正在连接 omni 并等待模型加载完成（约 10~60s），请耐心等待，"
           "出现「🎧 聆听中…」才算真正就绪…")
     if not client.start(timeout=180):

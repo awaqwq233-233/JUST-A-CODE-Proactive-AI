@@ -191,6 +191,7 @@ class OmniClient:
         # 首个 listen 事件信号：omni 真正进入聆听（模型加载完成）的可靠标志，
         # 用于 start() 等待「真正就绪」，避免自动启动时模型还在后台加载就误报就绪。
         self._listen_ev = threading.Event()
+        self._dbg_rx = 0  # 调试探针：下行事件计数（确认真机 server 是否下发 listen/text，定位后可移除）
 
         # 采集资源
         self._pyaudio = None
@@ -516,6 +517,12 @@ class OmniClient:
                 except Exception:
                     continue
                 et = e.get("type", "")
+                # 调试探针：打印下行事件（跳过 audio 刷屏，前 40 条），确认真机 server 是否下发 listen/text
+                _k = e.get("kind", "")
+                if _k != "audio" and self._dbg_rx < 40:
+                    self._dbg_rx += 1
+                    _snip = (e.get("text", "") or "")[:30] if _k == "text" else ""
+                    print(f"[omni-dbg] 下行#{self._dbg_rx}: type={et} kind={_k} {_snip}", flush=True)
                 if et == "response.output.delta":
                     kind = e.get("kind", "")
                     if kind == "text":
