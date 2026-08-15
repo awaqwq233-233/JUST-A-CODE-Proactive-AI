@@ -28,9 +28,62 @@ from src.judgment.judge import JudgmentEngine
 from src.utils.config import Config
 from src.audio.speaker_factory import build_speaker, preload_if_needed
 from src.utils.net import setup_insecure_ssl
+from src.omni import OmniClient, OmniServerLauncher, SYSTEM_PROMPT
+from src.omni.client import OmniCallbacks
+from src.omni.router import EscalationRouter
 
 
 logger = logging.getLogger("runtime")
+
+
+class _OmniRuntimeCallbacks(OmniCallbacks):
+    """把 omni 事件桥接到共享上下文（状态灯）与控制台。"""
+
+    def __init__(self, runtime):
+        """初始化实例（持有 runtime 引用以便触发升级处理）。"""
+        super().__init__()
+        self.runtime = runtime
+        self.context = runtime.context
+
+    def on_state(self, state, info=None):
+        """状态变化：打印并重置上下文状态灯。"""
+        print(f"[OMNI] 状态: {state}")
+        if state == "ready":
+            self.context.is_listening = False
+            self.context.is_speaking = False
+            self.context.is_thinking = False
+        elif state in ("closed", "error"):
+            self.context.is_listening = False
+            self.context.is_speaking = False
+
+    def on_text_delta(self, text):
+        """omni 文本增量（打印到控制台，GUI 下进入日志面板）。"""
+        print(text, end="", flush=True)
+
+    def on_text_final(self, text):
+        """一轮文本结束（换行）。"""
+        print()
+
+    def on_listen(self):
+        """omni 进入聆听：状态灯切到 Listening。"""
+        self.context.is_listening = True
+        self.context.is_speaking = False
+
+    def on_audio_chunk(self, pcm_bytes):
+        """收到 omni 语音：标记 Speaking（播放由 client 内置播放器负责）。"""
+        self.context.is_speaking = True
+
+    def on_call_qwen(self, task):
+        """检测到升级令牌：状态灯切到「思考中」并交由 runtime 后台处理。"""
+        self.context.is_listening = False
+        self.context.is_speaking = False
+        self.context.is_thinking = True
+        print(f"\n[OMNI升级] 检测到升级令牌，任务：{task}")
+        self.runtime._handle_escalation(task)
+
+    def on_error(self, err):
+        """异常打印。"""
+        print(f"[OMNI] 错误: {err}")
 
 
 class JACRuntime:
@@ -50,6 +103,11 @@ class JACRuntime:
         self.brain = None
         self.memory = None
         self._fps = 0.0
+        # --- OMNI 全双工模式状态 ---
+        self.omni_client = None          # OmniClient 实例（OMNI 模式下非 None）
+        self.omni_launcher = None        # OmniServerLauncher（按需启动服务）
+        self.omni_mode = False           # 当前是否 OMNI 模式
+        self.omni_router = None          # EscalationRouter（升级路由，首次升级时懒创建）
 
     # ---------------------------------------------------------------- 生命周期
     def start(self, config: Config):
@@ -70,6 +128,12 @@ class JACRuntime:
         # 在任何网络下载（Whisper / Qwen3-TTS 权重）之前应用 SSL 设置；
         # 仅在环境变量 JAC_HF_INSECURE=1 时关闭证书校验（应对代理自签证书环境）
         setup_insecure_ssl()
+
+        # 0) OMNI 全双工模式：直接接管，跳过传统 Voicebox TTS / Whisper STT / MiniCPM-v 判断引擎；
+        #    omni 自己完成「看 + 听 + 说」，qwen+tools 仅作为升级后端（M2 接入）。
+        if config.omni_enabled:
+            self._start_omni(config)
+            return
 
         # 1) 摄像头（采集分辨率固定，绝不被 GUI 缩放影响）
         self.camera = Camera(
@@ -144,6 +208,109 @@ class JACRuntime:
         print("==========================================")
         self._notify(True)
 
+    # ---------------------------------------------------------------- OMNI 全双工模式
+    def _start_omni(self, config: Config):
+        """OMNI 模式启动：起服务（按需）→ 建 OmniClient → 全双工闭环。
+
+        与传统模式互斥：OMNI 模式下不初始化摄像头/YOLO/Whisper/Voicebox/判断引擎，
+        omni 直接以音视频流与用户交流。升级到 qwen+tools 留待 M2。
+        """
+        self.omni_mode = True
+        project_root = os.path.dirname(os.path.abspath(main.__file__))
+        ref_audio = config.omni_ref_audio
+        if not os.path.isabs(ref_audio):
+            ref_audio = os.path.join(project_root, ref_audio)
+
+        # 1) 按需启动本地 llama-omni-server（Q8_0）
+        if config.omni_auto_launch:
+            self.omni_launcher = OmniServerLauncher(
+                host=config.omni_host,
+                port=config.omni_port,
+                model_dir=config.omni_model_dir,
+                quant=config.omni_quant,
+                server_bin=config.omni_server_bin,
+            )
+            print("[OMNI] 正在准备本地 omni 服务（首次加载模型约 10~60s）…")
+            if not self.omni_launcher.start(wait=True, timeout=180):
+                print("[OMNI] 服务未能就绪，OMNI 模式启动失败。请检查 omni_model_dir / 二进制。")
+                self.running = False
+                main.running = False
+                self.omni_mode = False
+                self._notify(False)
+                return
+
+        # 2) 建立全双工客户端
+        cb = _OmniRuntimeCallbacks(self)
+        self.omni_client = OmniClient(
+            url=config.omni_server_url,
+            ref_audio_path=ref_audio,
+            system_prompt=SYSTEM_PROMPT,
+            callbacks=cb,
+            enable_mic=True,
+            enable_camera=True,
+            enable_playback=True,
+            push_interval=0.4,
+            video_fps=config.omni_fps,
+            camera_width=config.camera_width,
+            camera_height=config.camera_height,
+        )
+        print("[OMNI] 正在连接 omni 并初始化全双工会话…")
+        if not self.omni_client.start(timeout=180):
+            print("[OMNI] 客户端未能就绪，OMNI 模式启动失败。")
+            self.running = False
+            main.running = False
+            self.omni_mode = False
+            self.omni_client = None
+            self._notify(False)
+            return
+
+        print("==========================================")
+        print("      J.A.C. OMNI 全双工已启动")
+        print("==========================================")
+        self._notify(True)
+
+    # ---------------------------------------------------------------- M2 升级路由
+    def _handle_escalation(self, task: str):
+        """处理 omni 发出的 <<CALL_QWEN>> 升级任务（在独立后台线程执行）。
+
+        必须放到后台线程：qwen+tools（LocalBrain.run_agentic）是同步阻塞的 HTTP 请求，
+        绝不能在 omni 的 WebSocket 接收循环线程里跑，否则会阻塞主会话收发。
+
+        流程：懒创建 EscalationRouter → 跑 qwen+tools 拿结果 → 经 omni 临时
+        turn_based 会话回灌播报（JAC 克隆声纹）→ 标记升级完成解除主会话静音。
+        """
+        def _worker():
+            try:
+                if self.omni_router is None:
+                    self.omni_router = EscalationRouter()
+                # run_agentic 流式 yield 最终回答文本（打字机效果），on_progress 推到控制台
+                result = self.omni_router.escalate(
+                    task, on_progress=lambda c: print(c, end="", flush=True)
+                )
+                print()  # 换行，结束流式输出
+                if self.omni_client is not None and self.omni_client.is_running():
+                    if result:
+                        self.omni_client.speak_result_via_turnbased(f"（升级结果）{result}")
+                    else:
+                        self.omni_client.speak_result_via_turnbased(
+                            "抱歉 boss，升级通道暂时拿不到结果，我稍后再试。"
+                        )
+                else:
+                    print("[OMNI升级] 客户端已不可用，跳过回灌播报。")
+            except Exception as e:  # noqa: BLE001
+                print(f"[OMNI升级] 异常: {e}")
+                if self.omni_client is not None and self.omni_client.is_running():
+                    try:
+                        self.omni_client.speak_result_via_turnbased("抱歉 boss，升级处理出错了。")
+                    except Exception:  # noqa: BLE001
+                        pass
+            finally:
+                if self.omni_client is not None:
+                    self.omni_client.mark_escalation_done()
+                self.context.is_thinking = False
+
+        threading.Thread(target=_worker, daemon=True, name="omni-escalation").start()
+
     def stop(self):
         """停止"""
         if not self.running:
@@ -151,6 +318,14 @@ class JACRuntime:
         self.running = False
         main.running = False
         self._audio_stop.set()
+        # OMNI 模式：关闭全双工客户端（不自杀服务进程，便于复用/与其它入口共存）
+        if self.omni_client is not None:
+            try:
+                self.omni_client.stop()
+            except Exception:
+                pass
+            self.omni_client = None
+        self.omni_mode = False
         if self.judge_engine is not None:
             try:
                 self.judge_engine.stop()
@@ -260,6 +435,14 @@ class JACRuntime:
         """
         text = (text or "").strip()
         if not text:
+            return
+        # OMNI 全双工模式：omni 以音视频流直接交流；full_duplex 的 input.append 严禁
+        # 带 messages（ws_handler.cpp:1075），故手动文字无法注入。升级仅由 omni 语音流
+        # 里的 <<CALL_QWEN>> 令牌触发（M2 已接入），经 qwen+tools 处理后回灌播报。
+        if self.omni_mode and self.omni_client is not None:
+            print("[OMNI] 全双工模式请用语音与 J.A.C. 交流；"
+                  "手动文字指令不支持（full_duplex 禁文本注入），"
+                  "如需升级能力请直接对 J.A.C. 说话触发 <<CALL_QWEN>>。")
             return
         if text.lower().startswith("记忆"):
             # 记忆命令含交互式 input()，GUI 下仍由 Qt 主线程处理

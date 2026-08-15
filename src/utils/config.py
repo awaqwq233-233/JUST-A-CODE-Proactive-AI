@@ -32,6 +32,21 @@ class Config:
     voicebox_language: str = "zh"
     voicebox_fallback_voice: str = "Tingting"       # 兜底用的系统中文嗓色
 
+    # --- MiniCPM-o-4_5 全双工（本地 llama.cpp-omni，接管 TTS + 判断引擎）---
+    # OMNI 模式下跳过传统 Voicebox TTS / Whisper STT / MiniCPM-v 判断引擎，
+    # 由 omni 直接做「看 + 听 + 说」。默认关闭，验证前传统模式完全可用。
+    omni_enabled: bool = False
+    omni_server_url: str = "ws://127.0.0.1:9060/backend"   # WS 地址（master 分支 /backend）
+    omni_server_bin: str = ""                              # 二进制路径（留空自动探测）
+    omni_model_dir: str = ""                              # 含 MiniCPM-o-4_5-<quant>.gguf 及其子模型目录
+    omni_host: str = "127.0.0.1"
+    omni_port: int = 9060
+    omni_quant: str = "Q8_0"                              # Q4_K_M 在 Metal 上劣化，锁定 Q8_0
+    omni_ref_audio: str = "voices/silverwalf_voice.wav"   # 声纹克隆参考音（JAC 原音色）
+    omni_fps: int = 5                                     # 视频上行帧率
+    omni_duplex: bool = True                             # 全双工（边听边说）；False=半双工
+    omni_auto_launch: bool = True                        # 未运行则自动起服务
+
     # --- 大脑推理后端 ---
     brain_backend: str = "lm_studio"         # lm_studio | llama_cpp | ollama | auto
 
@@ -89,4 +104,15 @@ class Config:
             memory_capture_person_id=truthy("MEMORY_CAPTURE_PERSON_ID", False),
             tools_enabled=truthy("TOOLS_ENABLED", True),
             stt_language=os.environ.get("STT_LANGUAGE", "zh"),
+            omni_enabled=truthy("OMNI_ENABLED", False),
+            omni_server_url=os.environ.get("OMNI_SERVER_URL", "ws://127.0.0.1:9060/backend"),
+            omni_server_bin=os.environ.get("LLAMA_OMNI_SERVER_BIN", ""),
+            omni_model_dir=os.environ.get("OMNI_MODEL_DIR", ""),
+            omni_host=os.environ.get("OMNI_HOST", "127.0.0.1"),
+            omni_port=int(os.environ.get("OMNI_PORT", "9060")),
+            omni_quant=os.environ.get("OMNI_QUANT", "Q8_0"),
+            omni_ref_audio=os.environ.get("OMNI_REF_AUDIO", "voices/silverwalf_voice.wav"),
+            omni_fps=int(os.environ.get("OMNI_FPS", "5")),
+            omni_duplex=truthy("OMNI_DUPLEX", True),
+            omni_auto_launch=truthy("OMNI_AUTO_LAUNCH", True),
         )

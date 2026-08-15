@@ -4,6 +4,84 @@
 
 ---
 
+## 2026-08-15 — M5 真机验收修复（三）：CLI 路径接通升级回灌
+
+- **背景**：bo s s 真机戴耳机跑 `python -m src.omni --no-auto-launch --no-play`，full_duplex 令牌触发成功（"查电池"→`<<CALL_QWEN>>`+`⚡升级令牌触发`），但**结果没读出来、没反馈**。根因 = CLI 演示路径 `src/omni/__main__.py` 的 `on_call_qwen` 只打印令牌、**没接升级路由**（GUI 路径 `src/runtime.py._handle_escalation` 接了，CLI 漏了），故令牌触发后无人调 qwen+tools、也无人回灌播报。
+- **修复 `src/omni/__main__.py`**：把 `runtime.py` 已验证的升级接线移植到 CLI 的 `on_call_qwen`：
+  - `_ConsoleCallbacks.__init__` 新增 `client` 引用 + `_router`（懒创建）；`main()` 调整为先建 `OmniClient` 再注入回调（`cb = _ConsoleCallbacks(client)`）。
+  - `on_call_qwen` 触发后调 `_start_escalation(task)`：开后台线程 `_worker` → 懒创建 `EscalationRouter` → `escalate(task)`（qwen+tools 同步阻塞，绝不在 omni 接收循环里跑）→ 结果非空则 `client.speak_result_via_turnbased(f"（升级结果）{result}"）` 经 omni turn_based 回灌 → `finally` 调 `mark_escalation_done()` 解除主会话静音；空/异常有兜底播报文案。
+- **集成验证**（omni 9060 + LM Studio 12345 在线）：新增 `/tmp/jac_m5_cli_wire_probe.py` 复刻修复后 worker 链路 → escalate(`查一下这台电脑的电池电量百分比`) 返回真实数据「电池电量还剩 80%，充电中」（42.1s，见下注），backfeed turn_based 通道调用成功。**证明 CLI 路径「令牌→升级→回灌」端到端在真环境跑通**。`py_compile` 通过。
+- **注（性能）**：本次 escalate 耗时 42.1s（此前沙箱单独测 7.4s）。差异主因 = omni(9060, Metal) 与 LM Studio(12345, 35B, Metal) **同跑争抢 M5 Pro GPU**，且升级期间 omni 仍占 GPU。功能闭环已通；若真机体感延迟过长，可考虑升级期间降 omni 负载或错峰，属后续优化。
+- **待 bo s s 真机复验**：重跑 `python -m src.omni --no-auto-launch --no-play`，说「查一下电池电量」应听到 JAC 用克隆声纹读出「电池电量还剩 80%，充电中」（后台线程跑、不阻塞对话）；天气/时间同理。
+
+---
+
+## 2026-08-15 — M5 真机验收修复（二）：omni 令牌触发硬化 + 控制台噪声清理
+
+- **背景**：上一轮修 listen 刷屏 + 麦克风诊断后，bo s s 重跑发现新问题——说「查一下电池电量」时 omni 不吐 `<<CALL_QWEN>>` 令牌、自己瞎答（跑去查地铁站），升级路由（qwen+tools）从未被触发。根因 = MiniCPM-o 全双工指令遵循弱，旧 SYSTEM_PROMPT 的令牌约定没被遵循。
+- **修复 `src/omni/prompts.py`**：重写 `SYSTEM_PROMPT`——「强制 + 示例 + 禁止编造」三件套：把令牌触发单列「【最重要规则】」明确四类触发项（查设备状态 / 联网查询 / 打开应用网页 / 需工具或外部信息）；新增「寒暄不影响判定」；示例从 2 条扩到 5 条（电池、开浏览器、天气、时间、带寒暄任务），每条都给「输出 `<<CALL_QWEN>>{任务}` 然后闭嘴」。
+- **修复 `src/omni/__main__.py`**（控制台噪声）：`on_text_final` 原每轮 `response.done` 都打印「[omni] （本轮结束）」→ full_duplex 下频繁刷屏；改为去重（仅当 final 文本比已打印 delta 更长时才补印，否则静默）；`on_text_delta` 把裸 `<<CALL_QWEN>>` 字面替换成友好前缀 `[升级→大脑] `。
+- **主动验证**（omni 9060 与 LM Studio 12345 均在线）：新增 `/tmp/jac_m5_prompt_probe.py`（turn_based 文字探针），把硬化后 SYSTEM_PROMPT 发给 omni，覆盖 7 条 query。结果 **7/7 符合预期**：需升级的全吐令牌（电池/开网页/天气/带寒暄天气/时间），闲聊全不吐（你是谁/讲笑话）。证明 prompt 硬化在文本路径生效（必要条件）；真机 full_duplex 语音触发仍需 bo s s 戴耳机重跑确认（双工指令遵循更弱）。
+- **结论**：bo s s 痛点（查电池/开应用）在文本路径已稳定触发令牌。真机端到端闭环（令牌→qwen+tools→回灌播报）待 bo s s 重跑 `python -m src.omni --no-auto-launch --no-play` 验收：应看到 `[升级→大脑] 查一下这台电脑的电池电量百分比` + `⚡ 升级令牌触发`，随后 qwen 调 `get_system_info` 并回灌播报。`py_compile` 改动文件全部通过。
+
+---
+
+## 2026-08-15 — M5 真机验收修复（listen 刷屏 / 麦克风诊断 / 令牌可见）
+
+- **背景**：bo s s 戴耳机跑 `python -m src.omni` 真机验收，全双工闭环跑通（connecting→ready、摄像头开、omni 主动开口），但暴露两问题：(1) `[omni] 🎧 聆听中…` 每帧刷屏；(2) 说「查一下电池电量」omni 无反应、无文本、无 `<<CALL_QWEN>>` 令牌。后者疑似麦克风未采到（omni 未听到用户）。
+- **修复**：
+  - `src/omni/__main__.py`：`_ConsoleCallbacks` 加 `_was_listening` 去重（仅进入聆听时打印一次）；重写 `on_call_qwen` 打印 `⚡ 升级令牌触发`；`on_text_delta` 在文本出现时收尾聆听行并重置标志。
+  - `src/omni/client.py`：`OmniCallbacks` 新增 `on_mic_level(rms)` 默认空回调；`_push_loop` 计算麦克风 RMS，持续静音（RMS≈0）超 5s 周期打印权限/输入设备警告（不干扰正常文本流）。
+- **诊断目标（bo s s 重跑）**：若报「持续未检测到麦克风音频」→ macOS 麦克风权限/默认输入设备问题（去系统设置授权终端/IDE）；若无警告但仍无响应 → omni 全双工行为问题（需调 prompt 或确认 ASR）。py_compile 通过。
+
+---
+
+## 2026-08-15 — MiniCPM-o-4_5 全双工（M5）：实机验收（沙箱可自动化部分）
+
+- **背景**：M0/M1/M2 代码已落地，bo s s 进入 M5 做实机联调验收。沙箱无麦克风/声卡，无法验「真实语音触发令牌」端到端，本次聚焦本机可自动化的三项。
+- **环境**：本机 Apple Silicon M5 Pro / 48GB。**omni server（9060，Q8_0）与 LM Studio（12345，qwen3.6-35b）同跑**，合计逼近 48G 上限但未 OOM（bo s s 选「冒险同拉」）；后台 server 常驻，真机验收可复用（`python -m src.omni --no-auto-launch`）。
+- **验收项（全过）**：
+  1. **升级路由大脑+手闭环复测**：`EscalationRouter.escalate("查电池+时间")` → 模型自主调 `get_system_info` → 真实数据（电量80%充电中/时间/18核/内存8.1/48GB）→ 流式合成口语短句，耗时 7.4s。M2 链路无回归。
+  2. **全双工无头握手**：`OmniClient.start()`（关 mic/camera/playback）连 9060 → `session.init` → `session.created`（session_id=6fcae7…），声纹克隆加载成功，10.4s。
+  3. **回灌 turn_based TTS**：独立 turn_based 会话 `input.append(messages + tts:{enabled:true})` → omni 用克隆声纹流式合成音频 **656640 字节**（got_created=True / got_audio=True）。M2 回灌输出端可用。
+- **未验（需 bo s s 真机戴耳机）**：真实语音 → omni ASR 出 `<<CALL_QWEN>>` 令牌 → 触发升级 → 回灌播报的端到端；全双工 RTF 流畅度；麦克风啸叫（建议戴耳机或加 WebRTC AEC）。已单列任务跟踪。
+- **产物**：`/tmp/jac_m5_escalate_probe.py`、`/tmp/jac_m5_handshake.py`、`/tmp/jac_m5_backfeed.py`（临时验收脚本，留存 /tmp 未入仓）。
+
+---
+
+## 2026-08-15 — MiniCPM-o-4_5 全双工（M2）：升级路由 + qwen+tools 回灌
+
+- **背景**：M1 已交付全双工语音闭环（omni = 耳朵+眼睛+嘴巴）。M2 打通「omni 遇到需联网/操作电脑/复杂推理的任务 → 令牌 `<<CALL_QWEN>>` → qwen3.6-35b+tools（大脑+手）处理 → 结果回灌 omni 自然播报」的升级链路。
+- **关键架构决策（源码坐实 `llama.cpp-omni/tools/server/ws_handler.cpp`）**：
+  - full_duplex 的 `input.append` **严禁带 `messages`**（:1075 `fail_fast`），文字注入不可行；音频注入会被当作用户语音二次 ASR+应答（双份播报）。
+  - 故回灌定为**独立 turn_based 会话**（`session.init mode="turn_based"` + `tts:{enabled:true}`），用同一克隆声纹把文本流式 TTS 出来（即此前 `omni_turnbased_test.py` 验证过的路径）；主 full_duplex 会话升级期间 `_suppress_audio` 静音，避免重叠/回声。
+- **新增文件**：
+  - `src/omni/router.py`：`EscalationRouter`（持有独立 `LocalBrain(backend="lm_studio", lm_studio_model="qwen/qwen3.6-35b-a3b")`，跑 `run_agentic(prompt, get_tool_schemas(), execute_tool)` 流式聚合最终回答）+ 纯函数 `parse_call_qwen`（从文本解析令牌，区分未命中/命中未齐/命中）。
+  - `src/omni/backfeed.py`：`speak_text_via_omni(url, ref_audio_b64, text)` —— 独立线程 + 独立事件循环开临时 turn_based 会话，复用 `client._PyAudioPlayer` 播放 omni 返回的合成语音（播完 join 返回，便于调用方解除主会话静音）。
+- **改动 `src/omni/client.py`**：`OmniCallbacks.on_call_qwen` 回调；`_on_text` 流式令牌检测（令牌可跨多个 delta 分片、`<<CALL_QWEN>>` 命中后幂等、令牌后无换行时 1.5s 兜底定时器触发）；`_suppress_audio` 升级静音（解除发生在回灌完成后的下一次 `listen` 事件，防爆音）；`mark_escalation_done` / `speak_result_via_turnbased` / `get_ref_audio_b64`；session.init 后缓存 `_ref_audio_b64` 供回灌复用；`stop()` 取消兜底定时器。
+- **改动 `src/omni/prompts.py`**：细化 `SYSTEM_PROMPT`（令牌后停下等大脑，不长篇回答）；新增 `TOOL_SYSTEM_PROMPT`（大脑侧：口语短句把结果告诉 boss，不直接发声）。`__init__.py` 导出 `EscalationRouter` / `parse_call_qwen` / `TOOL_SYSTEM_PROMPT`。
+- **改动 `src/runtime.py`**：`_OmniRuntimeCallbacks.on_call_qwen` 接管（状态灯升级期间显示 Thinking）→ `JACRuntime._handle_escalation` 在后台线程跑 router → 经 omni turn_based 回灌播报（结果非空正常播报；空/异常有兜底文案）→ `mark_escalation_done`；`omni_router` 懒创建。
+- **测试 `tests/test_omni_m2.py`**：离线单测——`parse_call_qwen` 各分支、client 跨分片流式检测/幂等/静音、`EscalationRouter` 接线（mock 大脑验证 prompt/tools/流式聚合）。
+- **验证**：`py_compile` 全部改动文件通过；离线单测全过；**真实 escalate 实跑通过**——本机 LM Studio(12345) 在线，`EscalationRouter.escalate` 触发模型自主调用 `get_system_info` 工具 → 执行拿电池/CPU/内存 → 流式合成最终回答返回（M2「大脑+手」闭环已验证）。omni 语音流令牌触发 + turn_based 回灌播报的端到端真机验收属 M5 联调。
+
+---
+
+
+- **背景**：M0 已在本机验证 llama.cpp-omni（master 分支）+ MiniCPM-o-4_5-GGUF(Q8_0) 的本地全双工 WebSocket 契约可用。M1 把该契约封装成 J.A.C. 的 `src/omni/` SDK，并接入 GUI 启动开关与运行时分支，使 bo s s 可在 UI 里一键进入「OMNI 全双工模式」。
+- **新增 `src/omni/`**：
+  - `client.py`：`OmniClient` 全双工客户端——实时推流（麦克风 16k float32 + 摄像头 jpeg）、接收 omni 文本/语音增量、声纹克隆（复用 `voices/silverwalf_voice.wav`，自动重采样 16k）、内置低延迟 PyAudio 播放器、事件回调（状态/文本/语音/聆听）；严格按 M0 实测的「真实实时节奏」喂音频（防全双工只读不说）。
+  - `server_launcher.py`：`OmniServerLauncher` 定位/按需启动 `llama-omni-server`（Metal，`-ngl 99 -c 8192`，Q8_0），TCP 端口就绪探测（`NO_PROXY` 绕过本机代理劫持）。
+  - `prompts.py`：omni 系统提示（角色 J.A.C.、称呼 boss、三条准则、含 `<<CALL_QWEN>>` 升级令牌约定）。
+  - `__main__.py`：CLI 演示 `python -m src.omni`（不依赖 GUI，真机验收用）。
+- **配置 `src/utils/config.py`**：新增 `OmniConfig` 字段（`omni_enabled` 默认关、`omni_server_url/bin/model_dir/host/port/quant(Q8_0)/ref_audio/fps/duplex/auto_launch`），全部支持环境变量覆盖。
+- **运行时 `src/runtime.py`**：`JACRuntime.start()` 按 `config.omni_enabled` 分支进入 OMNI 模式——跳过传统 Voicebox TTS / Whisper STT / MiniCPM-v 判断引擎，直接起 omni 服务 + `OmniClient` 全双工闭环；`manual_input` 在 OMNI 模式给出明确提示（文字指令/回灌留 M2）；`stop()` 优雅关闭会话（不自杀服务进程，便于复用）。
+- **GUI `gui.py`**：右侧选项面板新增「MiniCPM-o-4_5 全双工（接管 TTS + 判断）」开关，纳入 `_collect_config`/`_set_options_enabled`；状态栏新增 OMNI 指示；OMNI 模式下视频预览取自 omni 客户端摄像头帧。
+- **依赖**：`.venv` 补装 `websockets==15.0.1`（已在 `requirements.txt` L106 声明，旧 venv 未装）；`src/omni/client.py` 复用既有 `opencv-python`/`PyAudio`/`soundfile`/`soxr`/`numpy`。
+- **验证**：`py_compile` 八个新增/改动文件全部通过；轻量冒烟（二进制定位 / TCP 探测 / 声纹加载 44.1k→16k 约 12.4s / 令牌齐全）通过；**无头全连接冒烟**自动起服务 + 连 WS + `session.init` 收到 `session.created` 通过（证明 SDK 握手/初始化在实时服务上可用）。
+- **说明**：M1 聚焦「全双工语音闭环」，文字指令注入与 `<<CALL_QWEN>>` 回灌（qwen+tools）属 M2；AGENTS/README/codingLOG 文档同步统一在 M6 收口。
+
+---
+
 ## 2026-08-11 — 控制台日志与交互优化（7 项问题中的 5 项落地）
 
 - **背景**：bo s s 跑完整启动日志后反馈 7 个优化点，其中 5 项本期实现、2 项（问题 5/6）仅分析不改动。

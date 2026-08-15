@@ -331,6 +331,11 @@ class MainWindow(QMainWindow):
         self.tools_chk.setChecked(self.config.tools_enabled)
         op.addWidget(self.tools_chk)
 
+        # MiniCPM-o-4_5 全双工开关：勾选后由 omni 直接接管 TTS + 判断引擎（OMNI 模式）
+        self.omni_chk = QCheckBox("MiniCPM-o-4_5 全双工（接管 TTS + 判断）")
+        self.omni_chk.setChecked(self.config.omni_enabled)
+        op.addWidget(self.omni_chk)
+
         op.addWidget(self._labeled_slider(
             "判断间隔（秒）", self._make_interval_slider(), self.interval_label,
         ))
@@ -355,10 +360,13 @@ class MainWindow(QMainWindow):
         """初始化状态栏"""
         self.status_listen = QLabel("就绪")
         self.status_listen.setObjectName("statusListen")
+        self.status_omni = QLabel("○ OMNI 未启用")
+        self.status_omni.setObjectName("statusOmni")
         self.status_sys = QLabel("● 已停止")
         self.status_sys.setObjectName("statusSys")
         bar = self.statusBar()
         bar.addWidget(self.status_listen)
+        bar.addWidget(self.status_omni)
         bar.addPermanentWidget(self.status_sys)
 
     def _make_interval_slider(self):
@@ -424,7 +432,12 @@ class MainWindow(QMainWindow):
         # 释放/窗口销毁过程中仍向 Metal 渲染管线提交帧，触发断言崩溃（闪退）。
         if not self.runtime.running:
             return
-        f = self.context.get_annotated_frame()
+        # OMNI 模式：画面来自 omni 客户端的摄像头帧（传统模式来自 context 标注帧）
+        omni_client = getattr(self.runtime, "omni_client", None)
+        if getattr(self.runtime, "omni_mode", False) and omni_client is not None:
+            f = omni_client.get_latest_frame()
+        else:
+            f = self.context.get_annotated_frame()
         if f is None:
             return
         try:
@@ -473,6 +486,10 @@ class MainWindow(QMainWindow):
     def _update_status(self):
         s = self.context.get_listening_status()
         self.status_listen.setText(s or "就绪")
+        if getattr(self.runtime, "omni_mode", False):
+            self.status_omni.setText("● OMNI 全双工")
+        else:
+            self.status_omni.setText("○ OMNI 未启用")
         self.status_sys.setText("● 运行中" if self.runtime.running else "● 已停止")
 
     # ----------------------------------------------------- 启动/停止
@@ -545,7 +562,7 @@ class MainWindow(QMainWindow):
 
     def _set_options_enabled(self, en):
         """设置选项已启用"""
-        for w in (self.judge_chk, self.tts_chk, self.tools_chk,
+        for w in (self.judge_chk, self.tts_chk, self.tools_chk, self.omni_chk,
                   self.interval_slider, self.timeout_slider):
             w.setEnabled(en)
 
@@ -557,6 +574,17 @@ class MainWindow(QMainWindow):
             judgment_timeout=self.timeout_slider.value() / 2.0,
             use_qwen_tts=self.tts_chk.isChecked(),
             tools_enabled=self.tools_chk.isChecked(),
+            omni_enabled=self.omni_chk.isChecked(),
+            omni_server_url=self.config.omni_server_url,
+            omni_server_bin=self.config.omni_server_bin,
+            omni_model_dir=self.config.omni_model_dir,
+            omni_host=self.config.omni_host,
+            omni_port=self.config.omni_port,
+            omni_quant=self.config.omni_quant,
+            omni_ref_audio=self.config.omni_ref_audio,
+            omni_fps=self.config.omni_fps,
+            omni_duplex=self.config.omni_duplex,
+            omni_auto_launch=self.config.omni_auto_launch,
             brain_backend=self.config.brain_backend,
             awake_timeout=self.config.awake_timeout,
             memory_enabled=self.config.memory_enabled,
