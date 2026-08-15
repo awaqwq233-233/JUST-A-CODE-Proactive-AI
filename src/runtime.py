@@ -9,6 +9,7 @@ GUI 只通过本类与底层交互：
 底层复用 main.py 的 handle_user_text / process_response / audio_thread_func /
 handle_memory_command 与模块级全局状态，避免逻辑重复。
 """
+import os
 import time
 import threading
 import logging
@@ -258,6 +259,7 @@ class JACRuntime:
             enable_playback=True,
             push_interval=0.4,
             video_fps=config.omni_fps,
+            mic_gain=config.omni_mic_gain,
             camera_width=config.camera_width,
             camera_height=config.camera_height,
             voicebox_speaker=voicebox_speaker,
@@ -297,20 +299,30 @@ class JACRuntime:
                     task, on_progress=lambda c: print(c, end="", flush=True)
                 )
                 print()  # 换行，结束流式输出
+                # 确保答案一定出声：优先经 client 回灌（Voicebox 克隆），否则降级系统 TTS
+                answer = (f"（升级结果）{result}" if result
+                          else "抱歉 boss，升级通道暂时拿不到结果，我稍后再试。")
                 if self.omni_client is not None and self.omni_client.is_running():
-                    if result:
-                        self.omni_client.speak_result(f"（升级结果）{result}")
-                    else:
-                        self.omni_client.speak_result(
-                            "抱歉 boss，升级通道暂时拿不到结果，我稍后再试。"
-                        )
+                    self.omni_client.speak_result(answer)
                 else:
-                    print("[OMNI升级] 客户端已不可用，跳过回灌播报。")
+                    # 客户端不可用：直接降级系统 TTS，避免答案静默丢失
+                    from src.omni.backfeed import speak_text_via_voicebox
+                    speak_text_via_voicebox(None, answer)
+                # 把升级结果写入回复缓存，供 GUI 实时文字区显示
+                if self.omni_client is not None:
+                    self.omni_client.append_reply(f"\n{answer}\n")
             except Exception as e:  # noqa: BLE001
                 print(f"[OMNI升级] 异常: {e}")
                 if self.omni_client is not None and self.omni_client.is_running():
                     try:
                         self.omni_client.speak_result("抱歉 boss，升级处理出错了。")
+                        self.omni_client.append_reply("\n（升级结果）抱歉 boss，升级处理出错了。\n")
+                    except Exception:  # noqa: BLE001
+                        pass
+                else:
+                    try:
+                        from src.omni.backfeed import speak_text_via_voicebox
+                        speak_text_via_voicebox(None, "抱歉 boss，升级处理出错了。")
                     except Exception:  # noqa: BLE001
                         pass
             finally:

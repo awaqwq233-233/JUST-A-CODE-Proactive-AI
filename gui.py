@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QPlainTextEdit, QPushButton, QFrame, QSplitter,
     QToolButton, QComboBox, QSlider, QSizePolicy, QCheckBox,
+    QProgressBar, QDoubleSpinBox,
 )
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -335,6 +336,38 @@ class MainWindow(QMainWindow):
         self.omni_chk = QCheckBox("MiniCPM-o-4_5 全双工（接管 TTS + 判断）")
         self.omni_chk.setChecked(self.config.omni_enabled)
         op.addWidget(self.omni_chk)
+        # OMNI 模式下传统 judge/TTS/tools 与 omni 架构互斥，勾选 OMNI 时灰掉它们并提示
+        self.omni_chk.toggled.connect(self._on_omni_toggled)
+
+        # 麦克风增益（OMNI 全双工：内建麦离嘴远、能量不足时调高，便于触发服务端 VAD）
+        gain_row = QHBoxLayout()
+        gain_row.addWidget(QLabel("麦克风增益 (OMNI)"))
+        self.mic_gain_spin = QDoubleSpinBox()
+        self.mic_gain_spin.setRange(1.0, 20.0)
+        self.mic_gain_spin.setSingleStep(0.5)
+        self.mic_gain_spin.setValue(float(getattr(self.config, "omni_mic_gain", 1.0)))
+        gain_row.addWidget(self.mic_gain_spin)
+        op.addLayout(gain_row)
+
+        # ---- OMNI 实时诊断区（音量条 + 实时回复文字）----
+        self.omni_live = QFrame()
+        self.omni_live.setObjectName("omniLive")
+        live = QVBoxLayout(self.omni_live)
+        live.setContentsMargins(0, 0, 0, 0)
+        live.setSpacing(6)
+        live.addWidget(QLabel("麦克风音量 (OMNI)"))
+        self.mic_bar = QProgressBar()
+        self.mic_bar.setRange(0, 100)
+        self.mic_bar.setValue(0)
+        live.addWidget(self.mic_bar)
+        live.addWidget(QLabel("OMNI 实时回复"))
+        self.omni_reply = QPlainTextEdit()
+        self.omni_reply.setReadOnly(True)
+        self.omni_reply.setMaximumHeight(150)
+        self.omni_reply.setObjectName("omniReply")
+        live.addWidget(self.omni_reply)
+        op.addWidget(self.omni_live)
+        self._last_reply_shown = ""
 
         op.addWidget(self._labeled_slider(
             "判断间隔（秒）", self._make_interval_slider(), self.interval_label,
@@ -491,6 +524,18 @@ class MainWindow(QMainWindow):
         else:
             self.status_omni.setText("○ OMNI 未启用")
         self.status_sys.setText("● 运行中" if self.runtime.running else "● 已停止")
+        # OMNI 实时诊断：麦克风音量条 + 实时回复文字区（仅在 OMNI 模式且客户端就绪时刷新）
+        omni_client = getattr(self.runtime, "omni_client", None)
+        if getattr(self.runtime, "omni_mode", False) and omni_client is not None:
+            level = omni_client.get_latest_mic_level()
+            self.mic_bar.setValue(int(min(1.0, level / 0.15) * 100))
+            txt = omni_client.get_reply_text()
+            if txt != self._last_reply_shown:
+                self.omni_reply.setPlainText(txt)
+                self._last_reply_shown = txt
+        else:
+            if self.mic_bar.value() != 0:
+                self.mic_bar.setValue(0)
 
     # ----------------------------------------------------- 启动/停止
     def _toggle_run(self):
@@ -506,8 +551,13 @@ class MainWindow(QMainWindow):
             def _do_start():
                 try:
                     self.runtime.start(cfg)
-                except Exception as e:
-                    self.console.appendPlainText(f"[GUI] 启动失败: {e}")
+                except Exception:
+                    # 打印完整 traceback（而非仅异常消息），便于真机验收时直接定位
+                    # 缺失依赖 / 导入错误等根因，避免反复来回。
+                    import traceback as _tb
+                    self.console.appendPlainText(
+                        "[GUI] 启动失败:\n" + "".join(_tb.format_exception(*sys.exc_info()))
+                    )
                 # 边界：若用户在启动过程中点了「停止」，立即停掉刚拉起的运行时
                 if self._stop_requested and self.runtime.running:
                     self._safe_stop_runtime()
@@ -565,6 +615,22 @@ class MainWindow(QMainWindow):
         for w in (self.judge_chk, self.tts_chk, self.tools_chk, self.omni_chk,
                   self.interval_slider, self.timeout_slider):
             w.setEnabled(en)
+        # OMNI 模式下传统 judge/TTS/tools 与 omni 架构互斥，仍保持灰掉状态
+        if en and self.omni_chk.isChecked():
+            self._on_omni_toggled(True)
+
+    def _on_omni_toggled(self, checked):
+        """OMNI 与传统 judge/TTS/tools 架构互斥：勾选 OMNI 时灰掉三者并提示。
+
+        OMNI 模式下 omni 直接接管「看 + 听 + 说 + 判断」，传统链路（MiniCPM-v 判断引擎 /
+        Qwen3-TTS / Function Calling 工具）不生效，避免用户误以为开启。
+        """
+        for w in (self.judge_chk, self.tts_chk, self.tools_chk):
+            w.setEnabled(not checked)
+            if checked:
+                w.setToolTip("OMNI 模式下不生效（架构互斥）")
+            else:
+                w.setToolTip("")
 
     def _collect_config(self):
         """收集配置"""
@@ -583,6 +649,7 @@ class MainWindow(QMainWindow):
             omni_quant=self.config.omni_quant,
             omni_ref_audio=self.config.omni_ref_audio,
             omni_fps=self.config.omni_fps,
+            omni_mic_gain=self.mic_gain_spin.value(),
             omni_duplex=self.config.omni_duplex,
             omni_auto_launch=self.config.omni_auto_launch,
             brain_backend=self.config.brain_backend,

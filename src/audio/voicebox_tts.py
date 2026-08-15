@@ -41,6 +41,7 @@ import time
 import threading
 import platform
 import subprocess
+import uuid
 
 try:
     import requests
@@ -111,6 +112,9 @@ class VoiceboxSpeaker:
         self.available = False
         self._profile_id = None
         self._lock = threading.Lock()
+        # 串行锁：回灌线程与句子级桥接线程会并发调用 speak，串行化「合成+写临时文件+
+        # 播放」避免同毫秒临时文件互覆盖与并发 afplay 重叠（修复"答案没读清/重叠"）
+        self._speak_lock = threading.RLock()
 
         if not REQUESTS_AVAILABLE:
             print("[提示] 未安装 requests，VoiceboxSpeaker 不可用（将回退系统 TTS）。")
@@ -191,57 +195,59 @@ class VoiceboxSpeaker:
     # ---------- 对外接口 ----------
     def speak(self, text, emotion_hint=None):
         """合成并播放语音；不可用时回退系统 TTS。"""
-        if not self.available:
-            self._fallback_speak(text)
-            return
+        with self._speak_lock:
+            if not self.available:
+                self._fallback_speak(text)
+                return
 
-        # 解析情绪 -> 内联标签 + instruct 指令
-        em = self._normalize_emotion(emotion_hint)
-        entry = EMOTION_TO_VOICEBOX.get(em)
-        tags = "".join(entry["tags"]) if entry else ""
-        instruct = entry["instruct"] if entry else ""
-        gen_text = f"{tags}{text}" if tags else text
+            # 解析情绪 -> 内联标签 + instruct 指令
+            em = self._normalize_emotion(emotion_hint)
+            entry = EMOTION_TO_VOICEBOX.get(em)
+            tags = "".join(entry["tags"]) if entry else ""
+            instruct = entry["instruct"] if entry else ""
+            gen_text = f"{tags}{text}" if tags else text
 
-        profile_id = self._resolve_profile()
-        payload = {
-            "text": gen_text,
-            "language": self.language,
-        }
-        # 关键：不指定引擎。只传 JAC 声纹的 profile_id，由 Voicebox 用该声纹在 App 里
-        # 绑定的那个模型来发声（用户的需求：声纹是什么模型就用什么模型）。
-        # 仅当显式设置 VOICEBOX_ENGINE 环境变量时才覆盖此行为。
-        if self.engine:
-            payload["engine"] = self.engine
-        if profile_id:
-            payload["profile_id"] = profile_id
-        if instruct:
-            payload["instruct"] = instruct
+            profile_id = self._resolve_profile()
+            payload = {
+                "text": gen_text,
+                "language": self.language,
+            }
+            # 关键：不指定引擎。只传 JAC 声纹的 profile_id，由 Voicebox 用该声纹在 App 里
+            # 绑定的那个模型来发声（用户的需求：声纹是什么模型就用什么模型）。
+            # 仅当显式设置 VOICEBOX_ENGINE 环境变量时才覆盖此行为。
+            if self.engine:
+                payload["engine"] = self.engine
+            if profile_id:
+                payload["profile_id"] = profile_id
+            if instruct:
+                payload["instruct"] = instruct
 
-        try:
-            # 1) 提交合成任务（异步）：/generate 返回 generation id（JSON），而非音频字节。
-            #    旧实现把这段 JSON 直接当 WAV 写入，导致 afplay 报 AudioFileOpen failed ('typ?')。
-            resp = self.session.post(f"{self.base_url}/generate", json=payload, timeout=60)
-            resp.raise_for_status()
-            data = resp.json()
-            gen_id = data.get("id")
-            if not gen_id:
-                raise RuntimeError(f"Voicebox /generate 未返回 id：{data}")
-            # 2) 轮询 /audio/{id} 直到音频就绪（生成中服务端返回 HTTP 500，需重试）
-            wav_bytes = self._poll_audio(gen_id)
-            # 3) 校验 WAV 魔数（RIFF....WAVE），避免再次出现无效文件
-            if not wav_bytes or wav_bytes[:4] != b"RIFF" or wav_bytes[8:12] != b"WAVE":
-                raise RuntimeError("Voicebox 返回的音频不是合法 WAV")
-            # 4) 写文件并播放；播放失败（afplay 报错）则以系统 TTS 兜底
-            path = os.path.join(self.output_dir, f"voicebox_{int(time.time() * 1000)}.wav")
-            with open(path, "wb") as f:
-                f.write(wav_bytes)
-            print(f"[TTS] 正在播放（Voicebox / {self.engine or 'JAC声纹引擎'}）: {path}")
-            from src.audio.playback import play_wav
-            if not play_wav(path):
-                raise RuntimeError("Voicebox 音频播放失败（afplay）")
-        except Exception as e:
-            print(f"[错误] Voicebox 合成/播放失败: {e}")
-            self._fallback_speak(text)
+            try:
+                # 1) 提交合成任务（异步）：/generate 返回 generation id（JSON），而非音频字节。
+                #    旧实现把这段 JSON 直接当 WAV 写入，导致 afplay 报 AudioFileOpen failed ('typ?')。
+                resp = self.session.post(f"{self.base_url}/generate", json=payload, timeout=60)
+                resp.raise_for_status()
+                data = resp.json()
+                gen_id = data.get("id")
+                if not gen_id:
+                    raise RuntimeError(f"Voicebox /generate 未返回 id：{data}")
+                # 2) 轮询 /audio/{id} 直到音频就绪（生成中服务端返回 HTTP 500，需重试）
+                wav_bytes = self._poll_audio(gen_id)
+                # 3) 校验 WAV 魔数（RIFF....WAVE），避免再次出现无效文件
+                if not wav_bytes or wav_bytes[:4] != b"RIFF" or wav_bytes[8:12] != b"WAVE":
+                    raise RuntimeError("Voicebox 返回的音频不是合法 WAV")
+                # 4) 写文件并播放；播放失败（afplay 报错）则以系统 TTS 兜底
+                #    文件名用 uuid 而非毫秒时间戳，彻底避免回灌/桥接并发同毫秒互覆盖
+                path = os.path.join(self.output_dir, f"voicebox_{uuid.uuid4().hex}.wav")
+                with open(path, "wb") as f:
+                    f.write(wav_bytes)
+                print(f"[TTS] 正在播放（Voicebox / {self.engine or 'JAC声纹引擎'}）: {path}")
+                from src.audio.playback import play_wav
+                if not play_wav(path):
+                    raise RuntimeError("Voicebox 音频播放失败（afplay）")
+            except Exception as e:
+                print(f"[错误] Voicebox 合成/播放失败: {e}")
+                self._fallback_speak(text)
 
     def _poll_audio(self, gen_id, timeout=60.0, interval=0.5):
         """轮询 /audio/{id} 直到返回可用音频字节（Voicebox /generate 是异步的）。

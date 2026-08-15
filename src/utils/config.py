@@ -44,6 +44,7 @@ class Config:
     omni_quant: str = "Q8_0"                              # Q4_K_M 在 Metal 上劣化，锁定 Q8_0
     omni_ref_audio: str = "voices/silverwalf_voice.wav"   # 声纹克隆参考音（JAC 原音色）
     omni_fps: int = 5                                     # 视频上行帧率
+    omni_mic_gain: float = 1.0                           # 麦克风采集增益（OMNI 全双工，内建麦离嘴远时调高）
     omni_duplex: bool = True                             # 全双工（边听边说）；False=半双工
     omni_auto_launch: bool = True                        # 未运行则自动起服务
 
@@ -113,6 +114,7 @@ class Config:
             omni_quant=os.environ.get("OMNI_QUANT", "Q8_0"),
             omni_ref_audio=os.environ.get("OMNI_REF_AUDIO", "voices/silverwalf_voice.wav"),
             omni_fps=int(os.environ.get("OMNI_FPS", "5")),
+            omni_mic_gain=float(os.environ.get("OMNI_MIC_GAIN", "1.0")),
             omni_duplex=truthy("OMNI_DUPLEX", True),
             omni_auto_launch=truthy("OMNI_AUTO_LAUNCH", True),
         )

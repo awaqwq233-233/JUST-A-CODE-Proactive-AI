@@ -94,6 +94,7 @@ class _ConsoleCallbacks(OmniCallbacks):
         def _worker():
             try:
                 from src.omni.router import EscalationRouter
+                from src.omni.backfeed import speak_text_via_voicebox
                 if self._router is None:
                     self._router = EscalationRouter()
                 # run_agentic 流式 yield 最终回答文本（打字机效果），on_progress 推到控制台
@@ -101,20 +102,26 @@ class _ConsoleCallbacks(OmniCallbacks):
                     task, on_progress=lambda c: print(c, end="", flush=True)
                 )
                 print()  # 结束流式输出换行
+                # 确保答案一定出声：优先经 client 回灌（Voicebox 克隆），
+                # 否则降级系统 TTS（绝不静默丢弃）
+                answer = (f"（升级结果）{result}" if result
+                          else "抱歉 boss，升级通道暂时拿不到结果，我稍后再试。")
                 if self._client is not None and self._client.is_running():
-                    if result:
-                        self._client.speak_result(f"（升级结果）{result}")
-                    else:
-                        self._client.speak_result(
-                            "抱歉 boss，升级通道暂时拿不到结果，我稍后再试。"
-                        )
+                    self._client.speak_result(answer)
                 else:
-                    print("[omni] 客户端已不可用，跳过回灌播报。")
+                    # 客户端已不可用：直接降级系统 TTS 播报，避免答案静默丢失
+                    speak_text_via_voicebox(None, answer)
             except Exception as e:  # noqa: BLE001
                 print(f"\n[omni] 升级异常: {e}")
                 if self._client is not None and self._client.is_running():
                     try:
                         self._client.speak_result("抱歉 boss，升级处理出错了。")
+                    except Exception:  # noqa: BLE001
+                        pass
+                else:
+                    try:
+                        from src.omni.backfeed import speak_text_via_voicebox
+                        speak_text_via_voicebox(None, "抱歉 boss，升级处理出错了。")
                     except Exception:  # noqa: BLE001
                         pass
             finally:

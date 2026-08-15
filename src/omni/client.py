@@ -215,9 +215,15 @@ class OmniClient:
         # ---- M2 升级路由相关状态 ----
         # 文本累积缓冲（用于检测 <<CALL_QWEN>> 令牌，令牌可能跨多个 delta 分片到达）
         self._text_buf = ""
-        self._call_qwen_fired = False        # 本次会话是否已触发过升级（避免重复触发）
+        self._call_qwen_fired = False        # 本次会话是否已触发过升级（幂等 + 停止朗读）
+        self._token_seen = False             # 是否已发现令牌但尚未 fire（pending 累积中，停止朗读）
         self._pending_task = None            # 令牌已命中但任务描述尚未完整时的临时累积
         self._pending_timer = None           # 令牌后无换行时的兜底触发定时器
+
+        # ---- GUI 实时展示用缓存（由 omni 接收/采集线程写入，GUI 定时器轮询读取）----
+        self._last_mic_level = 0.0           # 最近一次麦克风 RMS（供 GUI 音量条）
+        self._reply_buf = ""                 # 累积的 omni 回复文本（含升级结果，供 GUI 文字区）
+        self._reply_lock = threading.Lock()  # 保护 _reply_buf 的读写
         self._ref_audio_b64 = ""             # 克隆声纹 base64（session.init 后存入，供回灌复用）
         self._suppress_audio = False         # 升级期间抑制主会话语音输出（避免与回灌重叠/回声）
         self._escalation_done = False        # 升级任务是否已完成（配合 listen 事件解除静音）
@@ -544,6 +550,7 @@ class OmniClient:
             else:
                 rms = 0.0
             self.cb.on_mic_level(rms)
+            self._last_mic_level = rms        # 缓存供 GUI 音量条轮询
             if rms <= 1e-4:
                 silent_secs += self.push_interval
                 if silent_secs >= 5.0:
@@ -599,13 +606,17 @@ class OmniClient:
                         with self._audio_lock:
                             if self._suppress_audio and self._escalation_done:
                                 self._suppress_audio = False
+                        # 新一轮聆听开始 = 上一轮对话已结束 → 复位升级标志，
+                        # 允许本轮再次触发 <<CALL_QWEN>>（修复"第二次升级被吞"）
+                        self._reset_escalation_state()
                 elif et == "response.done":
                     txt = e.get("text", "")
                     if txt:
                         self.cb.on_text_final(txt)
-                    # M7b：会话正常结束（未触发升级）时 flush 尾句，让主对话残留文本播完；
-                    # 已触发升级则主对话已转回灌，不再播主对话尾巴（避免重叠）
-                    if self._voicebox_bridge is not None and not self._call_qwen_fired:
+                    # M7b：会话正常结束（未触发升级、也未发现令牌）时 flush 尾句，让主对话
+                    # 残留文本播完；已触发升级或发现令牌则主对话已转回灌，不再播主对话尾巴
+                    if (self._voicebox_bridge is not None
+                            and not self._call_qwen_fired and not self._token_seen):
                         self._voicebox_bridge.flush_remaining()
                     da = e.get("audio")
                     if da and self._voicebox_bridge is None:
@@ -614,8 +625,9 @@ class OmniClient:
                         except Exception:
                             pass
                 elif et == "session.closed":
-                    # M7b：连接关闭时 flush 尾句（未升级时）
-                    if self._voicebox_bridge is not None and not self._call_qwen_fired:
+                    # M7b：连接关闭时 flush 尾句（未升级、未发现令牌时）
+                    if (self._voicebox_bridge is not None
+                            and not self._call_qwen_fired and not self._token_seen):
                         self._voicebox_bridge.flush_remaining()
                     self.cb.on_state("closed", e.get("reason"))
                     break
@@ -635,30 +647,46 @@ class OmniClient:
 
     # ============================================================ M2 升级路由
     def _on_text(self, txt: str):
-        """文本增量处理：先广播给回调，再做 <<CALL_QWEN>> 令牌检测。
+        """文本增量处理：先广播回调，再做 <<CALL_QWEN>> 令牌检测与拦截。
 
-        令牌可能跨多个 delta 分片到达，故先做全文累积再查找；命中后抑制本轮
-        omni 语音（避免把令牌行 / omni 的延续回答播给 boss），并回调 on_call_qwen。
+        令牌可能跨多个 delta 分片到达，故先做全文累积再查找。**关键修复**：令牌检测
+        必须在把文本喂给 Voicebox 桥接之前完成——否则承载 `<<CALL_QWEN>>查电池` 的
+        delta 会先被送进朗读队列（即"把问题本身读出来"的 bug）。命中令牌时只把令牌
+        之前的文本送桥接朗读，令牌本身及任务描述一律丢弃（绝不朗读问题），并触发升级。
+        升级触发后主会话后续文本一律不再朗读。
         """
+        # 广播给回调（GUI 实时回复文字区 / 控制台显示），不发声
         self.cb.on_text_delta(txt)
-        # M7b：主对话文本增量喂给 Voicebox 句子级桥接（令牌触发前才会播；
-        # 触发后 _on_text 直接 return 不再喂，避免把令牌行文本播出去）
-        if self._voicebox_bridge is not None:
-            self._voicebox_bridge.feed(txt)
+        # 累积回复文本供 GUI 实时文字区轮询（限长，避免无限增长）
+        with self._reply_lock:
+            self._reply_buf += txt
+            if len(self._reply_buf) > 4000:
+                self._reply_buf = self._reply_buf[-2000:]
+
+        # 升级已触发：主会话后续文本（含 omni 尾随回复）一律不再朗读
         if self._call_qwen_fired:
             return
+        # 令牌已发现但尚未 fire（pending 累积中）：只继续累积任务描述，不再朗读
+        if self._token_seen:
+            self._pending_task = (self._pending_task or "") + txt
+            return
+
+        # 未触发：累积全文用于跨分片令牌检测
         self._text_buf += txt
         token = "<<CALL_QWEN>>"
         idx = self._text_buf.find(token)
         if idx < 0:
-            # 尚未出现令牌；若之前已命中但任务未齐，继续累积
-            if self._pending_task is not None:
-                self._pending_task += txt
-                if "\n" in self._pending_task or len(self._pending_task) >= 128:
-                    task = self._pending_task.split("\n", 1)[0].strip()[:128]
-                    self._fire_call_qwen(task)
+            # 尚未出现令牌：正常主对话文本，送 Voicebox 句子级桥接朗读
+            if self._voicebox_bridge is not None:
+                self._voicebox_bridge.feed(txt)
             return
-        # 命中令牌：取首个换行前的内容作为任务描述
+
+        # 命中令牌：标记已发现，停止后续朗读；仅把令牌之前的内容送桥接朗读
+        self._token_seen = True
+        pre = self._text_buf[:idx]
+        if pre.strip() and self._voicebox_bridge is not None:
+            self._voicebox_bridge.feed(pre)
+        # 令牌及后续任务描述丢弃，立即触发升级（绝不朗读问题本身）
         after = self._text_buf[idx + len(token):]
         if "\n" in after:
             task = after.split("\n", 1)[0].strip()
@@ -707,9 +735,44 @@ class OmniClient:
         with self._audio_lock:
             self._escalation_done = True
 
+    def _reset_escalation_state(self):
+        """升级标志复位：在新一轮 listen（新用户轮）时调用，允许再次触发升级。
+
+        不清空 _escalation_done（由 listen 分支按需复位静音标志）；只复位令牌检测/
+        升级触发相关状态，避免"第二次升级被吞"（_call_qwen_fired 永不复位）的 bug。
+        """
+        self._call_qwen_fired = False
+        self._token_seen = False
+        self._text_buf = ""
+        self._pending_task = None
+        if self._pending_timer is not None and self._pending_timer.is_alive():
+            self._pending_timer.cancel()
+        self._pending_timer = None
+        with self._audio_lock:
+            self._escalation_done = False
+
     def get_ref_audio_b64(self) -> str:
         """返回克隆声纹 base64（供回灌通道复用）。"""
         return self._ref_audio_b64
+
+    # ============================================================ GUI 实时展示接口
+    def get_latest_mic_level(self) -> float:
+        """返回最近一次麦克风 RMS（0~1 归一），供 GUI 音量条轮询。"""
+        return self._last_mic_level
+
+    def get_reply_text(self) -> str:
+        """返回累积的 omni 回复文本（含升级结果），供 GUI 实时文字区轮询。"""
+        with self._reply_lock:
+            return self._reply_buf
+
+    def append_reply(self, text: str):
+        """向回复文本缓存追加一段（如升级结果），供 GUI 实时文字区显示。"""
+        if not text:
+            return
+        with self._reply_lock:
+            self._reply_buf += text
+            if len(self._reply_buf) > 4000:
+                self._reply_buf = self._reply_buf[-2000:]
 
     def speak_result(self, text: str):
         """M7a 回灌：用本地 Voicebox（JAC 克隆声纹）播报 qwen+tools 的结果文本。
@@ -723,12 +786,12 @@ class OmniClient:
         调用方应在本方法返回后调用 mark_escalation_done() 解除主会话静音。
         """
         spk = self._voicebox_speaker
-        if spk is None:
-            # 未接入 Voicebox：降级为仅文本输出（不阻塞、不影响升级闭环）
-            print(f"[J.A.C.(回灌)] {text}")
-            return
         # 延迟导入回灌模块（M7a 改为本地 Voicebox 克隆合成，不再开 omni 第二会话）
         from .backfeed import speak_text_via_voicebox
+        if spk is None:
+            # 未接入 Voicebox（如 --no-voicebox）：降级系统 TTS，确保答案一定出声
+            speak_text_via_voicebox(None, text)
+            return
         speak_text_via_voicebox(spk, text)
 
 

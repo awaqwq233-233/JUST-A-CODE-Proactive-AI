@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-08-15（hotfix）— GUI 启动失败 `name 'os' is not defined`
+
+- **根因**：`src/runtime.py` 的 OMNI 启动分支 `_start_omni` 用了 `os.path`（解析 `omni_ref_audio` 绝对路径），但文件顶部**缺少 `import os`**。历史遗留、此前未勾选 OMNI 走不到该分支故未暴露；本次 OMNI GUI 开关可用后一勾即炸。
+- **修复**：①`src/runtime.py` 顶部补 `import os`；②排查确认 omni 链路其余用到 `os` 的模块（`client.py` / `server_launcher.py` / `__main__.py`）均已导入，无同类隐患；③`gui.py` 启动失败捕获改为打印**完整 traceback**（原仅打印异常消息），便于真机验收时直接定位根因。
+- **验证**：`py_compile src/runtime.py gui.py` 通过。
+
+---
+
+## 2026-08-15 — omni 全双工 bug 修复：令牌被朗读 + 答案未读 + 多轮失效 + GUI 实时
+
+- **背景**：bo s s 真机跑 `python -m src.omni --mic 2` 暴露 4 类问题：①问"电量"被 ASR 识别成"天气"（MiniCPM-o 模型识别质量限制，非代码 bug，仅缓解）；②升级结果没读出来（时间答案静默丢失）；③把 `<<CALL_QWEN>>查一下电池电量` 这种**问题本身**当答案朗读；④GUI 视频已接但麦克风音量条/实时回复文字/升级结果显示未接。
+- **核心 bug（令牌被朗读）修复 `src/omni/client.py`**：`_on_text` 原为「先 `feed` 喂 Voicebox 桥接、后做令牌检测」，承载令牌的 delta 在检测前已入朗读队列。改为**检测前置**——含 `<<CALL_QWEN>>` 的 delta 只把令牌之前的文本 `feed` 给桥接，令牌及任务描述丢弃并立即触发升级，绝不朗读问题本身。`src/omni/voicebox_bridge.py` 的 `feed` 同步加令牌截断兜底（双保险）。
+- **答案未读修复（静默失败点）**：①`src/audio/voicebox_tts.py` 的 `VoiceboxSpeaker.speak` 加 `RLock` 串行锁 + 临时文件名改 `uuid`，根治回灌线程与桥接线程并发导致的重叠/同毫秒文件互覆盖；②`src/omni/backfeed.py` 的 `speak_text_via_voicebox` 在 `speaker is None` 时降级系统 TTS（不再静默丢弃）；③`client.speak_result` 与 `src/omni/__main__.py`、`src/runtime.py` 的升级 worker 去掉 `is_running()` 静默跳过分支，答案**一定出声**（Voicebox 优先，否则系统 TTS）。
+- **多轮升级失效修复 `src/omni/client.py`**：`_call_qwen_fired` 触发后永不复位导致第二次升级被吞。新增 `_reset_escalation_state()`，在每轮 `listen` 事件（新用户轮）复位升级标志，支持反复触发 `<<CALL_QWEN>>`；`response.done`/`session.closed` 的 `flush_remaining` 守卫加 `_token_seen` 判断，避免令牌残句冲入朗读队列。
+- **GUI 实时整合 `gui.py` + `src/runtime.py` + `src/utils/config.py`**：①OMNI 模式右键面板新增「麦克风音量条」+「OMNI 实时回复」文字区，由现有帧/状态定时器轮询 `OmniClient.get_latest_mic_level()` / `get_reply_text()` 刷新；②新增「麦克风增益」数字框（接 `config.omni_mic_gain` → `OmniClient.mic_gain`，缓解内建麦离嘴远能量不足）；③升级结果经 `append_reply` 写入实时文字区；④OMNI 与传统 judge/TTS/tools **互斥 UI 提示**：勾选 OMNI 时灰掉三者并标注"OMNI 模式下不生效"。
+- **ASR 误识别（电量→天气）处理**：属 MiniCPM-o 模型识别质量限制，代码无法根治；本次仅做可观测性（GUI 实时回复区 + 麦克风增益调参入口）+ 确认缺用户原话显示（omni 协议只回传模型回复文本，用户原话需并行本地 Whisper 旁路 ASR，列为后续可选增强）。
+- **验证**：`py_compile` 全部通过；新增 `tests/test_omni_m3_token.py` 验证「令牌文本不进朗读队列 + 多轮升级可重复触发」均通过；GUI 实跑待 bo s s 验收（视频/音量条/回复文字/升级结果显示 + 互斥提示）。
+
+---
+
 ## 2026-08-15 — M6 文档同步：全双工/流式/Function Calling 状态校正 + 补 omni 模块
 
 - **背景**：M5 全双工验收 + M7b/M7a 句子级 Voicebox 桥接已落地，但 `codingLOG.md` §4 仍标「全双工=未解决」、`AGENTS.md`/`README.md` 仍把"流式"和"function calling/agent 框架"列未实现、`src/omni/` 在 AGENTS.md 完全无记录、"没有自动化测试"已过时。

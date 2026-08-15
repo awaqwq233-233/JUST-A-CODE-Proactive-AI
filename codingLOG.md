@@ -38,6 +38,19 @@
 
 ---
 
+## 修复记录（2026-08-15）：omni 全双工令牌/多轮/回灌 + GUI 实时
+
+真机 `python -m src.omni --mic 2` 暴露 4 类问题，已定位并修复（改动：`src/omni/client.py`、`src/omni/voicebox_bridge.py`、`src/omni/backfeed.py`、`src/omni/__main__.py`、`src/audio/voicebox_tts.py`、`src/runtime.py`、`gui.py`、`src/utils/config.py`）：
+
+- **问题 A（最严重）：把问题本身当答案朗读**。`_on_text` 先 `feed` 后检测令牌，承载 `<<CALL_QWEN>>查电池` 的 delta 在检测前已进朗读队列 → 听到"查一下电脑的电池电量百分比"。改为检测前置：含令牌 delta 只 `feed` 令牌前文本、令牌丢弃并触发升级。`voicebox_bridge.feed` 加令牌截断兜底。
+- **问题 B：升级结果没读出来**。三个静默失败点：①回灌与桥接共用同一无锁 `VoiceboxSpeaker` → 重叠/同毫秒文件互覆盖；②`--no-voicebox` 下回灌只剩打印；③升级期间客户端断开被 `is_running()` 静默跳过。`speak` 加串行锁+uuid 文件名、`backfeed`/`speak_result`/两个升级 worker 去掉静默跳过、答案一定出声（Voicebox 优先→系统 TTS 兜底）。
+- **问题 C（隐藏严重）：第二次升级被吞**。`_call_qwen_fired` 永不复位。新增 `_reset_escalation_state()` 在每轮 `listen` 复位，支持多轮升级。
+- **问题 D：GUI 实时**。`gui.py`+`runtime.py`+`config.py` 补「麦克风音量条 + OMNI 实时回复文字区 + 麦克风增益框 + OMNI 与 judge/TTS/tools 互斥提示」；`OmniClient` 加 `get_latest_mic_level`/`get_reply_text`/`append_reply` 供轮询。
+- **ASR 电量→天气**：MiniCPM-o 模型识别质量限制，非代码 bug，仅做可观测性缓解（增益框 + 实时回复区）。用户原话显示需并行本地 Whisper，列为后续可选增强。
+- **验证**：`py_compile` 通过；`tests/test_omni_m3_token.py` 通过（令牌不朗读 + 多轮可触发）。GUI 实跑待 bo s s 验收。
+
+---
+
 ## 修复记录（2026-08-04）：J.A.C.Prototype 运行日志问题排查
 
 本次真机运行暴露 4 类问题，已全部定位并修复（改动文件：`src/brain/llm.py`、`main.py`、`src/audio/qwen_tts.py`、`src/audio/tts.py`、`src/memory/embedder.py`）。

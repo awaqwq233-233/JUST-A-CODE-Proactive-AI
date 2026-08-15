@@ -84,8 +84,10 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - **主对话 LLM 流式 + M7b 句子级 TTS 桥接**：omni 下行 `response.output.delta` 逐字吐文本；`src/omni/voicebox_bridge.py` 按标点/句子边界把 text delta 攒成句，攒够一句即送本地 **Voicebox（JAC 克隆声纹）** 合成并播放（独立 daemon 播放线程串行保序），实现「说一句听一句」近似实时感；omni 自带 TTS 音频在桥接启用时丢弃。
 - **回灌（M7a）**：`speak_result` → `src/omni/backfeed.py` 的 `speak_text_via_voicebox` 用 JAC 克隆声纹播报（替代原 omni 第二 turn_based 会话——server 单会话限制会拒第二个会话致 `ConnectionClosedOK` 无声音，已根除）。
 - **CLI 开关**：`--mic <id>` 指定麦克风、`--no-voicebox` 关克隆声纹桥接（改系统 TTS/仅文本）、`--no-play` 关 omni 自带音频播放（排查用）、`--list-mics` / `--mic-gain` 设备排查、`--no-auto-launch` 不自动拉起 server。
+- **令牌拦截与多轮升级（2026-08-15 修复）**：`client._on_text` 做**检测前置**——含 `<<CALL_QWEN>>` 的 delta 只把令牌之前的文本送 Voicebox 桥接朗读、令牌及任务描述丢弃并立即触发升级，**绝不把"问题本身"当答案朗读**；`voicebox_bridge.feed` 同步加令牌截断兜底。`_call_qwen_fired` 触发后会在每轮 `listen` 事件经 `_reset_escalation_state()` 复位，支持**反复升级**（修复"第二次升级被吞"）。回灌与桥接共用同一加锁 `VoiceboxSpeaker`（uuid 文件名防并发互覆盖），升级答案在 `speak_result`/`backfeed` 中**一定出声**（Voicebox 优先→系统 TTS 兜底，去掉原 `is_running()` 静默跳过）。
+- **GUI 实时整合（2026-08-15）**：OMNI 模式右侧选项面板新增「麦克风音量条」+「OMNI 实时回复」文字区（轮询 `get_latest_mic_level`/`get_reply_text` 刷新）+「麦克风增益」框（接 `config.omni_mic_gain`→`OmniClient.mic_gain`，缓解内建麦离嘴远能量不足）；勾选 OMNI 时 judge/TTS/tools 开关灰掉并提示"OMNI 模式下不生效"（架构互斥）。视频画面此前已接入。
 
-> 注意：OMNI 模式默认只跑 omni 全双工 + 升级路由（qwen+tools 回灌），**不包含** main.py 的摄像头 YOLO 检测 / 唤醒词 / judge 主动判断；两者架构互斥，分别用于「全双工实时对话」与「传统被动多模态桌面原型」。
+> 注意：OMNI 模式默认只跑 omni 全双工 + 升级路由（qwen+tools 回灌），**不包含** main.py 的摄像头 YOLO 检测 / 唤醒词 / judge 主动判断；两者架构互斥，分别用于「全双工实时对话」与「传统被动多模态桌面原型」。ASR 误识别（如"电量"→"天气"）属 MiniCPM-o 模型识别质量限制，代码无法根治，仅做可观测性缓解（增益框 + 实时回复区）。
 
 ## 重要文件与目录
 

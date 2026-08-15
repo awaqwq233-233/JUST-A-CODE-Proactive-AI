@@ -54,6 +54,12 @@ class VoiceboxBridge:
         if not delta:
             return
         self._buf += delta
+        # 防御：若文本里混入了升级令牌 <<CALL_QWEN>>，截断到令牌之前，绝不把"问题本身"
+        # 送进朗读队列（client._on_text 已做前置拦截，这里兜底防止漏网）
+        token = "<<CALL_QWEN>>"
+        t_idx = self._buf.find(token)
+        if t_idx >= 0:
+            self._buf = self._buf[:t_idx]
         # 按句末标点切句：每遇到一个标点，把之前的整句切出并入队
         while True:
             cut = -1
