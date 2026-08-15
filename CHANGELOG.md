@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-08-15 — M6 文档同步：全双工/流式/Function Calling 状态校正 + 补 omni 模块
+
+- **背景**：M5 全双工验收 + M7b/M7a 句子级 Voicebox 桥接已落地，但 `codingLOG.md` §4 仍标「全双工=未解决」、`AGENTS.md`/`README.md` 仍把"流式"和"function calling/agent 框架"列未实现、`src/omni/` 在 AGENTS.md 完全无记录、"没有自动化测试"已过时。
+- **`codingLOG.md` §4**：由「未解决」改为「已落地（全双工 M5 验收 + M7b 句子级桥接；token 级 TTS 待做）」，重写现状（含 M7b/M7a 说明）与仍待做项。
+- **`AGENTS.md`**：①「当前实现」新增「全双工 Omni 模式（src/omni，M5 验收 + M7b/M7a）」小节；②「重要文件与目录」新增 `src/omni/` 条目；③「当前进度」未实现项清单移除已落地的 function calling/工具执行层/agent 执行框架、把"流式 STT/LLM/TTS"细化为"token 级流式 TTS（全双工+M7b 已近似实现）"；④「已知限制」修正"STT/LLM/TTS 均非流式"为准确描述（LLM 全双工已流式、TTS 句子级桥接近似实时），移除"无 function calling"，"没有自动化测试"改为"已有自动化测试"。
+- **`README.md`**：「尚未实现」清单中"流式 STT/LLM/TTS"改为"token 级流式 TTS（omni 全双工已落地 LLM 流式 + M7b 句子级桥接近似实时）"。
+- **说明**：M7b 真机逐句听感验收待 bo s s 收尾；本同步基于"全双工主链路 M5 真机已验收 + M7b 代码已落地单测通过"，不预设未确认的真机听感结论。
+
+---
+
 ## 2026-08-15 — M7b/M7a：主对话 + 回灌改用本地 Voicebox 克隆声纹
 
 - **背景**：omni 全双工自带 TTS 无 JAC 克隆声纹、音质差（"响一下就结束"）；且回灌原走 omni 第二个 turn_based 会话，但 llama.cpp-omni server **单会话**——主 full_duplex 占槽后第二个会话被拒（server 日志 `session.init rejected — active session exists` → client 收到 `ConnectionClosedOK` 无声音）。bo s s 拍板 M7b（主对话句子级流式桥接 Voicebox）+ 一并做 M7a（回灌改用 Voicebox，因原路径必死）。

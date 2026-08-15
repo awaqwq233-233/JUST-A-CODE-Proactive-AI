@@ -76,6 +76,17 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - `SPACE`（空格）：手动唤醒（「我在，请讲。」）。
 - **控制台 stdin 文本输入**：任意时刻回车输入文字，以 `source="控制台"`、`bypass_wake=True` 直接进入思考，绕过唤醒词。
 
+### 全双工 Omni 模式（src/omni，M5 验收 + M7b/M7a）
+
+`src/omni/` 提供**全双工本地多模态接管**模式，与 `main.py` 传统被动链路**互斥**（OMNI 模式下不启动 judge 判断引擎与 main 的唤醒词循环）。运行入口 `python -m src.omni --mic <id>`（或 GUI 的 OMNI 模式开关）：
+
+- **全双工闭环（M5 验收）**：MiniCPM-o-4_5 经本地 llama.cpp-omni server（9060，Metal，GGUF Q8_0）跑**全双工**——持续听/说、主动打招呼、按 `<<CALL_QWEN>>` 令牌升级到 `qwen/qwen3.6-35b-a3b` 调 `src/tools/` 工具、回灌播报；整条闭环真机验收通过（2026-08-15）。
+- **主对话 LLM 流式 + M7b 句子级 TTS 桥接**：omni 下行 `response.output.delta` 逐字吐文本；`src/omni/voicebox_bridge.py` 按标点/句子边界把 text delta 攒成句，攒够一句即送本地 **Voicebox（JAC 克隆声纹）** 合成并播放（独立 daemon 播放线程串行保序），实现「说一句听一句」近似实时感；omni 自带 TTS 音频在桥接启用时丢弃。
+- **回灌（M7a）**：`speak_result` → `src/omni/backfeed.py` 的 `speak_text_via_voicebox` 用 JAC 克隆声纹播报（替代原 omni 第二 turn_based 会话——server 单会话限制会拒第二个会话致 `ConnectionClosedOK` 无声音，已根除）。
+- **CLI 开关**：`--mic <id>` 指定麦克风、`--no-voicebox` 关克隆声纹桥接（改系统 TTS/仅文本）、`--no-play` 关 omni 自带音频播放（排查用）、`--list-mics` / `--mic-gain` 设备排查、`--no-auto-launch` 不自动拉起 server。
+
+> 注意：OMNI 模式默认只跑 omni 全双工 + 升级路由（qwen+tools 回灌），**不包含** main.py 的摄像头 YOLO 检测 / 唤醒词 / judge 主动判断；两者架构互斥，分别用于「全双工实时对话」与「传统被动多模态桌面原型」。
+
 ## 重要文件与目录
 
 - `main.py`：多模态运行主入口。
@@ -92,6 +103,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - `src/tools/`：**Function Calling 工具层（装手）**——`registry.py`（工具注册表 + OpenAI schema）、`executor.py`（安全分发执行）、`open_actions.py` / `search_files.py` / `system_info.py` / `shell.py`（四个白名单工具）。
 - `src/judgment/judge.py`：主动判断引擎（MiniCPM-o via LM Studio）。
 - `src/utils/context.py`：线程安全的共享上下文（视觉摘要、状态标志、转录缓冲、帧缓存、介入标志）。
+- `src/omni/`：**全双工 omni 接管模块**——`client.py`（OmniClient WebSocket 收发 + 令牌路由）、`voicebox_bridge.py`（M7b 句子级 Voicebox 桥接）、`backfeed.py`（M7a 回灌）、`router.py`（升级路由 EscalationRouter）、`server_launcher.py`（拉起 llama.cpp-omni）、`prompts.py`、`__main__.py`（CLI 入口 `python -m src.omni`）。
 - `voices/`：TTS 声音克隆参考音。`silverwalf_voice.wav` 为唯一克隆音色参考（体积小、有意保留进版本库，见 `.gitignore` 注释）。
 - `temp/`：运行时临时音频文件。
 - `requirements.txt` / `requirements_fixed.txt`：依赖快照（`requirements.txt` 较新，`requirements_fixed.txt` 为旧稳定版）。
@@ -188,7 +200,7 @@ python main.py
 - 新增控制台文本输入实时对话（绕过唤醒词）。
 - TTS 后端从 Genie-TTS 全面切换为 **Voicebox（克隆 J.A.C. 声纹）+ Qwen3-TTS 仅 NVIDIA 兜底**。
 
-`codingLOG.md` 列出的与最终目标的差距中，**以下仍为未实现项**：function calling / 工具执行层、agent 执行框架、MCP / OpenClaw 集成、流式 STT/LLM/TTS。注意 `codingLOG.md` 部分内容早于 `main.py`，应作为架构差距笔记而非精确实现状态。
+`codingLOG.md` 列出的与最终目标的差距中，**以下仍为未实现 / 待做项**：MCP / OpenClaw 集成、实时联网工具（天气/日程）、token 级流式 TTS（omni 全双工已落地 LLM 流式输出 + M7b 句子级 Voicebox 桥接近似实时，但非 token 级）、OCR / 人脸识别 / 深度等视觉理解。注意 `codingLOG.md` 部分内容早于 `main.py`，应作为架构差距笔记而非精确实现状态。
 
 > **已落地（曾列于未实现项，现已实现并集成）**：持久记忆（JSON 长期记忆 + 轻量本地向量检索，见 `src/memory/` 与 `docs/memory/`）。`codingLOG.md` 中「记忆功能待验证」指端到端未在真机跑过，并非代码空缺。
 
@@ -234,8 +246,8 @@ python main.py
 - **运行强依赖 LM Studio**：`main.py` 默认 `backend="lm_studio"`，必须本地 12345 端口加载 `qwen/qwen3.6-35b-a3b`；否则思考全部失败。纯本地 GGUF 需改 backend。
 - **双模型资源**：开启主动判断需 LM Studio 同时加载 `qwen/qwen3.6-35b-a3b` + `MiniCPM-o`；当前 M5 Pro 48G 统一内存已验证可同时承载（2026-08-11）。默认 `JUDGMENT_ENGINE_ENABLED=True`，未检测到 MiniCPM-o 时自动进入被动模式（不报错也不主动）。
 - VAD 录音仍可能阻塞在「等待说话」，影响关闭响应（旧限制仍在）。
-- STT/LLM/TTS **均非流式**，端到端延迟仍高。
-- 无 function calling、无 agent/MCP/OpenClaw 集成（目标未实现）；持久记忆（JSON 长期记忆 + 轻量向量检索）已实现，见 `src/memory/` 与 `docs/memory/`。
+- **延迟**：STT 仍为非流式的 Whisper tiny（整段说完才识别）；但 LLM 经 omni 全双工已**流式输出**文本、TTS 经 M7b **句子级 Voicebox 桥接**近似实时 + JAC 克隆声纹（omni 自带 TTS 音频在桥接启用时丢弃），端到端感知延迟已显著下降（全双工边听边说）。token 级流式 TTS 仍待做。
+- 无 MCP/OpenClaw 集成（目标未实现）；Function Calling（装手）+ agent 执行框架、持久记忆（JSON 长期记忆 + 轻量向量检索）已实现，见 `src/tools/`、`src/brain/llm.py`、`src/memory/`。
 - `Qwen3.6-35B` 大模型（`qwen/qwen3.6-35b-a3b`）**现已接入为默认大脑**（经 LM Studio 按标识符加载）；本地不再内置 GGUF 备份，运行完全依赖 LM Studio 加载的模型。
 - `requirements.txt` 已装 `fastapi`/`uvicorn`/`websockets` 等 web 栈，但 `src/` 下无对应 server 代码——属依赖传递或预留骨架，勿误读为「已有 API 服务」。
-- 当前项目树**没有自动化测试**。
+- 当前项目树**已有自动化测试**：`tests/unit/test_tools.py`（Function Calling 工具层单测）、`tests/test_omni_m2.py`（M2 升级路由单测）、`tests/test_*.py` 系列（记忆 / 语音 / GUI 运行期等），可用 `pytest` 运行（见 `pytest.ini`）。
