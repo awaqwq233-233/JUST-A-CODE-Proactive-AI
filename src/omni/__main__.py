@@ -16,6 +16,7 @@
   python -m src.omni --no-play             # 不播放 omni 语音（避免回授啸叫）
   python -m src.omni --preview             # 额外开 OpenCV 窗口看摄像头
   python -m src.omni --list-mics           # 列出所有麦克风输入设备 index 后退出
+  python -m src.omni --no-voicebox         # 禁用本地 Voicebox 克隆 TTS（退回 omni/系统 TTS）
   python -m src.omni --mic 1               # 强制绑定 index=1 的麦克风（规避 AirPods 切麦）
   python -m src.omni --mic 2 --mic-gain 8  # 绑定内建麦并放大 8 倍能量（内建麦离嘴远触发不了 VAD 时用）
   python -m src.omni --url ws://... --model-dir /path
@@ -34,6 +35,7 @@ if _PROJECT_ROOT not in sys.path:
 from src.omni.client import OmniClient, OmniCallbacks  # noqa: E402
 from src.omni.server_launcher import OmniServerLauncher  # noqa: E402
 from src.omni.prompts import SYSTEM_PROMPT  # noqa: E402
+from src.audio.voicebox_tts import VoiceboxSpeaker  # noqa: E402
 
 
 class _ConsoleCallbacks(OmniCallbacks):
@@ -101,9 +103,9 @@ class _ConsoleCallbacks(OmniCallbacks):
                 print()  # 结束流式输出换行
                 if self._client is not None and self._client.is_running():
                     if result:
-                        self._client.speak_result_via_turnbased(f"（升级结果）{result}")
+                        self._client.speak_result(f"（升级结果）{result}")
                     else:
-                        self._client.speak_result_via_turnbased(
+                        self._client.speak_result(
                             "抱歉 boss，升级通道暂时拿不到结果，我稍后再试。"
                         )
                 else:
@@ -112,7 +114,7 @@ class _ConsoleCallbacks(OmniCallbacks):
                 print(f"\n[omni] 升级异常: {e}")
                 if self._client is not None and self._client.is_running():
                     try:
-                        self._client.speak_result_via_turnbased("抱歉 boss，升级处理出错了。")
+                        self._client.speak_result("抱歉 boss，升级处理出错了。")
                     except Exception:  # noqa: BLE001
                         pass
             finally:
@@ -176,6 +178,8 @@ def main():
                     help="麦克风采集增益倍数（默认 1.0）。内建麦离嘴远能量不足触发不了服务端 "
                          "VAD 时，适当放大（如 6~10）抬到可触发水平")
     ap.add_argument("--list-mics", action="store_true", help="列出所有麦克风输入设备并退出")
+    ap.add_argument("--no-voicebox", action="store_true",
+                    help="禁用本地 Voicebox 克隆 TTS（主对话/回灌退回 omni 自带或系统 TTS）")
     args = ap.parse_args()
 
     # 列出麦克风设备后直接退出（便于定位内建麦 index）
@@ -193,7 +197,10 @@ def main():
             print("[演示] 服务启动失败，退出。")
             return 1
 
-    # 2) 启动客户端：先建 client 再把引用注入回调（令牌触发时回调需回灌播报）
+    # 2) 本地 Voicebox 克隆 TTS（M7b/M7a 复用）：默认启用，--no-voicebox 关闭
+    voicebox_speaker = None if args.no_voicebox else VoiceboxSpeaker()
+
+    # 3) 启动客户端：先建 client 再把引用注入回调（令牌触发时回调需回灌播报）
     client = OmniClient(
         url=args.url,
         ref_audio_path=args.ref,
@@ -201,6 +208,7 @@ def main():
         enable_playback=not args.no_play,
         mic_index=args.mic,
         mic_gain=args.mic_gain,
+        voicebox_speaker=voicebox_speaker,
     )
     cb = _ConsoleCallbacks(client)
     # client 内部读的是 self.cb（__init__: self.cb = callbacks or OmniCallbacks()）；

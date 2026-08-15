@@ -31,6 +31,7 @@ from src.utils.net import setup_insecure_ssl
 from src.omni import OmniClient, OmniServerLauncher, SYSTEM_PROMPT
 from src.omni.client import OmniCallbacks
 from src.omni.router import EscalationRouter
+from src.audio.voicebox_tts import VoiceboxSpeaker
 
 
 logger = logging.getLogger("runtime")
@@ -129,8 +130,9 @@ class JACRuntime:
         # 仅在环境变量 JAC_HF_INSECURE=1 时关闭证书校验（应对代理自签证书环境）
         setup_insecure_ssl()
 
-        # 0) OMNI 全双工模式：直接接管，跳过传统 Voicebox TTS / Whisper STT / MiniCPM-v 判断引擎；
+        # 0) OMNI 全双工模式：直接接管，跳过传统语音闭环（Whisper STT / MiniCPM-v 判断引擎）；
         #    omni 自己完成「看 + 听 + 说」，qwen+tools 仅作为升级后端（M2 接入）。
+        #    M7b/M7a 起主对话与回灌改用本地 Voicebox 克隆声纹（替代 omni 自带无克隆 TTS）。
         if config.omni_enabled:
             self._start_omni(config)
             return
@@ -239,7 +241,12 @@ class JACRuntime:
                 self._notify(False)
                 return
 
-        # 2) 建立全双工客户端
+        # 2) 本地 Voicebox 克隆 TTS（M7b/M7a 复用）：OMNI 模式下 self.speaker 未走传统
+        #    build_speaker（line 134 直接 return），故在此单独创建给 omni 主对话/回灌用
+        voicebox_speaker = VoiceboxSpeaker()
+        self.speaker = voicebox_speaker  # 统一 self.speaker 语义（OMNI 下即 Voicebox 克隆 TTS）
+
+        # 3) 建立全双工客户端
         cb = _OmniRuntimeCallbacks(self)
         self.omni_client = OmniClient(
             url=config.omni_server_url,
@@ -253,6 +260,7 @@ class JACRuntime:
             video_fps=config.omni_fps,
             camera_width=config.camera_width,
             camera_height=config.camera_height,
+            voicebox_speaker=voicebox_speaker,
         )
         print("[OMNI] 正在连接 omni 并初始化全双工会话…")
         if not self.omni_client.start(timeout=180):
@@ -276,8 +284,9 @@ class JACRuntime:
         必须放到后台线程：qwen+tools（LocalBrain.run_agentic）是同步阻塞的 HTTP 请求，
         绝不能在 omni 的 WebSocket 接收循环线程里跑，否则会阻塞主会话收发。
 
-        流程：懒创建 EscalationRouter → 跑 qwen+tools 拿结果 → 经 omni 临时
-        turn_based 会话回灌播报（JAC 克隆声纹）→ 标记升级完成解除主会话静音。
+        流程：懒创建 EscalationRouter → 跑 qwen+tools 拿结果 → 经本地 Voicebox
+        （JAC 克隆声纹）回灌播报 → 标记升级完成解除主会话静音。
+        （注：原 omni 临时 turn_based 回灌因 server 单会话被拒，M7a 起改用本地 Voicebox）
         """
         def _worker():
             try:
@@ -290,9 +299,9 @@ class JACRuntime:
                 print()  # 换行，结束流式输出
                 if self.omni_client is not None and self.omni_client.is_running():
                     if result:
-                        self.omni_client.speak_result_via_turnbased(f"（升级结果）{result}")
+                        self.omni_client.speak_result(f"（升级结果）{result}")
                     else:
-                        self.omni_client.speak_result_via_turnbased(
+                        self.omni_client.speak_result(
                             "抱歉 boss，升级通道暂时拿不到结果，我稍后再试。"
                         )
                 else:
@@ -301,7 +310,7 @@ class JACRuntime:
                 print(f"[OMNI升级] 异常: {e}")
                 if self.omni_client is not None and self.omni_client.is_running():
                     try:
-                        self.omni_client.speak_result_via_turnbased("抱歉 boss，升级处理出错了。")
+                        self.omni_client.speak_result("抱歉 boss，升级处理出错了。")
                     except Exception:  # noqa: BLE001
                         pass
             finally:

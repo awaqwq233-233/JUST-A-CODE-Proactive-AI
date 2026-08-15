@@ -35,6 +35,7 @@ import soxr
 import websockets
 
 from src.capture.camera import Camera
+from .voicebox_bridge import VoiceboxBridge
 
 # 全双工音频目标采样率（omni 要求 16kHz float32 单声道）
 TARGET_SR = 16000
@@ -149,7 +150,7 @@ class OmniClient:
                  mic_gain: float = 1.0,
                  push_interval: float = 0.4, video_fps: int = 5,
                  camera_width: int = 1280, camera_height: int = 720,
-                 video_quality: int = 80):
+                 video_quality: int = 80, voicebox_speaker=None):
         """初始化客户端。
 
         Args:
@@ -186,6 +187,15 @@ class OmniClient:
         self.camera_width = camera_width
         self.camera_height = camera_height
         self.video_quality = video_quality
+
+        # ---- M7b/M7a：本地 Voicebox 克隆 TTS 复用（None=走 omni 自带 audio）----
+        self._voicebox_speaker = voicebox_speaker
+        # 句子级流式桥接仅当启用播放且传入 speaker 时启用；--no-play 下主对话静音
+        # （回灌仍用 voicebox_speaker，不受 --no-play 影响）
+        self._voicebox_bridge = (
+            VoiceboxBridge(voicebox_speaker) if (voicebox_speaker and self.enable_playback)
+            else None
+        )
 
         # 异步运行环境：单个事件循环跑在后台线程，所有 ws 收发都在该循环内串行化
         self._loop = None
@@ -293,6 +303,12 @@ class OmniClient:
             except Exception:
                 pass
             self.player = None
+        # 释放 M7b 句子级桥接播放线程
+        if self._voicebox_bridge is not None:
+            try:
+                self._voicebox_bridge.stop()
+            except Exception:  # noqa: BLE001
+                pass
         # 释放自建摄像头
         if self._owns_camera and self.camera is not None:
             try:
@@ -570,9 +586,12 @@ class OmniClient:
                         if txt:
                             self._on_text(txt)
                     elif kind == "audio":
-                        ab = e.get("audio") or ""
-                        if ab:
-                            self._emit_audio(base64.b64decode(ab))
+                        # M7b：主对话走 Voicebox 句子级桥接时，丢弃 omni 自带 audio
+                        # （omni 自带 TTS 无克隆、音质差）；仅当未启用桥接时才播 omni audio
+                        if self._voicebox_bridge is None:
+                            ab = e.get("audio") or ""
+                            if ab:
+                                self._emit_audio(base64.b64decode(ab))
                     elif kind == "listen":
                         self._listen_ev.set()  # 标记 omni 已真正进入聆听（模型就绪）
                         self.cb.on_listen()
@@ -584,13 +603,20 @@ class OmniClient:
                     txt = e.get("text", "")
                     if txt:
                         self.cb.on_text_final(txt)
+                    # M7b：会话正常结束（未触发升级）时 flush 尾句，让主对话残留文本播完；
+                    # 已触发升级则主对话已转回灌，不再播主对话尾巴（避免重叠）
+                    if self._voicebox_bridge is not None and not self._call_qwen_fired:
+                        self._voicebox_bridge.flush_remaining()
                     da = e.get("audio")
-                    if da:
+                    if da and self._voicebox_bridge is None:
                         try:
                             self._emit_audio(base64.b64decode(da))
                         except Exception:
                             pass
                 elif et == "session.closed":
+                    # M7b：连接关闭时 flush 尾句（未升级时）
+                    if self._voicebox_bridge is not None and not self._call_qwen_fired:
+                        self._voicebox_bridge.flush_remaining()
                     self.cb.on_state("closed", e.get("reason"))
                     break
         except Exception:  # noqa: BLE001
@@ -615,6 +641,10 @@ class OmniClient:
         omni 语音（避免把令牌行 / omni 的延续回答播给 boss），并回调 on_call_qwen。
         """
         self.cb.on_text_delta(txt)
+        # M7b：主对话文本增量喂给 Voicebox 句子级桥接（令牌触发前才会播；
+        # 触发后 _on_text 直接 return 不再喂，避免把令牌行文本播出去）
+        if self._voicebox_bridge is not None:
+            self._voicebox_bridge.feed(txt)
         if self._call_qwen_fired:
             return
         self._text_buf += txt
@@ -655,6 +685,9 @@ class OmniClient:
             self._pending_timer = None
         with self._audio_lock:
             self._suppress_audio = True   # 升级期间静音主会话，避免与回灌重叠/回声
+        # M7b：升级触发时 flush 主对话攒句缓冲并清空未播队列，避免与回灌（Voicebox）重叠
+        if self._voicebox_bridge is not None:
+            self._voicebox_bridge.flush_and_stop()
         self.cb.on_call_qwen(task)
 
     def _finalize_pending(self):
@@ -678,18 +711,25 @@ class OmniClient:
         """返回克隆声纹 base64（供回灌通道复用）。"""
         return self._ref_audio_b64
 
-    def speak_result_via_turnbased(self, text: str):
-        """回灌：用 omni 的克隆声纹（临时 turn_based 会话）播报 qwen+tools 的结果。
+    def speak_result(self, text: str):
+        """M7a 回灌：用本地 Voicebox（JAC 克隆声纹）播报 qwen+tools 的结果文本。
 
-        不阻塞调用方太久：内部开独立线程 join 等待播报结束；调用方应在调用本方法
-        之后（或本方法返回后）调用 mark_escalation_done() 解除主会话静音。
+        替代原 omni 临时 turn_based 会话（llama.cpp-omni server 单会话——主 full_duplex
+        占槽后第二个会话被拒，server 日志 `session.init rejected — active session exists`
+        → ConnectionClosedOK 无声音）。Voicebox 是独立进程，不受 omni 会话限制，且
+        自带 JAC 克隆声纹（音质远好于 omni 自带 TTS）。
+
+        不阻塞调用方：speak 内部同步合成 + 播放，调用方已在独立 daemon 线程里。
+        调用方应在本方法返回后调用 mark_escalation_done() 解除主会话静音。
         """
-        ref = self._ref_audio_b64
-        if not ref:
+        spk = self._voicebox_speaker
+        if spk is None:
+            # 未接入 Voicebox：降级为仅文本输出（不阻塞、不影响升级闭环）
+            print(f"[J.A.C.(回灌)] {text}")
             return
-        # 延迟导入，避免回灌模块在仅需基础客户端时被加载
-        from .backfeed import speak_text_via_omni
-        speak_text_via_omni(self.url, ref, text)
+        # 延迟导入回灌模块（M7a 改为本地 Voicebox 克隆合成，不再开 omni 第二会话）
+        from .backfeed import speak_text_via_voicebox
+        speak_text_via_voicebox(spk, text)
 
 
 def _ensure_no_proxy():

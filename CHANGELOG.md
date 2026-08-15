@@ -4,6 +4,16 @@
 
 ---
 
+## 2026-08-15 — M7b/M7a：主对话 + 回灌改用本地 Voicebox 克隆声纹
+
+- **背景**：omni 全双工自带 TTS 无 JAC 克隆声纹、音质差（"响一下就结束"）；且回灌原走 omni 第二个 turn_based 会话，但 llama.cpp-omni server **单会话**——主 full_duplex 占槽后第二个会话被拒（server 日志 `session.init rejected — active session exists` → client 收到 `ConnectionClosedOK` 无声音）。bo s s 拍板 M7b（主对话句子级流式桥接 Voicebox）+ 一并做 M7a（回灌改用 Voicebox，因原路径必死）。
+- **M7b 主对话**：新建 `src/omni/voicebox_bridge.py`——按标点/句子边界把 omni 的 text delta 攒成句，攒够一句（遇 。？！；\n 或超 40 字/2s 超时）就送本地 Voicebox 合成该句并播放，下一句继续攒；保留「说一句听一句」近似实时感 + JAC 克隆声纹。独立 daemon 播放线程串行保序，绝不阻塞 omni 接收协程。`src/omni/client.py`：`__init__` 加 `voicebox_speaker` 参数并创建 `VoiceboxBridge`（仅当启用播放且传入 speaker）；`_receiver_loop` 的 `kind=audio` 在桥接启用时**丢弃 omni 自带 audio**；`_on_text` 在令牌触发前把文本喂给桥接攒句；`_fire_call_qwen` 时 `flush_and_stop`（flush 残留 + 清空未播队列，防与回灌重叠）；`response.done`/`session.closed` 正常结束 `flush_remaining` 尾句；`stop` 释放桥接。
+- **M7a 回灌**：`speak_result` 改用本地 Voicebox 合成播报（替代 omni 第二会话）；`src/omni/backfeed.py` 重写为薄封装 `speak_text_via_voicebox(speaker, text)`（不再开 omni WS）；Voicebox 不可用自动降级系统 TTS / 仅文本，不崩。
+- **接线**：`src/omni/__main__.py` 加 `--no-voicebox`（默认开）并构造 `VoiceboxSpeaker` 传入 client；`src/runtime.py` 的 `_start_omni` 单独创建 `VoiceboxSpeaker`（OMNI 模式 line 134 直接 return 跳过传统 `build_speaker`，故 self.speaker 原为 None，现统一赋 Voicebox 实例）传给 OmniClient。`speak_result_via_turnbased` 全部改名为 `speak_result`（__main__/runtime 共 6 处调用）。
+- **验证**：`py_compile` 通过；`tests/test_omni_m2.py` 3 passed 无回归；`VoiceboxBridge` 攒句切句内联验证通过（三句按标点切分 + 尾句 flush）。待 bo s s 真机验收：开 Voicebox App（17493），跑 `python -m src.omni --mic 2`（去 --no-play 戴耳机），闲聊应听到 JAC 克隆声纹逐句播；问"查电池"→升级→回灌也应为 JAC 克隆声纹（ConnectionClosedOK 消失）。
+
+---
+
 ## 2026-08-15 — M5 真机验收收尾（主链路通过 + 戴耳机切麦根因 + 待办步骤）
 
 - **M5 主链路真机验收通过（中午）**：修复 CLI 回调属性名 bug（`client.callbacks`→`client.cb`，`src/omni/__main__.py`）后，bo s s 手动重跑确认全链路通：状态 connecting→ready→`🎧 聆听中…`→文本输出→omni 主动打招呼「你好，有什么需要帮忙的吗」；纯闲聊（"你好"）**不吐 `<<CALL_QWEN>>` 令牌**（系统提示词硬化生效）。已移除调试探针（`[omni-dbg]` 与 `_dbg_rx`），控制台恢复干净。
