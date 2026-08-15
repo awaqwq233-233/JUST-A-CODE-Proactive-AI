@@ -153,7 +153,7 @@ python main.py
 
 ### 当前状态与路线图
 
-已实现：多后端大脑、主动判断引擎、多模态问答、SLEEP/AWAKE 状态机、控制台输入、持久记忆、**Function Calling 工具层（打开应用/网页、只读本地文件搜索、系统状态查询、受限 shell，GUI 右侧面板可开关）**。
+已实现：多后端大脑、主动判断引擎、多模态问答、SLEEP/AWAKE 状态机、控制台输入、持久记忆、全双工 **omni 接管模式**（MiniCPM-o 本地多模态 + `<<CALL_QWEN>>` 升级路由到 qwen3.6-35b+工具 + Voicebox 克隆声纹回灌，GUI 右侧面板可开关、与 judge/TTS/tools 互斥）、**Function Calling 工具层（打开应用/网页、只读本地文件搜索、系统状态查询、受限 shell，GUI 右侧面板可开关）**。
 尚未实现：工具循环之外的 agent 框架、MCP/OpenClaw 集成、实时联网工具（天气/日程）、token 级流式 TTS（omni 全双工已落地 LLM 流式输出 + M7b 句子级 Voicebox 桥接近似实时，但非 token 级）。差距笔记见 `codingLOG.md`（了解最新改动请读 `CHANGELOG.md` 与 `codingLOG.md`）。
 
 ### 文档导航

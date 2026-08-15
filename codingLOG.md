@@ -49,6 +49,12 @@
 - **ASR 电量→天气**：MiniCPM-o 模型识别质量限制，非代码 bug，仅做可观测性缓解（增益框 + 实时回复区）。用户原话显示需并行本地 Whisper，列为后续可选增强。
 - **验证**：`py_compile` 通过；`tests/test_omni_m3_token.py` 通过（令牌不朗读 + 多轮可触发）。GUI 实跑待 bo s s 验收。
 
+### 修复记录（2026-08-15 晚）：GUI 启动 OMNI 崩溃（import os 缺失）
+
+- **现象**：GUI 勾选 OMNI 点「启动」报 `name 'os' is not defined`，启动失败。
+- **根因**：`src/runtime.py` 的 OMNI 启动分支 `_start_omni`（解析 `omni_ref_audio` 绝对路径用 `os.path`）缺顶部 `import os`；历史遗留，此前未勾选 OMNI 走不到该分支故未暴露。
+- **修复**：`src/runtime.py` 顶部补 `import os`；排查确认 omni 链路其余用到 `os` 的 `client.py`/`server_launcher.py`/`__main__.py` 均已导入；`gui.py` 启动失败捕获改打印完整 traceback（便于定位根因）。`py_compile` 通过。
+
 ---
 
 ## 修复记录（2026-08-04）：J.A.C.Prototype 运行日志问题排查
