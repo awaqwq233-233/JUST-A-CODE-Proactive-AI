@@ -55,6 +55,28 @@
 - **根因**：`src/runtime.py` 的 OMNI 启动分支 `_start_omni`（解析 `omni_ref_audio` 绝对路径用 `os.path`）缺顶部 `import os`；历史遗留，此前未勾选 OMNI 走不到该分支故未暴露。
 - **修复**：`src/runtime.py` 顶部补 `import os`；排查确认 omni 链路其余用到 `os` 的 `client.py`/`server_launcher.py`/`__main__.py` 均已导入；`gui.py` 启动失败捕获改打印完整 traceback（便于定位根因）。`py_compile` 通过。
 
+### 修复记录（2026-08-16）：OMNI 全双工「只听不说」根因修复（listen_prob_scale 传参）
+
+- **现象**：GUI 启动 OMNI 全双工后对着麦说话，模型全程 `listen=1` / `is_end_of_turn=0` / `llm_text.len=0`，完全不回复。
+- **根因（完整调查链已证伪能量/设备/客户端假设）**：服务端 MiniCPM-o 在 full_duplex 下天然偏好采样 `<|listen|>`；客户端 `session.init` 未传 `listen_prob_scale` → 服务端用默认 `1.0`（偏置 0，公式 `listen_bias=(scale-1.0)*2.0`）→ `is_end_of_turn` 永不翻转、只听不说。与音频能量/增益/设备/客户端采集无关（mic_check.py + 增益复测已证伪）。
+- **修复（纯客户端，不改 C++、不重编译）**：`session.init` 顶层补 `"config": {"listen_prob_scale": 0.5}`（偏置 -1.0，压低 listen 逼回复）。
+  - `src/utils/config.py`：新增 `omni_listen_prob_scale: float = 0.5`（环境变量 `OMNI_LISTEN_PROB_SCALE`）。
+  - `src/omni/client.py`：`OmniClient` 加 `listen_prob_scale` 参数 → `session.init` 顶层 `config`；`_push_loop` 加 B2 逐块推流诊断日志（仅日志）。
+  - `src/runtime.py`：`_start_omni` 透传 `listen_prob_scale`。
+  - `gui.py`：新增「Listen 概率系数」调试框（0.1~1.0，默认 0.5）；**默认勾选 OMNI 全双工、取消勾选判断模型**（仅改 GUI 呈现，不动全局默认）。
+- **取值**：默认 0.5 基准；仍不回降到 0.3/0.2；抢答升到 0.6~0.8；增益务必调回 1.0（×10 削波有害）。
+- **状态**：代码已落地，`py_compile` 通过；真机复测待 bo s s 执行（看 `listen`→`is_end_of_turn` 翻转 + 对麦说话出回话）。
+
+### 修复记录（2026-08-16 续）：升级令牌静音期幻觉护栏 + 推流日志降噪
+
+- **现象（bo s s 真机复现）**：纯静音段（RMS 0.003~0.005，用户尚未开口）omni 自行幻觉出 `<<CALL_QWEN>>查一下这台台电脑的电池电量百分比` 并**自动执行**升级；因 `_call_qwen_fired=True` 把后续主对话音频全静音，用户随后真实说的"你好能听到我说话吗"也无语音回复。另：B2 推流诊断日志每 0.4s 一行（静音段也打印）严重刷屏。
+- **根因**：非 ASR 误识别（不是电量→天气），是 omni 在**静音期凭空生成升级令牌任务并自触发**；且一旦触发即静音主对话，连带吞掉用户随后真实发言的回复。
+- **修复（`src/omni/client.py`，纯客户端）**：
+  - **升级令牌护栏 `_has_recent_speech()`**：令牌命中时先查「令牌前 `_speech_window=3.0s` 内是否检测到真实人声（RMS≥`_speech_rms_th=0.02`）」。静音期（含从未检测到人声的开局）判定为幻觉 → 仅丢弃任务、停止朗读幻觉内容、**不触发升级、不静音**，用户真实发言仍可正常回复。
+  - **`_push_loop` 推流日志降噪**：仅检测到人声时打印一行（🎙+RMS/峰值/块大小），静音段只首块 + 每 10 块（≈4s）汇总一行，消除刷屏。
+- **取值**：若真机出现"人声停顿 >3s 后指令被误拦"→ 调大 `_speech_window`；若仍幻觉 → 调高 `_speech_rms_th`。
+- **状态**：代码已落地，`py_compile` 通过；真机复测待 bo s s 执行。
+
 ---
 
 ## 修复记录（2026-08-04）：J.A.C.Prototype 运行日志问题排查

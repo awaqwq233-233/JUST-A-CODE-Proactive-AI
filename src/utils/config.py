@@ -45,6 +45,7 @@ class Config:
     omni_ref_audio: str = "voices/silverwalf_voice.wav"   # 声纹克隆参考音（JAC 原音色）
     omni_fps: int = 5                                     # 视频上行帧率
     omni_mic_gain: float = 1.0                           # 麦克风采集增益（OMNI 全双工，内建麦离嘴远时调高）
+    omni_listen_prob_scale: float = 0.5                  # 全双工采样参数：<1 压低 <|listen|> 概率逼模型回复，>1 增 listen
     omni_duplex: bool = True                             # 全双工（边听边说）；False=半双工
     omni_auto_launch: bool = True                        # 未运行则自动起服务
 
@@ -115,6 +116,7 @@ class Config:
             omni_ref_audio=os.environ.get("OMNI_REF_AUDIO", "voices/silverwalf_voice.wav"),
             omni_fps=int(os.environ.get("OMNI_FPS", "5")),
             omni_mic_gain=float(os.environ.get("OMNI_MIC_GAIN", "1.0")),
+            omni_listen_prob_scale=float(os.environ.get("OMNI_LISTEN_PROB_SCALE", "0.5")),
             omni_duplex=truthy("OMNI_DUPLEX", True),
             omni_auto_launch=truthy("OMNI_AUTO_LAUNCH", True),
         )

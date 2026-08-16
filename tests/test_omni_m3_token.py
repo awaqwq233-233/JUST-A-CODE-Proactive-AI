@@ -6,6 +6,7 @@
 """
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -56,7 +57,24 @@ def _make_client():
     client._pending_task = None
     client._pending_timer = None
     client._escalation_done = False
+    # 模拟「令牌前用户真实发言」：刷新最近人声时间，使升级护栏放行（真实链路下
+    # 令牌总在用户说话后产生；此处代表合法升级场景，区别于静音期幻觉）。
+    client._last_speech_ts = time.monotonic()
     return client, rec
+
+
+def test_silence_hallucination_guard():
+    """静音期（令牌前无真实人声）的升级令牌应被护栏拦截，不触发升级、不静音。"""
+    client, rec = _make_client()
+    # 撤销 _make_client 预设的人声，模拟纯静音期
+    client._last_speech_ts = 0.0
+    client._on_text("<<CALL_QWEN>>查一下这台台电脑的电池电量百分比\n")
+    assert client._call_qwen_fired is False, "静音期幻觉不应触发升级"
+    client._audio_lock.acquire()
+    suppressed = client._suppress_audio
+    client._audio_lock.release()
+    assert suppressed is False, "静音期幻觉不应静音主对话（否则会吞掉用户随后真实发言）"
+    print("PASS: 升级令牌静音期幻觉护栏生效（拦截且不静音）")
 
 
 def test_token_text_not_spoken():
@@ -91,4 +109,5 @@ def test_multi_turn_escalation():
 if __name__ == "__main__":
     test_token_text_not_spoken()
     test_multi_turn_escalation()
+    test_silence_hallucination_guard()
     print("\n全部通过 ✅")

@@ -260,6 +260,7 @@ class JACRuntime:
             push_interval=0.4,
             video_fps=config.omni_fps,
             mic_gain=config.omni_mic_gain,
+            listen_prob_scale=config.omni_listen_prob_scale,  # 压低 listen 偏好，修复全双工只听不说
             camera_width=config.camera_width,
             camera_height=config.camera_height,
             voicebox_speaker=voicebox_speaker,

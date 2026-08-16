@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-08-16（续）— OMNI 升级令牌静音期幻觉护栏 + 推流日志降噪
+
+- **背景**：bo s s 真机复现——纯静音段（RMS 0.003~0.005，用户尚未开口）omni 自行幻觉出 `<<CALL_QWEN>>查一下这台台电脑的电池电量百分比` 并**自动执行**升级；因 `_call_qwen_fired=True` 把后续主对话音频全静音，用户随后真实说的"你好能听到我说话吗"也无语音回复。另：B2 推流诊断日志每 0.4s 一行（静音段也打印）严重刷屏。
+- **修复（纯客户端，`src/omni/client.py`）**：
+  - **升级令牌护栏 `_has_recent_speech()`**：令牌命中时先查「令牌前 `_speech_window=3.0s` 内是否检测到真实人声（RMS≥`_speech_rms_th=0.02`，mic_check 实测说话段 0.08+）」。静音期（含从未检测到人声的开局）判定为幻觉 → 仅丢弃该任务、停止朗读幻觉内容、**不触发升级、不静音**，用户真实发言仍可正常回复。真实人声后窗口内的令牌仍正常升级。
+  - **`_push_loop` 记录 `_last_speech_ts`**：每帧 RMS≥阈值即刷新；同时**推流日志降噪**——仅当检测到人声时打印一行（🎙 + RMS/峰值/块大小），静音段只首块 + 每 10 块（≈4s）汇总一行，消除刷屏。
+- **取值说明**：`_speech_window`/`_speech_rms_th` 为类内常量，若真机出现「人声停顿 >3s 后说的指令被误拦」可调大 window；若仍幻觉可调高 rms 阈值。
+- **附带修复 `_on_text` pending 跨 delta 延迟**：令牌命中但任务描述跨多个 delta 到达（无即时换行）时，原逻辑只在 1.5s 兜底定时器触发，导致任务结算延迟；改为在 pending 累积期间本段一旦出现换行即立即结算触发，降低升级延迟（同步测试 `test_client_streaming_token` 因此通过）。
+- **验证**：`py_compile` 通过；`tests/test_omni_m2.py` + `tests/test_omni_m3_token.py` 全过（含新增 `test_silence_hallucination_guard`）；真机复测待 bo s s 执行（静音期不应再出现 `[OMNI升级]` 自动任务，对麦说话仍正常出回话；控制台不再刷推流行）。
+
+---
+
+## 2026-08-16 — OMNI 全双工「只听不说」根因修复（listen_prob_scale 传参）
+
+- **背景**：GUI 启动 OMNI 全双工后，对着麦说话模型全程 `listen=1` / `is_end_of_turn=0` / `llm_text.len=0`，完全不回复。完整调查链（mic_check.py 排除设备/权限/人声质量、增益 8/10 复测排除能量不足）证明根因在**采样参数**：服务端 MiniCPM-o 在 full_duplex 下天然偏好采样 `<|listen|>`，客户端未传 `listen_prob_scale` → 服务端用默认 `1.0`（偏置 0）→ `is_end_of_turn` 永不翻转 → 只听不说。与音频能量/增益/设备/客户端采集无关。
+- **修复（纯客户端，不改 C++、不重编译）**：在 `session.init` 顶层补 `config.listen_prob_scale`（默认 0.5，偏置 -1.0，压低 listen 逼模型回复）。
+  - `src/utils/config.py`：Config dataclass 新增 `omni_listen_prob_scale: float = 0.5`，`load()` 支持环境变量 `OMNI_LISTEN_PROB_SCALE`。
+  - `src/omni/client.py`：`OmniClient.__init__` 新增 `listen_prob_scale` 参数并透传到 `self`；`session.init` 的 `init_msg` 顶层新增 `"config": {"listen_prob_scale": ...}`；`_push_loop` 新增 B2 逐块推流诊断日志（块序号/间隔/RMS/峰值，仅日志）。
+  - `src/runtime.py`：`_start_omni` 的 `OmniClient(...)` 透传 `listen_prob_scale=config.omni_listen_prob_scale`。
+  - `gui.py`：右侧选项面板新增「Listen 概率系数 (OMNI)」`QDoubleSpinBox`（0.1~1.0，步长 0.05，默认 0.5）并接入 `_collect_config`；**默认勾选 OMNI 全双工、取消勾选「前置判断模型」**（bo s s 偏好，仅改 GUI 呈现，不改 `config.py` 全局默认，不影响 CLI/传统模式）。
+- **取值指引**：默认 0.5 基准；仍只听不说降到 0.3/0.2；抢答升到 0.6~0.8；**增益务必调回 1.0**（×10 削波有害）。
+- **验证**：`py_compile` 通过；真机复测待 bo s s 执行（`tail -f temp/omni_server.log` 看 `listen`→`is_end_of_turn` 翻转 + 对麦说话出 Voicebox 回话）。
+
+---
+
 ## 2026-08-15（hotfix）— GUI 启动失败 `name 'os' is not defined`
 
 - **根因**：`src/runtime.py` 的 OMNI 启动分支 `_start_omni` 用了 `os.path`（解析 `omni_ref_audio` 绝对路径），但文件顶部**缺少 `import os`**。历史遗留、此前未勾选 OMNI 走不到该分支故未暴露；本次 OMNI GUI 开关可用后一勾即炸。

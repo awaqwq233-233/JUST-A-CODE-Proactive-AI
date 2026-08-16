@@ -148,6 +148,7 @@ class OmniClient:
                  enable_camera: bool = True, enable_playback: bool = True,
                  mic_index: int = None,
                  mic_gain: float = 1.0,
+                 listen_prob_scale: float = 1.0,
                  push_interval: float = 0.4, video_fps: int = 5,
                  camera_width: int = 1280, camera_height: int = 720,
                  video_quality: int = 80, voicebox_speaker=None):
@@ -166,6 +167,9 @@ class OmniClient:
             mic_gain: 麦克风采集增益倍数（默认 1.0 = 不变）。内建麦在屏幕顶部、离嘴远，
                 送上去的音频能量低于服务端 VAD 触发阈值时会「只听不说」，适当放大（如 6~10）
                 可抬到可触发水平；增益会限幅到 [-1,1] 防削波失真。
+            listen_prob_scale: 全双工采样参数，<1 压低 <|listen|> 采样概率逼模型回话，
+                >1 增 listen。服务端默认 1.0（偏置 0）会让模型恒 listen 导致「只听不说」，
+                客户端显式传 0.5（偏置 -1.0）可修复。
             push_interval: 每多少秒把累积音频 + 最新视频帧推一次（≈实时节奏）。
             video_fps: 视频上行帧率（仅影响最新帧刷新频率，与 push 解耦）。
             camera_width/height: 自建摄像头分辨率。
@@ -182,6 +186,7 @@ class OmniClient:
         self.enable_playback = enable_playback
         self.mic_index = mic_index            # 强制绑定的麦克风 index（None=跟随系统默认输入）
         self.mic_gain = mic_gain             # 麦克风采集增益（1.0=不变，>1 放大能量触发服务端 VAD）
+        self.listen_prob_scale = listen_prob_scale  # 全双工采样：压低 listen 偏好，避免只听不说
         self.push_interval = push_interval
         self.video_fps = video_fps
         self.camera_width = camera_width
@@ -215,6 +220,12 @@ class OmniClient:
         # ---- M2 升级路由相关状态 ----
         # 文本累积缓冲（用于检测 <<CALL_QWEN>> 令牌，令牌可能跨多个 delta 分片到达）
         self._text_buf = ""
+        # 升级令牌护栏：记录「最近一次检测到真实人声」的墙钟时间（monotonic）。
+        # omni 会在静音期幻觉出 <<CALL_QWEN>> 任务并自触发（真机已复现：静音段 RMS 0.003
+        # 却凭空生成"查电池电量"任务），令牌出现前若无真实人声则判定为幻觉、拒绝升级。
+        self._last_speech_ts = 0.0           # 最近一次 RMS≥阈值的人声时刻（0=尚无）
+        self._speech_window = 3.0            # 令牌前多少秒内有人声才算"真实触发"（秒）
+        self._speech_rms_th = 0.02           # 判定人声的 RMS 阈值（mic_check 实测说话段 0.08+）
         self._call_qwen_fired = False        # 本次会话是否已触发过升级（幂等 + 停止朗读）
         self._token_seen = False             # 是否已发现令牌但尚未 fire（pending 累积中，停止朗读）
         self._pending_task = None            # 令牌已命中但任务描述尚未完整时的临时累积
@@ -375,6 +386,11 @@ class OmniClient:
                         "use_tts": True,
                         "voice": {"ref_audio": ref_b64},
                         "system_prompt": self.system_prompt,
+                    },
+                    # 压低 <|listen|> 采样偏好，避免模型「只听不说」
+                    # （服务端默认 listen_prob_scale=1.0 偏置 0，会恒采样 listen 导致永不回复）
+                    "config": {
+                        "listen_prob_scale": self.listen_prob_scale,
                     },
                 }
                 await ws.send(json.dumps(init_msg))
@@ -551,6 +567,25 @@ class OmniClient:
                 rms = 0.0
             self.cb.on_mic_level(rms)
             self._last_mic_level = rms        # 缓存供 GUI 音量条轮询
+            # 检测到真实人声（RMS≥阈值）时刷新时间戳，供升级令牌护栏判定「令牌前是否有人声」
+            is_speech = rms >= self._speech_rms_th
+            if is_speech:
+                self._last_speech_ts = time.monotonic()
+            # 推流诊断日志（降噪）：仅在真正检测到人声时打印一行含 RMS/峰值/块大小，
+            # 静音段每 ~10 块（≈4s）汇总打印一次避免刷屏；仅日志、不改功能。
+            self._push_seq = getattr(self, "_push_seq", 0) + 1
+            if is_speech:
+                peak = float(np.max(np.abs(arr))) if audio and arr.size else 0.0
+                print(f"[omni-client] 🎙 推流#{self._push_seq} 检测到人声 RMS={rms:.3f} 峰值={peak:.3f} 块={len(audio)}B",
+                      flush=True)
+                self._silent_blocks = 0
+            else:
+                self._silent_blocks = getattr(self, "_silent_blocks", 0) + 1
+                if self._silent_blocks == 1:
+                    print(f"[omni-client] 推流#{self._push_seq} 静音（RMS={rms:.3f}）…", flush=True)
+                elif self._silent_blocks % 10 == 0:
+                    print(f"[omni-client] 推流#{self._push_seq} 持续静音（已 {self._silent_blocks} 块 ≈{self._silent_blocks*self.push_interval:.0f}s）",
+                          flush=True)
             if rms <= 1e-4:
                 silent_secs += self.push_interval
                 if silent_secs >= 5.0:
@@ -666,9 +701,14 @@ class OmniClient:
         # 升级已触发：主会话后续文本（含 omni 尾随回复）一律不再朗读
         if self._call_qwen_fired:
             return
-        # 令牌已发现但尚未 fire（pending 累积中）：只继续累积任务描述，不再朗读
+        # 令牌已发现但尚未 fire（pending 累积中）：继续累积任务描述，不再朗读；
+        # 若本段带来换行，立即结算并触发（避免等 1.5s 兜底定时器、降低延迟）。
         if self._token_seen:
             self._pending_task = (self._pending_task or "") + txt
+            if "\n" in txt:
+                task = self._pending_task.split("\n", 1)[0].strip()
+                if task:
+                    self._fire_call_qwen(task)
             return
 
         # 未触发：累积全文用于跨分片令牌检测
@@ -681,6 +721,16 @@ class OmniClient:
                 self._voicebox_bridge.feed(txt)
             return
 
+        # 命中令牌：先判幻觉——若令牌出现前「最近 window 秒内无真实人声」，
+        # 判定为 omni 在静音期幻觉生成的自触发任务（真机已复现：纯静音段 RMS≈0.003
+        # 却凭空生成"查电池电量"并自动执行，且因 _call_qwen_fired 静音导致用户随后
+        # 真实发言也无回复）。幻觉时不触发升级、不静音，仅丢弃该任务并停止朗读幻觉内容。
+        if not self._has_recent_speech():
+            self._token_seen = True  # 停止朗读幻觉内容，但不静音、不触发升级
+            snippet = self._text_buf[idx + len(token):idx + len(token) + 40].replace("\n", " ")
+            print(f"[omni-client] ⚠️ 升级令牌疑似静音期幻觉（令牌前无真实人声），已拦截丢弃：{snippet!r}",
+                  flush=True)
+            return
         # 命中令牌：标记已发现，停止后续朗读；仅把令牌之前的内容送桥接朗读
         self._token_seen = True
         pre = self._text_buf[:idx]
@@ -700,6 +750,17 @@ class OmniClient:
                 self._pending_timer = threading.Timer(1.5, self._finalize_pending)
                 self._pending_timer.daemon = True
                 self._pending_timer.start()
+
+    def _has_recent_speech(self) -> bool:
+        """升级令牌护栏：令牌出现前「最近 window 秒内是否检测到真实人声」。
+
+        返回 True 表示令牌大概率源于用户真实发言（可信触发），False 表示静音期
+        幻觉（应拦截）。判定依据：_push_loop 在每帧 RMS≥阈值时刷新 _last_speech_ts。
+        """
+        # 全程从未检测到人声（如开局模型自言自语）：必为幻觉
+        if self._last_speech_ts <= 0.0:
+            return False
+        return (time.monotonic() - self._last_speech_ts) <= self._speech_window
 
     def _fire_call_qwen(self, task: str):
         """触发升级：置位标志 + 静音主会话 + 回调（幂等，只触发一次）。"""

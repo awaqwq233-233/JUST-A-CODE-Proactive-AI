@@ -320,7 +320,7 @@ class MainWindow(QMainWindow):
         op.addWidget(self.collapse_btn)
 
         self.judge_chk = QCheckBox("前置判断模型（主动感知）")
-        self.judge_chk.setChecked(self.config.judgment_engine_enabled)
+        self.judge_chk.setChecked(False)  # bo s s 偏好：GUI 默认不勾选判断模型
         op.addWidget(self.judge_chk)
 
         self.tts_chk = QCheckBox("Qwen3-TTS 语音合成")
@@ -334,7 +334,7 @@ class MainWindow(QMainWindow):
 
         # MiniCPM-o-4_5 全双工开关：勾选后由 omni 直接接管 TTS + 判断引擎（OMNI 模式）
         self.omni_chk = QCheckBox("MiniCPM-o-4_5 全双工（接管 TTS + 判断）")
-        self.omni_chk.setChecked(self.config.omni_enabled)
+        self.omni_chk.setChecked(True)  # bo s s 偏好：GUI 默认进 OMNI 全双工
         op.addWidget(self.omni_chk)
         # OMNI 模式下传统 judge/TTS/tools 与 omni 架构互斥，勾选 OMNI 时灰掉它们并提示
         self.omni_chk.toggled.connect(self._on_omni_toggled)
@@ -348,6 +348,16 @@ class MainWindow(QMainWindow):
         self.mic_gain_spin.setValue(float(getattr(self.config, "omni_mic_gain", 1.0)))
         gain_row.addWidget(self.mic_gain_spin)
         op.addLayout(gain_row)
+
+        # Listen 采样系数（OMNI 全双工：<1 压低 listen 逼回复，>1 增 listen；默认 0.5）
+        lps_row = QHBoxLayout()
+        lps_row.addWidget(QLabel("Listen 概率系数 (OMNI)"))
+        self.listen_prob_scale_spin = QDoubleSpinBox()
+        self.listen_prob_scale_spin.setRange(0.1, 1.0)
+        self.listen_prob_scale_spin.setSingleStep(0.05)
+        self.listen_prob_scale_spin.setValue(float(getattr(self.config, "omni_listen_prob_scale", 0.5)))
+        lps_row.addWidget(self.listen_prob_scale_spin)
+        op.addLayout(lps_row)
 
         # ---- OMNI 实时诊断区（音量条 + 实时回复文字）----
         self.omni_live = QFrame()
@@ -650,6 +660,7 @@ class MainWindow(QMainWindow):
             omni_ref_audio=self.config.omni_ref_audio,
             omni_fps=self.config.omni_fps,
             omni_mic_gain=self.mic_gain_spin.value(),
+            omni_listen_prob_scale=self.listen_prob_scale_spin.value(),
             omni_duplex=self.config.omni_duplex,
             omni_auto_launch=self.config.omni_auto_launch,
             brain_backend=self.config.brain_backend,

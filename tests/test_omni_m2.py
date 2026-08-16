@@ -10,6 +10,7 @@
 """
 import sys
 import os
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -55,6 +56,8 @@ def test_client_streaming_token():
         callbacks=cb,
         enable_mic=False, enable_camera=False, enable_playback=False,
     )
+    # 模拟「令牌前用户真实发言」：刷新最近人声时间，使升级护栏放行（符合真实链路）
+    client._last_speech_ts = time.monotonic()
     # 模拟流式分片：令牌被拆成两段到达
     client._on_text("<<CALL")
     client._on_text("_QWEN>>帮")
