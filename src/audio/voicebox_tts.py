@@ -121,6 +121,13 @@ class VoiceboxSpeaker:
             return
 
         self.session = requests.Session()
+        # 绕过本机代理劫持 localhost：本机若开了 HTTP/SOCKS 代理，requests 默认会把
+        # 127.0.0.1 的请求也走代理，导致 /generate /audio 被代理成 502/504 而轮询超时
+        # （日志表现为「Voicebox 轮询音频超时：None」）。trust_env=False + 显式
+        # proxies=None 彻底禁用环境代理；与 omni 的 _ensure_no_proxy() 思路一致（自包含，
+        # 不依赖调用方先调过它）。
+        self.session.trust_env = False
+        self.session.proxies = {"http": None, "https": None}
         # 探活：服务未启动则直接标记不可用，由上层回退；超时设短避免拖慢启动。
         try:
             if self._check_health():
@@ -249,24 +256,39 @@ class VoiceboxSpeaker:
                 print(f"[错误] Voicebox 合成/播放失败: {e}")
                 self._fallback_speak(text)
 
-    def _poll_audio(self, gen_id, timeout=60.0, interval=0.5):
+    def _poll_audio(self, gen_id, timeout=None, interval=0.5):
         """轮询 /audio/{id} 直到返回可用音频字节（Voicebox /generate 是异步的）。
 
         /generate 提交后 status="generating"，此时 GET /audio/{id} 返回 HTTP 500；
-        持续轮询，直到拿到 >44 字节的音频（audio/x-wav）即视为就绪并返回。
-        超时则抛异常，由 speak() 的 except 统一切换到系统 TTS 兜底。
+        持续轮询，直到拿到非空音频字节即视为就绪并返回（下游 speak() 再做 RIFF 魔数
+        校验，确保不是非法响应）。超时则抛异常并附「最近 HTTP 状态」便于一眼区分
+        代理(502/504) vs 服务端慢(500 vs 无响应)，由 speak() 的 except 切换到系统 TTS 兜底。
+
+        Args:
+            timeout: 总轮询超时（秒）。默认读环境变量 VOICEBOX_POLL_TIMEOUT（120s）；
+                     升级结果与长句合成较慢，放宽到 120s 避免误超时。
+            interval: 轮询间隔（秒）。
         """
+        if timeout is None:
+            timeout = float(os.getenv("VOICEBOX_POLL_TIMEOUT", "120"))
         deadline = time.time() + timeout
+        last_status = None
         last_err = None
         while time.time() < deadline:
             try:
-                r = self.session.get(f"{self.base_url}/audio/{gen_id}", timeout=30)
-                if r.status_code == 200 and len(r.content) > 44:
+                # 单次 GET 超时降到 10s：代理/服务端 hang 能更快暴露，窗口内可多轮询
+                r = self.session.get(f"{self.base_url}/audio/{gen_id}", timeout=10)
+                last_status = r.status_code
+                # 音频就绪：HTTP 200 且返回了非空字节（生成中服务端返回 500 → 跳过继续轮询）。
+                # 不再依赖「>44 字节」硬判断，避免恰好 44 字节头导致误判；下游 RIFF 魔数校验兜底。
+                if r.status_code == 200 and len(r.content) > 0:
                     return r.content
             except Exception as e:  # 生成中服务端返回 500 等，忽略并继续轮询
                 last_err = e
             time.sleep(interval)
-        raise RuntimeError(f"Voicebox 轮询音频超时（{gen_id}）：{last_err}")
+        status_hint = f"最近HTTP状态={last_status}" if last_status is not None else "无HTTP响应"
+        err_hint = f"（{last_err}）" if last_err else ""
+        raise RuntimeError(f"Voicebox 轮询音频超时（{gen_id}）：{status_hint}{err_hint}")
 
     @staticmethod
     def _normalize_emotion(emotion_hint):

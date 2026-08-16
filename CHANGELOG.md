@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-16（夜）— OMNI 全双工五项体验修复（Voicebox 代理超时 / 升级结果前缀 / 推流刷屏 / 任务提取 / 普通对话）
+
+- **背景**：bo s s 真机对话暴露 5 类问题：①普通寒暄（"你好你在吗"）无回复；②"查一下时间"被 ASR 拆字 + 换行截断导致答非所问（实际回的是电池）；③回灌文本把"（升级结果）"前缀也念了出来；④`[omni-client] 推流#…` 每 0.4s 刷屏；⑤Voicebox 偶发"轮询音频超时"降级系统音。
+- **修复（按根因）**：
+  1. **Voicebox 代理劫持根因（`src/audio/voicebox_tts.py`）**：`VoiceboxSpeaker` 建 `requests.Session()` 时未绕过本机代理，localhost 的 `/generate`、`/audio` 被代理劫持成 502/504（日志 `：None` = 代理无响应），轮询 60s 全失败超时降级。修复：建 session 即 `trust_env=False` + `proxies={"http":None,"https":None}`（与 omni `_ensure_no_proxy()` 同源思路、模块自包含）；`_poll_audio` 总超时改读 `VOICEBOX_POLL_TIMEOUT`（默认 120s），单次 GET 超时 30→10s 更快暴露 hang，错误文案带「最近 HTTP 状态」区分代理(502/504) vs 服务端慢(500)；移除 `>44` 字节硬判，下游 RIFF 魔数校验兜底。
+  2. **「（升级结果）」被朗读（`src/omni/__main__.py` / `src/runtime.py`）**：升级结果用 `f"（升级结果）{result}"` 直接喂 `speak_result` 进 TTS，被 Voicebox 念出。修复：分离「干净 spoken 文本」与「带前缀 GUI 文字」——`speak_result(clean)` 只收干净文本，`append_reply` 才带前缀进 GUI 实时文字区（控制台/文字区仍可见前缀，但不再出声）。
+  3. **推流刷屏（`src/omni/client.py`）**：`_push_loop` 每 ~0.4s 打印推流/静音日志。修复：仅「人声↔静音」状态翻转时打印一行；新增 `OMNI_DEBUG=1` 才逐块打印 RMS 诊断（默认安静，排障时不刷屏）。
+  4. **任务提取错乱（`src/omni/client.py`）**：ASR 把"查一下这台电脑的本地时间"拆成"查 一 下这台电"+"脑的本地时间"，令牌检测按首个换行截断 → 任务被截短、大脑理解偏差答非所问。修复：新增 `_clean_task`（删汉字之间空格 + 折叠跨换行空白还原连贯指令）+ `_try_finalize_pending`（跨换行累积、遇句末标点即时触发、长度 ≥64 或 1.5s 定时器兜底），不再按首个换行硬截断。
+  5. **普通对话无回复（`src/omni/prompts.py` + `src/omni/client.py`）**：强化系统提示——纯寒暄（"你好/在吗"）必须先用口语回应、绝不吐令牌；仅当核心需求命中工具/外部信息才升级；把"无法回答"收窄为"确实无法仅凭常识回答"。另：`OmniClient.listen_prob_scale` 默认值 1.0→0.5（CLI 演示路径此前漏传、等于没修复"只听不说"；GUI 路径经 config 本就 0.5）。诊断结论：日志 RMS=0.110 远超人声阈值，**非噪音误判**，是模型此前未生成寒暄回复。
+- **验证**：`py_compile` 全过；`tests/test_omni_m2.py` 全过（扩展 3 用例：ASR 空格折叠跨换行提取为"查一下这台电脑的本地时间"、幻觉护栏、普通对话不升级）；真机验收待 bo s s（按 `jac-omni-m5-acceptance` SOP + 新增四项：①普通寒暄有口语回应 ②回灌无"升级结果"前缀 ③控制台无刷屏 ④`:None` 超时消失）。
+
+---
+
 ## 2026-08-16（续）— OMNI 升级令牌静音期幻觉护栏 + 推流日志降噪
 
 - **背景**：bo s s 真机复现——纯静音段（RMS 0.003~0.005，用户尚未开口）omni 自行幻觉出 `<<CALL_QWEN>>查一下这台台电脑的电池电量百分比` 并**自动执行**升级；因 `_call_qwen_fired=True` 把后续主对话音频全静音，用户随后真实说的"你好能听到我说话吗"也无语音回复。另：B2 推流诊断日志每 0.4s 一行（静音段也打印）严重刷屏。

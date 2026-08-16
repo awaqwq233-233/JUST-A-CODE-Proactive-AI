@@ -102,15 +102,19 @@ class _ConsoleCallbacks(OmniCallbacks):
                     task, on_progress=lambda c: print(c, end="", flush=True)
                 )
                 print()  # 结束流式输出换行
-                # 确保答案一定出声：优先经 client 回灌（Voicebox 克隆），
-                # 否则降级系统 TTS（绝不静默丢弃）
-                answer = (f"（升级结果）{result}" if result
-                          else "抱歉 boss，升级通道暂时拿不到结果，我稍后再试。")
+                # 喂给 TTS 的必须是干净文本（去掉「（升级结果）」前缀，否则会被 Voicebox 念出来）；
+                # 仅 GUI 实时文字区保留前缀显示（append_reply）。
+                clean = (result if result
+                         else "抱歉 boss，升级通道暂时拿不到结果，我稍后再试。")
                 if self._client is not None and self._client.is_running():
-                    self._client.speak_result(answer)
+                    self._client.speak_result(clean)                  # 干净文本进 TTS
+                    self._client.append_reply(
+                        f"\n（升级结果）{result}\n" if result
+                        else "\n（升级结果）抱歉 boss，升级通道暂时拿不到结果，我稍后再试。\n"
+                    )                                                 # 带前缀仅进 GUI 文字区
                 else:
                     # 客户端已不可用：直接降级系统 TTS 播报，避免答案静默丢失
-                    speak_text_via_voicebox(None, answer)
+                    speak_text_via_voicebox(None, clean)
             except Exception as e:  # noqa: BLE001
                 print(f"\n[omni] 升级异常: {e}")
                 if self._client is not None and self._client.is_running():

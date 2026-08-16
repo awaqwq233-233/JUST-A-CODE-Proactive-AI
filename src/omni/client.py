@@ -24,6 +24,7 @@ import base64
 import json
 import os
 import queue
+import re
 import threading
 import time
 
@@ -148,7 +149,7 @@ class OmniClient:
                  enable_camera: bool = True, enable_playback: bool = True,
                  mic_index: int = None,
                  mic_gain: float = 1.0,
-                 listen_prob_scale: float = 1.0,
+                 listen_prob_scale: float = 0.5,
                  push_interval: float = 0.4, video_fps: int = 5,
                  camera_width: int = 1280, camera_height: int = 720,
                  video_quality: int = 80, voicebox_speaker=None):
@@ -571,21 +572,24 @@ class OmniClient:
             is_speech = rms >= self._speech_rms_th
             if is_speech:
                 self._last_speech_ts = time.monotonic()
-            # 推流诊断日志（降噪）：仅在真正检测到人声时打印一行含 RMS/峰值/块大小，
-            # 静音段每 ~10 块（≈4s）汇总打印一次避免刷屏；仅日志、不改功能。
+            # 推流诊断日志治理（#4）：默认只在「人声↔静音」状态翻转时打印一行，
+            # 避免每 ~0.4s 刷屏；仅当环境变量 OMNI_DEBUG=1 时才逐块打印 RMS 诊断详情。
             self._push_seq = getattr(self, "_push_seq", 0) + 1
-            if is_speech:
-                peak = float(np.max(np.abs(arr))) if audio and arr.size else 0.0
-                print(f"[omni-client] 🎙 推流#{self._push_seq} 检测到人声 RMS={rms:.3f} 峰值={peak:.3f} 块={len(audio)}B",
-                      flush=True)
-                self._silent_blocks = 0
-            else:
-                self._silent_blocks = getattr(self, "_silent_blocks", 0) + 1
-                if self._silent_blocks == 1:
-                    print(f"[omni-client] 推流#{self._push_seq} 静音（RMS={rms:.3f}）…", flush=True)
-                elif self._silent_blocks % 10 == 0:
-                    print(f"[omni-client] 推流#{self._push_seq} 持续静音（已 {self._silent_blocks} 块 ≈{self._silent_blocks*self.push_interval:.0f}s）",
+            prev_state = getattr(self, "_last_speech_state", None)
+            if is_speech != prev_state:
+                if is_speech:
+                    peak = float(np.max(np.abs(arr))) if audio and arr.size else 0.0
+                    print(f"[omni-client] 🎙 检测到人声（RMS={rms:.3f} 峰值={peak:.3f}）",
                           flush=True)
+                else:
+                    print(f"[omni-client] 进入静音（RMS={rms:.3f}）", flush=True)
+                self._last_speech_state = is_speech
+            # 逐块诊断仅在显式开启时打印，便于排查「说话但 omni 无反应」类问题
+            if os.environ.get("OMNI_DEBUG") == "1":
+                peak = float(np.max(np.abs(arr))) if (is_speech and audio and arr.size) else 0.0
+                print(f"[omni-client][debug] 推流#{self._push_seq} "
+                      f"{'人声' if is_speech else '静音'} RMS={rms:.3f} 峰值={peak:.3f} 块={len(audio)}B",
+                      flush=True)
             if rms <= 1e-4:
                 silent_secs += self.push_interval
                 if silent_secs >= 5.0:
@@ -701,14 +705,13 @@ class OmniClient:
         # 升级已触发：主会话后续文本（含 omni 尾随回复）一律不再朗读
         if self._call_qwen_fired:
             return
-        # 令牌已发现但尚未 fire（pending 累积中）：继续累积任务描述，不再朗读；
-        # 若本段带来换行，立即结算并触发（避免等 1.5s 兜底定时器、降低延迟）。
+        # 令牌已发现但尚未 fire（pending 累积中）：跨换行持续累积任务描述，不再朗读；
+        # 每来一段就尝试结算（命中句末标点才触发），避免等 1.5s 兜底定时器、降低延迟。
+        # 关键修复：不再按首个换行硬截断任务——ASR 会把「查一下这台电脑的本地时间」
+        # 拆成「查 一 下这台电」+「脑的本地时间」，按首个换行截断会丢后半句导致答非所问。
         if self._token_seen:
             self._pending_task = (self._pending_task or "") + txt
-            if "\n" in txt:
-                task = self._pending_task.split("\n", 1)[0].strip()
-                if task:
-                    self._fire_call_qwen(task)
+            self._try_finalize_pending()
             return
 
         # 未触发：累积全文用于跨分片令牌检测
@@ -736,16 +739,12 @@ class OmniClient:
         pre = self._text_buf[:idx]
         if pre.strip() and self._voicebox_bridge is not None:
             self._voicebox_bridge.feed(pre)
-        # 令牌及后续任务描述丢弃，立即触发升级（绝不朗读问题本身）
+        # 令牌及后续任务描述：跨换行累积（不再按首个换行截断），交由 _try_finalize_pending
+        # 在命中句末标点时结算触发；若模型迟迟不给标点，由 1.5s 兜底定时器触发，避免升级永不触发。
         after = self._text_buf[idx + len(token):]
-        if "\n" in after:
-            task = after.split("\n", 1)[0].strip()
-            self._fire_call_qwen(task)
-        else:
-            # 任务可能在后续 delta 到达：进入 pending 累积，直到换行或长度上限
-            self._pending_task = after
-            # 兜底：若 omni 在令牌行后立刻停住（不出换行），1.5s 后用已累积内容触发，
-            # 避免升级永不触发。
+        self._pending_task = after
+        self._try_finalize_pending()
+        if not self._call_qwen_fired:
             if self._pending_timer is None or not self._pending_timer.is_alive():
                 self._pending_timer = threading.Timer(1.5, self._finalize_pending)
                 self._pending_timer.daemon = True
@@ -780,12 +779,60 @@ class OmniClient:
         self.cb.on_call_qwen(task)
 
     def _finalize_pending(self):
-        """令牌已命中但任务描述未以换行结束时的兜底触发（定时器回调）。"""
+        """令牌已命中但任务描述未以句末标点结束时的兜底触发（定时器回调）。
+
+        用 _clean_task 清洗（折叠 ASR 汉字间空格 + 跨换行连接）后再触发，
+        避免把「查 一 下这台电」这类残缺任务直接交给大脑。
+        """
         if self._call_qwen_fired:
             return
-        task = (self._pending_task or "").strip()[:128]
+        task = self._clean_task(self._pending_task or "")
         if task:
             self._fire_call_qwen(task)
+
+    def _try_finalize_pending(self):
+        """令牌后的任务描述累积到「一句话结束」就即时结算触发。
+
+        判定规则：清洗后的任务文本命中句末标点（。！？!?）即视为一句话说完，切掉标点
+        之前部分作为任务立即触发；或累积长度超过上限（防模型迟迟不给句号）也触发。
+        否则保持 pending，等待后续 delta 或兜底定时器。
+        """
+        if self._call_qwen_fired:
+            return
+        raw = self._pending_task or ""
+        flat = raw.replace("\n", "")
+        # 句末标点集合：任务描述通常以句号 / 问号 / 感叹号结束
+        cut = -1
+        for i, ch in enumerate(flat):
+            if ch in "。！？!?":
+                cut = i
+                break
+        if cut >= 0:
+            task = self._clean_task(flat[:cut])   # 不含句末标点，交给大脑更干净
+            if task:
+                self._fire_call_qwen(task)
+            return
+        # 长度上限兜底：累积过长也触发，避免模型迟迟不给句号导致升级迟迟不触发
+        if len(flat) >= 64:
+            task = self._clean_task(flat)
+            if task:
+                self._fire_call_qwen(task)
+
+    def _clean_task(self, text: str) -> str:
+        """清洗升级任务描述：删除汉字之间的空白（根治 ASR「查 一 下」），折叠剩余空白。
+
+        ASR 常把中文逐字以空格隔开（如「查 一 下这台 电脑」），且任务可能跨多个 delta
+        分片到达并夹带换行。本方法在发给大脑前把汉字之间的空格/换行抹掉，再把其余空白
+        折叠为单空格，保证大脑拿到连贯的指令（如「查一下这台电脑的本地时间」）。
+        """
+        if not text:
+            return ""
+        # 1) 删除「汉字与汉字（或汉字与标点）之间」的空白：根治逐字空格 + 跨换行连接
+        #    例：「查 一 下这台电」+「脑的本地时间」→ 删汉字间空白 →「查一下这台电脑的本地时间」
+        s = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", text)
+        # 2) 折叠其余空白（换行 / 多空格）为单空格并去首尾
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
 
     def mark_escalation_done(self):
         """标记升级任务已完成（由 runtime 在回灌播报结束后调用）。

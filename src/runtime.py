@@ -300,18 +300,23 @@ class JACRuntime:
                     task, on_progress=lambda c: print(c, end="", flush=True)
                 )
                 print()  # 换行，结束流式输出
-                # 确保答案一定出声：优先经 client 回灌（Voicebox 克隆），否则降级系统 TTS
-                answer = (f"（升级结果）{result}" if result
-                          else "抱歉 boss，升级通道暂时拿不到结果，我稍后再试。")
+                # 确保答案一定出声：优先经 client 回灌（Voicebox 克隆），否则降级系统 TTS。
+                # 关键修复：喂给 TTS 的文本必须是干净的（不带「（升级结果）」前缀），
+                # 否则会被 Voicebox 念出来；仅 GUI 实时文字区保留前缀显示（append_reply）。
+                clean = (result if result
+                         else "抱歉 boss，升级通道暂时拿不到结果，我稍后再试。")
                 if self.omni_client is not None and self.omni_client.is_running():
-                    self.omni_client.speak_result(answer)
+                    self.omni_client.speak_result(clean)              # 干净文本进 TTS
                 else:
                     # 客户端不可用：直接降级系统 TTS，避免答案静默丢失
                     from src.omni.backfeed import speak_text_via_voicebox
-                    speak_text_via_voicebox(None, answer)
-                # 把升级结果写入回复缓存，供 GUI 实时文字区显示
+                    speak_text_via_voicebox(None, clean)
+                # 把升级结果（带前缀）写入回复缓存，仅供 GUI 实时文字区显示，不参与 TTS
                 if self.omni_client is not None:
-                    self.omni_client.append_reply(f"\n{answer}\n")
+                    self.omni_client.append_reply(
+                        f"\n（升级结果）{result}\n" if result
+                        else "\n（升级结果）抱歉 boss，升级通道暂时拿不到结果，我稍后再试。\n"
+                    )
             except Exception as e:  # noqa: BLE001
                 print(f"[OMNI升级] 异常: {e}")
                 if self.omni_client is not None and self.omni_client.is_running():
