@@ -191,6 +191,10 @@ def main():
     ap.add_argument("--list-mics", action="store_true", help="列出所有麦克风输入设备并退出")
     ap.add_argument("--no-voicebox", action="store_true",
                     help="禁用本地 Voicebox 克隆 TTS（主对话/回灌退回 omni 自带或系统 TTS）")
+    ap.add_argument("--no-echo-gate", action="store_true",
+                    help="强制关闭回声门控（戴耳机时才建议关）：J.A.C. 说话期间麦克风不再静音，"
+                         "可随时打断；外放场景关掉会让它听到自己的声音而自言自语。"
+                         "默认按输出设备自动判定：检测到耳机/蓝牙即关、扬声器外放即开。")
     args = ap.parse_args()
 
     # 列出麦克风设备后直接退出（便于定位内建麦 index）
@@ -220,6 +224,7 @@ def main():
         mic_index=args.mic,
         mic_gain=args.mic_gain,
         voicebox_speaker=voicebox_speaker,
+        echo_gate=not args.no_echo_gate,
     )
     cb = _ConsoleCallbacks(client)
     # client 内部读的是 self.cb（__init__: self.cb = callbacks or OmniCallbacks()）；

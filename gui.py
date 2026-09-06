@@ -359,6 +359,22 @@ class MainWindow(QMainWindow):
         lps_row.addWidget(self.listen_prob_scale_spin)
         op.addLayout(lps_row)
 
+        # 回声门控（OMNI）：auto 按输出设备判定，关=戴耳机可打断，开=外放防自激
+        gate_row = QHBoxLayout()
+        gate_row.addWidget(QLabel("回声门控 (OMNI)"))
+        self.echo_gate_combo = QComboBox()
+        self.echo_gate_combo.addItem("自动（按输出设备）", "auto")
+        self.echo_gate_combo.addItem("关（戴耳机，可打断）", "0")
+        self.echo_gate_combo.addItem("开（外放，防自激）", "1")
+        _cur = str(getattr(self.config, "omni_echo_gate", "auto")).strip().lower()
+        self.echo_gate_combo.setCurrentIndex({"0": 1, "off": 1, "1": 2, "on": 2}.get(_cur, 0))
+        self.echo_gate_combo.setToolTip(
+            "外放时 J.A.C. 的声音会被麦克风回采，omni 会听到自己而自言自语；"
+            "开启门控后播报期间麦克风按静音推送（代价：期间无法打断）。"
+            "戴耳机时关闭可保留随时打断能力。默认自动：检测到耳机即关、扬声器即开。")
+        gate_row.addWidget(self.echo_gate_combo)
+        op.addLayout(gate_row)
+
         # ---- OMNI 实时诊断区（音量条 + 实时回复文字）----
         self.omni_live = QFrame()
         self.omni_live.setObjectName("omniLive")
@@ -661,6 +677,7 @@ class MainWindow(QMainWindow):
             omni_fps=self.config.omni_fps,
             omni_mic_gain=self.mic_gain_spin.value(),
             omni_listen_prob_scale=self.listen_prob_scale_spin.value(),
+            omni_echo_gate=self.echo_gate_combo.currentData(),
             omni_duplex=self.config.omni_duplex,
             omni_auto_launch=self.config.omni_auto_launch,
             brain_backend=self.config.brain_backend,

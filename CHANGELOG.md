@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-09-06 — OMNI 回声自激根因修复（回声门控 + 幻觉任务禁止显示/偷偷升级）
+
+- **背景（bo s s 真机日志）**：外放场景下 omni 自言自语——bo s s 全程没说话，控制台却冒出「给您推荐一部电」「么样天气怎」，LM Studio 还收到 `[升级任务] 给您推荐一部电`。日志铁证：`[TTS] 正在播放（Voicebox）` 出现的**同一时刻** `[omni-client] 🎙 检测到人声（RMS=0.022 峰值=0.106）`——**J.A.C. 听到了自己刚说的话**。
+- **根因（不是 ASR 误识别）**：TTS 外放 → 被本机麦克风重新采集 → 推给 omni → omni 把自己的语音当成用户发言 → 自问自答 → 幻觉生成 `<<CALL_QWEN>>` 任务。且回声 RMS（0.022）超过了原有护栏阈值 0.02，`_has_recent_speech()` 被回声骗过，令牌**未被拦截**，于是真的触发了 qwen 升级（这就是 LM Studio 收到莫名任务的原因）。
+- **修复（4 处）**：
+  1. **回声门控（核心，`src/audio/playback.py` + `src/omni/client.py`）**：`playback` 是所有 TTS 播放的唯一出口，新增全局「正在出声」状态（`is_playback_active()` / `seconds_since_playback_end()` / `mark_external_playback()` / `reset_playback_state()`），`play_wav` 进入/退出时置位复位。客户端 `_push_loop` 在回声窗口内用**等长零字节**替换真实采集推送（保持「1 秒音频 / 1 秒墙钟」节奏，避免只听不说），并把该帧判为非人声、不刷新 `_last_speech_ts`。逻辑抽为纯函数 `_apply_echo_gate()` 便于单测。开关：CLI `--no-echo-gate` 或环境变量 `OMNI_ECHO_GATE=0`；拖尾保护 `OMNI_ECHO_TAIL`（默认 0.8s）。启动时打印一行门控状态便于验收确认。
+  2. **护栏认回声（`_has_recent_speech`）**：回声窗口（含拖尾）内一律返回 False，令牌判为幻觉，不触发升级、不静音主会话（用户随后真实发言仍可正常回复）。
+  3. **幻觉任务禁止偷偷升级（`_hallucinated` 标志）**：旧逻辑拦截后 `_token_seen=True`，后续 delta 若出现句号会被 `_try_finalize_pending()` 再次 fire——即「拦了又升」。新增 `_hallucinated` 守卫，`_finalize_pending` / `_try_finalize_pending` 在其为真时直接返回；`_reset_escalation_state()` 复位。
+  4. **任务描述不再显示给用户（`_broadcast` + `_shown_len`）**：令牌及其之后的文本是发给大脑的**内部指令**，此前会被广播到控制台 / GUI，bo s s 看到的「给您推荐一部电」正是它（不是 ASR 识别结果）。改为先累积再广播，令牌及之后一律不显示、不进 `_reply_buf`。
+- **验证**：`py_compile` 全过；新增 `tests/test_omni_echo_gate.py`（8 用例：播放状态机 / 回声期护栏 / 拖尾 / 回声期令牌拦截 / 幻觉永不 fire / 任务文本不广播 / 门控帧替换静音 / play_wav 状态复位）全过；`tests/test_omni_m2.py` + `tests/test_omni_m3_token.py` 回归全过（共 18 passed）。
+- **顺带修 2 个历史红灯**：`tests/test_omni_m3_token.py` 的 `test_token_text_not_spoken` / `test_multi_turn_escalation` 自 2026-08-16「任务改跨换行累积、遇句末标点才结算」后已与实现不符（用 `\n` 结尾期望立即触发），在 git HEAD 版本上即为失败；本次改为用句号结尾，与现行策略对齐（无标点场景由 1.5s 兜底定时器兜底）。
+- **待 bo s s 真机复验**：外放时 omni 应停止自言自语、不再有凭空的 `[OMNI升级]`；戴耳机（硬件隔离回声）可用 `--no-echo-gate` 关闭门控以保留打断能力。
+
+## 2026-09-06（续）— 回声门控「自动检测输出设备」+ GUI 开关
+
+- **背景**：bo s s 选择以后戴耳机使用。耳机在硬件层面已隔离回声，无需门控，反而应**关闭门控以保留随时打断**；而用内建扬声器外放时必须开门控。手动切 `OMNI_ECHO_GATE` 易忘，故改为**按输出设备自动判定**。
+- **改动**：
+  1. `src/omni/client.py` 新增 `detect_headphones()`（查 PyAudio 默认输出设备名，含"耳机/headphone/airpods/蓝牙/bluetooth"等关键词即判为耳机）与 `resolve_echo_gate(pref)`（"auto"/None→自动检测；"1/on/true"强制开；"0/off/false"强制关）。`OmniClient.__init__` 的 `echo_gate` 现接受 `True/False/None/str`，未显式传时读 `OMNI_ECHO_GATE`（默认 `auto`）。启动时打印最终开关及原因（如"自动检测：耳机/蓝牙输出，无需门控"）。
+  2. `src/utils/config.py` 新增 `omni_echo_gate: str = "auto"`（环境变量 `OMNI_ECHO_GATE`），`src/runtime.py` 透传。
+  3. `gui.py` OMNI 选项面板新增「回声门控 (OMNI)」下拉：**自动（按输出设备）/ 关（戴耳机，可打断）/ 开（外放，防自激）**，并在 `_collect_config` 导出。
+  4. `src/omni/__main__.py` `--no-echo-gate` 帮助文本更新为"默认按输出设备自动判定"。
+- **默认行为变化**：此前门控默认强制开启（`OMNI_ECHO_GATE` 缺失=1）；现在缺失=`auto`，戴耳机启动即自动关闭（符合 bo s s 选择），外放自动开启。
+- **验证**：`py_compile` 全过；`tests/test_omni_echo_gate.py` 新增 `test_resolve_echo_gate_pref_parsing` 覆盖手动/auto/未知字符串解析，全部回归 29 passed。
+
+---
+
 ## 2026-08-16（夜）— OMNI 全双工五项体验修复（Voicebox 代理超时 / 升级结果前缀 / 推流刷屏 / 任务提取 / 普通对话）
 
 - **背景**：bo s s 真机对话暴露 5 类问题：①普通寒暄（"你好你在吗"）无回复；②"查一下时间"被 ASR 拆字 + 换行截断导致答非所问（实际回的是电池）；③回灌文本把"（升级结果）"前缀也念了出来；④`[omni-client] 推流#…` 每 0.4s 刷屏；⑤Voicebox 偶发"轮询音频超时"降级系统音。

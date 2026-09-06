@@ -83,8 +83,10 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - **全双工闭环（M5 验收）**：MiniCPM-o-4_5 经本地 llama.cpp-omni server（9060，Metal，GGUF Q8_0）跑**全双工**——持续听/说、主动打招呼、按 `<<CALL_QWEN>>` 令牌升级到 `qwen/qwen3.6-35b-a3b` 调 `src/tools/` 工具、回灌播报；整条闭环真机验收通过（2026-08-15）。
 - **主对话 LLM 流式 + M7b 句子级 TTS 桥接**：omni 下行 `response.output.delta` 逐字吐文本；`src/omni/voicebox_bridge.py` 按标点/句子边界把 text delta 攒成句，攒够一句即送本地 **Voicebox（JAC 克隆声纹）** 合成并播放（独立 daemon 播放线程串行保序），实现「说一句听一句」近似实时感；omni 自带 TTS 音频在桥接启用时丢弃。
 - **回灌（M7a）**：`speak_result` → `src/omni/backfeed.py` 的 `speak_text_via_voicebox` 用 JAC 克隆声纹播报（替代原 omni 第二 turn_based 会话——server 单会话限制会拒第二个会话致 `ConnectionClosedOK` 无声音，已根除）。
-- **CLI 开关**：`--mic <id>` 指定麦克风、`--no-voicebox` 关克隆声纹桥接（改系统 TTS/仅文本）、`--no-play` 关 omni 自带音频播放（排查用）、`--list-mics` / `--mic-gain` 设备排查、`--no-auto-launch` 不自动拉起 server。
+- **CLI 开关**：`--mic <id>` 指定麦克风、`--no-voicebox` 关克隆声纹桥接（改系统 TTS/仅文本）、`--no-play` 关 omni 自带音频播放（排查用）、`--list-mics` / `--mic-gain` 设备排查、`--no-auto-launch` 不自动拉起 server、**`--no-echo-gate` 强制关闭回声门控（默认按输出设备自动判定：耳机→关可打断，扬声器→开防自激）**。
 - **令牌拦截与多轮升级（2026-08-15 修复）**：`client._on_text` 做**检测前置**——含 `<<CALL_QWEN>>` 的 delta 只把令牌之前的文本送 Voicebox 桥接朗读、令牌及任务描述丢弃并立即触发升级，**绝不把"问题本身"当答案朗读**；`voicebox_bridge.feed` 同步加令牌截断兜底。`_call_qwen_fired` 触发后会在每轮 `listen` 事件经 `_reset_escalation_state()` 复位，支持**反复升级**（修复"第二次升级被吞"）。回灌与桥接共用同一加锁 `VoiceboxSpeaker`（uuid 文件名防并发互覆盖），升级答案在 `speak_result`/`backfeed` 中**一定出声**（Voicebox 优先→系统 TTS 兜底，去掉原 `is_running()` 静默跳过）。
+- **回声门控 Echo Gate（2026-09-06 新增，默认 auto）**：外放场景下 TTS 声音会被本机麦克风重新采集，omni 把**自己的语音**当成用户发言 → 自问自答 → 幻觉出 `<<CALL_QWEN>>` 任务并真触发升级（真机已复现：`[TTS] 正在播放` 与 `🎙 检测到人声 RMS=0.022` 同帧出现）。根治需 WebRTC AEC；工程等价做法是 `src/audio/playback.py` 维护全局「正在出声」状态，`_push_loop` 在回声窗口内用**等长零字节**替换真实采集推送（保持实时节奏，避免只听不说），该帧不计为人声。护栏 `_has_recent_speech()` 在回声期一律判为幻觉（不升级、不静音）。**开关（bo s s 选耳机，故默认 auto）**：`resolve_echo_gate()` 按 PyAudio 默认输出设备自动判定（耳机/蓝牙→关可打断，扬声器外放→开防自激）；CLI `--no-echo-gate` 强制关、环境变量 `OMNI_ECHO_GATE=auto|0|1`、GUI OMNI 面板「回声门控」下拉可设；拖尾 `OMNI_ECHO_TAIL`（默认 0.8s）。**代价：门控期间听不到用户插话**，故戴耳机时自动关闭以保留打断能力。
+- **幻觉任务不得升级 / 不得显示（2026-09-06）**：`_hallucinated` 守卫杜绝「拦截后又被后续句号偷偷 fire」；令牌之后的任务描述属**内部指令**，经 `_broadcast` + `_shown_len` 裁剪后不再广播到控制台 / GUI（此前用户看到的「给您推荐一部电」实为 omni 模型幻觉输出，不是 ASR 识别结果——full_duplex 协议不回传用户 ASR 原文）。
 - **GUI 实时整合（2026-08-15）**：OMNI 模式右侧选项面板新增「麦克风音量条」+「OMNI 实时回复」文字区（轮询 `get_latest_mic_level`/`get_reply_text` 刷新）+「麦克风增益」框（接 `config.omni_mic_gain`→`OmniClient.mic_gain`，缓解内建麦离嘴远能量不足）；勾选 OMNI 时 judge/TTS/tools 开关灰掉并提示"OMNI 模式下不生效"（架构互斥）。视频画面此前已接入。
 
 > 注意：OMNI 模式默认只跑 omni 全双工 + 升级路由（qwen+tools 回灌），**不包含** main.py 的摄像头 YOLO 检测 / 唤醒词 / judge 主动判断；两者架构互斥，分别用于「全双工实时对话」与「传统被动多模态桌面原型」。ASR 误识别（如"电量"→"天气"）属 MiniCPM-o 模型识别质量限制，代码无法根治，仅做可观测性缓解（增益框 + 实时回复区）。
@@ -97,7 +99,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - `src/audio/recorder.py`：PyAudio + WebRTC VAD 录音器。
 - `src/audio/stt.py`：OpenAI Whisper 封装；`SpeechRecognizer` 强制 `language="zh"`（环境变量 `STT_LANGUAGE` 可覆盖），`_to_simplified()` 兜底把繁体残字统一为简体（优先 `opencc`，否则内置常用字映射）。
 - `src/audio/tts.py`：跨平台系统 TTS 兜底封装。
-- `src/audio/playback.py`：共享 WAV 播放工具（`afplay` / PowerShell / `aplay`），Voicebox 与系统 TTS 共用。
+- `src/audio/playback.py`：共享 WAV 播放工具（`afplay` / PowerShell / `aplay`），Voicebox 与系统 TTS 共用；**同时维护全局「正在出声」状态**（`is_playback_active()` / `seconds_since_playback_end()` / `mark_external_playback()`），供 OMNI 回声门控查询。
 - `src/audio/voicebox_tts.py`：Voicebox 克隆 TTS（开源，REST API `http://127.0.0.1:17493`，macOS 友好主力 TTS），自动克隆 JAC 声纹 + 8 种情绪映射 + 系统 TTS 兜底。
 - `src/audio/speaker_factory.py`：统一扬声器选择工厂 `build_speaker(config)`（Voicebox → Qwen3-TTS → 系统 TTS）。
 - `src/audio/qwen_tts.py`：Qwen3-TTS 语音合成（开源本地 TTS，支持情绪/语气控制与声音克隆，仅 NVIDIA 平台启用），带系统 TTS 兜底降级。

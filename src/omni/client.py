@@ -36,6 +36,7 @@ import soxr
 import websockets
 
 from src.capture.camera import Camera
+from src.audio import playback as _playback
 from .voicebox_bridge import VoiceboxBridge
 
 # 全双工音频目标采样率（omni 要求 16kHz float32 单声道）
@@ -152,7 +153,8 @@ class OmniClient:
                  listen_prob_scale: float = 0.5,
                  push_interval: float = 0.4, video_fps: int = 5,
                  camera_width: int = 1280, camera_height: int = 720,
-                 video_quality: int = 80, voicebox_speaker=None):
+                 video_quality: int = 80, voicebox_speaker=None,
+                 echo_gate: bool = None):
         """初始化客户端。
 
         Args:
@@ -175,6 +177,7 @@ class OmniClient:
             video_fps: 视频上行帧率（仅影响最新帧刷新频率，与 push 解耦）。
             camera_width/height: 自建摄像头分辨率。
             video_quality: jpeg 编码质量（0~100）。
+            echo_gate: 回声门控开关；None 表示读环境变量 OMNI_ECHO_GATE（默认开）。
         """
         _ensure_no_proxy()
         self.url = url
@@ -221,14 +224,32 @@ class OmniClient:
         # ---- M2 升级路由相关状态 ----
         # 文本累积缓冲（用于检测 <<CALL_QWEN>> 令牌，令牌可能跨多个 delta 分片到达）
         self._text_buf = ""
+        self._shown_len = 0                  # _text_buf 中已广播显示到的位置（令牌后不再前进）
         # 升级令牌护栏：记录「最近一次检测到真实人声」的墙钟时间（monotonic）。
         # omni 会在静音期幻觉出 <<CALL_QWEN>> 任务并自触发（真机已复现：静音段 RMS 0.003
         # 却凭空生成"查电池电量"任务），令牌出现前若无真实人声则判定为幻觉、拒绝升级。
         self._last_speech_ts = 0.0           # 最近一次 RMS≥阈值的人声时刻（0=尚无）
         self._speech_window = 3.0            # 令牌前多少秒内有人声才算"真实触发"（秒）
         self._speech_rms_th = 0.02           # 判定人声的 RMS 阈值（mic_check 实测说话段 0.08+）
+
+        # ---- 回声门控（Echo Gate）：J.A.C. 说话时把麦克风当「听不见」----
+        # 根因（真机 2026-09-06 复现）：TTS 外放被本机麦克风重新采集，日志里
+        # 「[TTS] 正在播放」出现的同时立即「🎙 检测到人声（RMS=0.022）」——omni 听到
+        # 的是它自己上一轮的语音，于是自问自答、凭空生成「给您推荐一部电」这类
+        # 幻觉文本并吐出 <<CALL_QWEN>>。因为回声 RMS 也能过 0.02 阈值，原有
+        # _has_recent_speech 护栏会被回声骗过。根治靠 WebRTC AEC；工程等价做法是
+        # 播放期间用等长静音替代真实采集推送（保持实时节奏，避免「只听不说」）。
+        # 代价：J.A.C. 说话期间听不到用户插话；戴耳机（硬件隔离回声）时可用
+        # OMNI_ECHO_GATE=0 关闭门控以保留打断能力。
+        # 显式传参优先；否则读环境变量 OMNI_ECHO_GATE（未设置=auto，按输出设备自动判定）
+        _pref = echo_gate if echo_gate is not None else os.environ.get("OMNI_ECHO_GATE", "auto")
+        self._echo_gate, self._echo_gate_reason = resolve_echo_gate(_pref)
+        self._echo_tail = float(os.environ.get("OMNI_ECHO_TAIL", "0.8"))  # 播放结束后的拖尾保护秒数
+        self._echo_gated = False             # 当前是否正处于门控中（供日志/诊断）
+
         self._call_qwen_fired = False        # 本次会话是否已触发过升级（幂等 + 停止朗读）
         self._token_seen = False             # 是否已发现令牌但尚未 fire（pending 累积中，停止朗读）
+        self._hallucinated = False           # 本轮令牌已被判定为幻觉（禁止后续任何 fire）
         self._pending_task = None            # 令牌已命中但任务描述尚未完整时的临时累积
         self._pending_timer = None           # 令牌后无换行时的兜底触发定时器
 
@@ -490,6 +511,13 @@ class OmniClient:
                 self.cb.on_error(f"播放器启动失败（OMNI 语音将不播放）: {e}")
                 self.player = None
 
+        # 回声门控状态提示：真机验收时一眼确认是否生效（默认按输出设备自动判定）
+        if self.enable_mic:
+            print(f"[omni] 回声门控：{'开启' if self._echo_gate else '关闭'}"
+                  f"（{self._echo_gate_reason}）。外放时开启可防 omni 听到自己而自言自语；"
+                  f"耳机时关闭可随时打断。可用 --no-echo-gate / OMNI_ECHO_GATE 覆盖。",
+                  flush=True)
+
     def _stop_capture(self):
         """停止采集线程与流。"""
         if self._mic_stream is not None:
@@ -568,8 +596,18 @@ class OmniClient:
                 rms = 0.0
             self.cb.on_mic_level(rms)
             self._last_mic_level = rms        # 缓存供 GUI 音量条轮询
-            # 检测到真实人声（RMS≥阈值）时刷新时间戳，供升级令牌护栏判定「令牌前是否有人声」
-            is_speech = rms >= self._speech_rms_th
+
+            # ---- 回声门控：J.A.C. 正在说话时，麦克风采集到的其实是自己的声音 ----
+            # 不门控的话 omni 会把自己的语音当成用户发言，自问自答并幻觉出升级任务。
+            # 门控方式：用等长零字节替代真实采集推送——既让 omni 听到「环境安静」，
+            # 又保持「1 秒音频 / 1 秒墙钟」的实时节奏（喂太快会导致只听不说）。
+            echoing = bool(self._echo_gate and self._is_echoing())
+            self._echo_gated = echoing
+            if echoing:
+                audio, is_speech = self._apply_echo_gate(audio, rms)
+            else:
+                # 检测到真实人声（RMS≥阈值）时刷新时间戳，供升级令牌护栏判定
+                is_speech = rms >= self._speech_rms_th
             if is_speech:
                 self._last_speech_ts = time.monotonic()
             # 推流诊断日志治理（#4）：默认只在「人声↔静音」状态翻转时打印一行，
@@ -682,6 +720,12 @@ class OmniClient:
             return
         self.cb.on_audio_chunk(pcm_bytes)
         if self.player is not None:
+            # omni 自带 TTS 走 PyAudio 流、不经 playback.play_wav，需登记播放窗口，
+            # 否则回声门控感知不到「J.A.C. 正在说话」（按字节数估算持续时长）。
+            try:
+                _playback.mark_external_playback(len(pcm_bytes) / 4 / TARGET_SR)
+            except Exception:  # noqa: BLE001
+                pass
             self.player.play(pcm_bytes)
 
     # ============================================================ M2 升级路由
@@ -693,45 +737,45 @@ class OmniClient:
         delta 会先被送进朗读队列（即"把问题本身读出来"的 bug）。命中令牌时只把令牌
         之前的文本送桥接朗读，令牌本身及任务描述一律丢弃（绝不朗读问题），并触发升级。
         升级触发后主会话后续文本一律不再朗读。
-        """
-        # 广播给回调（GUI 实时回复文字区 / 控制台显示），不发声
-        self.cb.on_text_delta(txt)
-        # 累积回复文本供 GUI 实时文字区轮询（限长，避免无限增长）
-        with self._reply_lock:
-            self._reply_buf += txt
-            if len(self._reply_buf) > 4000:
-                self._reply_buf = self._reply_buf[-2000:]
 
-        # 升级已触发：主会话后续文本（含 omni 尾随回复）一律不再朗读
-        if self._call_qwen_fired:
-            return
-        # 令牌已发现但尚未 fire（pending 累积中）：跨换行持续累积任务描述，不再朗读；
-        # 每来一段就尝试结算（命中句末标点才触发），避免等 1.5s 兜底定时器、降低延迟。
-        # 关键修复：不再按首个换行硬截断任务——ASR 会把「查一下这台电脑的本地时间」
-        # 拆成「查 一 下这台电」+「脑的本地时间」，按首个换行截断会丢后半句导致答非所问。
+        **显示治理（2026-09-06）**：令牌之后的文本是「发给大脑的内部任务描述」，
+        不是要说给用户听的话；此前它会被广播到控制台 / GUI 文字区，用户于是看到
+        omni 自言自语的「给您推荐一部电」「么样天气怎」（实为模型幻觉输出，不是 ASR
+        识别结果）。现改为：令牌命中后的一切 delta 既不朗读、也不显示。
+        """
+        # 1) 令牌已发现：后续 delta 均为任务描述（内部指令），不朗读、不显示
         if self._token_seen:
             self._pending_task = (self._pending_task or "") + txt
             self._try_finalize_pending()
             return
+        # 2) 升级已触发：主会话后续文本（含 omni 尾随回复）不再朗读
+        if self._call_qwen_fired:
+            return
 
-        # 未触发：累积全文用于跨分片令牌检测
+        # 3) 累积全文用于跨分片令牌检测（先累积、后广播，才能把令牌之后的内容截掉）
         self._text_buf += txt
         token = "<<CALL_QWEN>>"
         idx = self._text_buf.find(token)
         if idx < 0:
-            # 尚未出现令牌：正常主对话文本，送 Voicebox 句子级桥接朗读
+            # 尚未出现令牌：正常主对话文本，广播显示 + 送 Voicebox 句子级桥接朗读
+            self._broadcast(txt)
             if self._voicebox_bridge is not None:
                 self._voicebox_bridge.feed(txt)
             return
+
+        # 命中令牌：只把「令牌之前、且尚未显示过」的部分广播出去；
+        # 令牌本身与其后的任务描述一律不显示（否则用户会看到 omni 自言自语的幻觉任务）
+        self._broadcast(self._text_buf[self._shown_len:idx])
 
         # 命中令牌：先判幻觉——若令牌出现前「最近 window 秒内无真实人声」，
         # 判定为 omni 在静音期幻觉生成的自触发任务（真机已复现：纯静音段 RMS≈0.003
         # 却凭空生成"查电池电量"并自动执行，且因 _call_qwen_fired 静音导致用户随后
         # 真实发言也无回复）。幻觉时不触发升级、不静音，仅丢弃该任务并停止朗读幻觉内容。
         if not self._has_recent_speech():
-            self._token_seen = True  # 停止朗读幻觉内容，但不静音、不触发升级
-            snippet = self._text_buf[idx + len(token):idx + len(token) + 40].replace("\n", " ")
-            print(f"[omni-client] ⚠️ 升级令牌疑似静音期幻觉（令牌前无真实人声），已拦截丢弃：{snippet!r}",
+            self._token_seen = True      # 停止朗读/显示，但不静音、不触发升级
+            self._hallucinated = True    # 后续任务描述即使出现句号也不得 fire（防偷偷升级）
+            reason = "播放回声期" if (self._echo_gate and self._is_echoing()) else "静音期"
+            print(f"[omni-client] ⚠️ 升级令牌疑似{reason}幻觉（令牌前无真实人声），已拦截丢弃。",
                   flush=True)
             return
         # 命中令牌：标记已发现，停止后续朗读；仅把令牌之前的内容送桥接朗读
@@ -750,12 +794,72 @@ class OmniClient:
                 self._pending_timer.daemon = True
                 self._pending_timer.start()
 
+    def _broadcast(self, text: str):
+        """把文本广播给回调（控制台 / GUI 实时文字区）并累积到回复缓存。
+
+        只显示「可信的主对话文本」：令牌及其之后的任务描述不经过这里，
+        避免用户看到 omni 自言自语生成的内部指令（如「给您推荐一部电」）。
+
+        Args:
+            text: 待显示的文本片段（已在调用侧裁掉令牌及之后的部分）。
+        """
+        if not text:
+            return
+        self.cb.on_text_delta(text)
+        # 累积回复文本供 GUI 实时文字区轮询（限长，避免无限增长）
+        with self._reply_lock:
+            self._reply_buf += text
+            if len(self._reply_buf) > 4000:
+                self._reply_buf = self._reply_buf[-2000:]
+        # 记录「已显示到 _text_buf 的哪个位置」，供下一个 delta 增量显示
+        self._shown_len = len(self._text_buf)
+
+    def _apply_echo_gate(self, audio: bytes, rms: float):
+        """回声门控：把本帧真实采集替换成等长静音，并判定为「非人声」。
+
+        用等长零字节而非跳过推送，是为了保持「1 秒音频 / 1 秒墙钟」的实时节奏——
+        全双工下喂太快会导致模型只 LISTEN 不 SPEAK。
+
+        Args:
+            audio: 本帧采集到的 16k float32 原始字节。
+            rms: 本帧实测 RMS（仅用于 debug 日志，不参与替换）。
+
+        Returns:
+            tuple[bytes, bool]: (替换后的音频字节, 是否计为真实人声)
+        """
+        if os.environ.get("OMNI_DEBUG") == "1":
+            print(f"[omni-client][debug] 回声门控生效（正在播报）"
+                  f" 麦克风已按静音推送 实测RMS={rms:.3f}", flush=True)
+        out = (b"\x00" * len(audio)) if audio else audio
+        return out, False
+
+    def _is_echoing(self) -> bool:
+        """当前采集到的音频是否大概率是「J.A.C. 自己的声音」（TTS 回声）。
+
+        判定：全局播放状态显示正在出声，或距上次播放结束不足 _echo_tail 秒（房间混响 /
+        系统音频缓冲未排空的拖尾期）。
+
+        Returns:
+            bool: True 表示当前处于回声窗口，采集内容不可信。
+        """
+        if _playback.is_playback_active():
+            return True
+        try:
+            return _playback.seconds_since_playback_end() < self._echo_tail
+        except Exception:  # noqa: BLE001
+            return False
+
     def _has_recent_speech(self) -> bool:
         """升级令牌护栏：令牌出现前「最近 window 秒内是否检测到真实人声」。
 
         返回 True 表示令牌大概率源于用户真实发言（可信触发），False 表示静音期
         幻觉（应拦截）。判定依据：_push_loop 在每帧 RMS≥阈值时刷新 _last_speech_ts。
         """
+        # 回声窗口（正在播报 / 刚播报完）：此时 omni 听到的其实是自己的声音，
+        # 由此产生的「任务」一律视为幻觉（真机已复现：TTS 播放期间 RMS 0.022 被误判为
+        # 人声，omni 随即吐出 <<CALL_QWEN>>给您推荐一部电）。
+        if self._echo_gate and self._is_echoing():
+            return False
         # 全程从未检测到人声（如开局模型自言自语）：必为幻觉
         if self._last_speech_ts <= 0.0:
             return False
@@ -784,7 +888,7 @@ class OmniClient:
         用 _clean_task 清洗（折叠 ASR 汉字间空格 + 跨换行连接）后再触发，
         避免把「查 一 下这台电」这类残缺任务直接交给大脑。
         """
-        if self._call_qwen_fired:
+        if self._call_qwen_fired or self._hallucinated:
             return
         task = self._clean_task(self._pending_task or "")
         if task:
@@ -797,7 +901,7 @@ class OmniClient:
         之前部分作为任务立即触发；或累积长度超过上限（防模型迟迟不给句号）也触发。
         否则保持 pending，等待后续 delta 或兜底定时器。
         """
-        if self._call_qwen_fired:
+        if self._call_qwen_fired or self._hallucinated:
             return
         raw = self._pending_task or ""
         flat = raw.replace("\n", "")
@@ -851,7 +955,9 @@ class OmniClient:
         """
         self._call_qwen_fired = False
         self._token_seen = False
+        self._hallucinated = False
         self._text_buf = ""
+        self._shown_len = 0
         self._pending_task = None
         if self._pending_timer is not None and self._pending_timer.is_alive():
             self._pending_timer.cancel()
@@ -901,6 +1007,64 @@ class OmniClient:
             speak_text_via_voicebox(None, text)
             return
         speak_text_via_voicebox(spk, text)
+
+
+# 输出设备类型识别关键词（macOS 中英文设备名均覆盖）
+# 耳机/蓝牙类：声音不会外泄到麦克风 → 无需回声门控，可保留「随时打断」能力
+_HEADPHONE_HINTS = ("耳机", "headphone", "headset", "airpods", "earpods", "earbuds",
+                    "蓝牙", "bluetooth")
+# 扬声器类：外放会被麦克风回采 → 必须开启回声门控，否则 omni 会听到自己而自言自语
+_SPEAKER_HINTS = ("扬声器", "speaker", "内建输出", "built-in", "internal", "monitor")
+
+
+def detect_headphones() -> bool:
+    """检测系统默认输出设备是否为耳机 / 蓝牙（即硬件层面已隔离回声）。
+
+    Returns:
+        bool: True=耳机类输出（外放不会进麦克风，可关闭门控保留打断能力）；
+              False=扬声器外放或无法判定（保守起见按外放处理，开启门控防自激）。
+    """
+    try:
+        p = pyaudio.PyAudio()
+        try:
+            name = str(p.get_default_output_device_info().get("name", "")).lower()
+        finally:
+            p.terminate()
+    except Exception:  # noqa: BLE001
+        return False
+    if any(h in name for h in _HEADPHONE_HINTS):
+        return True
+    if any(h in name for h in _SPEAKER_HINTS):
+        return False
+    return False      # 无法判定：保守按外放处理（宁可牺牲打断，也不要自激）
+
+
+def resolve_echo_gate(pref=None):
+    """解析回声门控最终开关；auto / None 时按当前输出设备自动判定。
+
+    bo s s 的使用约定：戴耳机（硬件隔离回声）→ 关闭门控以保留打断能力；
+    用内建扬声器外放 → 开启门控，否则 omni 会听到自己的声音而自言自语。
+
+    Args:
+        pref: True/False 手动指定；None 或 "auto" 表示按输出设备自动检测；
+              字符串 "1/on/true" 强制开，"0/off/false" 强制关。
+
+    Returns:
+        tuple[bool, str]: (是否启用门控, 人类可读的原因，用于启动日志)
+    """
+    if pref is None or (isinstance(pref, str) and pref.strip().lower() in ("auto", "")):
+        phones = detect_headphones()
+        if phones:
+            return False, "自动检测：耳机/蓝牙输出，无需门控（可打断）"
+        return True, "自动检测：扬声器外放，开启防自激"
+    if isinstance(pref, str):
+        v = pref.strip().lower()
+        if v in ("1", "on", "true", "yes"):
+            return True, "手动指定：开启"
+        if v in ("0", "off", "false", "no"):
+            return False, "手动指定：关闭（可打断）"
+        return resolve_echo_gate(None)      # 无法识别的字符串 → 回退自动
+    return bool(pref), "手动指定"
 
 
 def _ensure_no_proxy():

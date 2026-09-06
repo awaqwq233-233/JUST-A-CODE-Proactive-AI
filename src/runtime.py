@@ -261,6 +261,8 @@ class JACRuntime:
             video_fps=config.omni_fps,
             mic_gain=config.omni_mic_gain,
             listen_prob_scale=config.omni_listen_prob_scale,  # 压低 listen 偏好，修复全双工只听不说
+            # 回声门控：config 值可为 "auto"/"1"/"0" 字符串，由 client.resolve_echo_gate 解析
+            echo_gate=getattr(config, "omni_echo_gate", "auto"),
             camera_width=config.camera_width,
             camera_height=config.camera_height,
             voicebox_speaker=voicebox_speaker,

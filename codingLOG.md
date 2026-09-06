@@ -132,6 +132,32 @@
 
 ---
 
+## 修复记录（2026-09-06）：OMNI 回声自激——「我没说话，它自己识别进去了」
+
+- **现象（bo s s 真机）**：外放跑 `python -m src.omni`，bo s s 全程未开口，控制台却冒出「给您推荐一部电」「么样天气怎」，LM Studio 收到 `[升级任务] 给您推荐一部电` 并真跑了一次升级。
+- **根因（日志铁证，非 ASR 误识别）**：
+  ```
+  [mic] ····· RMS=0.0031 [TTS] 正在播放（Voicebox / JAC声纹引擎）: ...wav
+  [mic] ███· RMS=0.0220 [omni-client] 🎙 检测到人声（RMS=0.022 峰值=0.106）
+  ```
+  TTS 外放的声音被本机麦克风重新采集并推给 omni，omni 把**自己的上一轮语音**当成用户发言 → 自问自答 → 幻觉出升级任务。因为回声 RMS=0.022 ≥ 护栏阈值 0.02，原 `_has_recent_speech()` 被回声骗过，令牌未被拦截。
+  另：控制台那些「识别结果」其实是 **omni 的模型输出文本**（full_duplex 协议不回传用户 ASR 原文），此前令牌后的任务描述也被一并广播显示，故 bo s s 误以为是"识别进去了"。
+- **修复（4 处，详见 CHANGELOG 同日条目）**：①`playback.py` 全局「正在出声」状态 + `_push_loop` 回声期推送等长静音（`--no-echo-gate` / `OMNI_ECHO_GATE=0` 可关，`OMNI_ECHO_TAIL` 拖尾 0.8s）；②`_has_recent_speech()` 回声期一律判幻觉；③`_hallucinated` 守卫，杜绝"拦了又被句号偷偷 fire"；④`_broadcast` + `_shown_len`，令牌后的内部任务描述不再显示给用户。
+- **代价与取舍**：门控期间 J.A.C. 听不到用户插话（无法打断）。根治需 WebRTC AEC；外放场景建议保持门控开启，戴耳机（硬件隔离）可 `--no-echo-gate` 关闭以恢复打断能力。
+- **状态**：代码已落地，`py_compile` 通过，新增 `tests/test_omni_echo_gate.py` 8 用例 + 既有回归共 18 passed；真机复验待 bo s s。
+
+## 决策（2026-09-06 续）：bo s s 选「以后带耳机使用」→ 回声门控改为自动检测
+
+- **决定**：bo s s 明确"以后带耳机使用"。耳机=硬件隔离回声，门控反而是负担（期间听不到插话），故**默认让路、保留打断**。
+- **落地（详见 CHANGELOG 同日续条）**：`config.omni_echo_gate="auto"` + `client.resolve_echo_gate()`，
+  启动时查 PyAudio 默认输出设备名（耳机/蓝牙→关门控，扬声器→开门控），打印判定原因。
+  `gui.py` OMNI 面板新增「回声门控」下拉（自动 / 关 / 开）；`--no-echo-gate` 仍可强制关，`OMNI_ECHO_GATE` 环境变量可强制指定。
+- **语义变化**：此前门控默认强制开（缺失=1），现缺失=`auto`（戴耳机启动即自动关）。外放用户无需改操作；
+  耳机用户开箱即用打断能力。
+- **验证**：29 passed（含 `test_resolve_echo_gate_pref_parsing`）。
+
+---
+
 ## 变更记录（2026-08-16 夜）：OMNI 全双工五项体验修复
 
 真机对话暴露 5 类体验问题，已逐一源码定位并修复（详见 `CHANGELOG.md` 同日条目）：

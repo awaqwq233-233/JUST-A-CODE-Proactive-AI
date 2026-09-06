@@ -78,10 +78,15 @@ def test_silence_hallucination_guard():
 
 
 def test_token_text_not_spoken():
-    """含令牌的 delta 不应把令牌文本送进朗读队列，且升级应触发。"""
+    """含令牌的 delta 不应把令牌文本送进朗读队列，且升级应触发。
+
+    注（2026-09-06 校准）：2026-08-16 起任务描述改为「跨换行累积、遇句末标点才结算」
+    （根治 ASR 把「查一下这台电脑的本地时间」拆成两片、被首个换行截断的问题），
+    故这里用句号结尾触发，不再用换行触发；无标点场景由 1.5s 兜底定时器兜底。
+    """
     client, rec = _make_client()
-    # 带换行 → 立即触发升级
-    client._on_text("好的，我来帮你查一下<<CALL_QWEN>>查一下电脑的电池电量百分比\n")
+    # 带句号 → 立即触发升级
+    client._on_text("好的，我来帮你查一下<<CALL_QWEN>>查一下电脑的电池电量百分比。")
     joined = "".join(rec.fed)
     assert "<<CALL_QWEN>>" not in joined, f"令牌文本被送进朗读队列: {joined!r}"
     assert client._call_qwen_fired is True, "升级未被触发"
@@ -91,7 +96,7 @@ def test_token_text_not_spoken():
 def test_multi_turn_escalation():
     """升级标志位在每轮聆听后复位，第二次升级仍可触发。"""
     client, rec = _make_client()
-    client._on_text("帮我<<CALL_QWEN>>查时间\n")
+    client._on_text("帮我<<CALL_QWEN>>查时间。")
     assert client._call_qwen_fired, "第一轮升级未触发"
 
     # 模拟新一轮 listen：复位标志（与 _receiver_loop 的 listen 分支一致）
@@ -99,7 +104,7 @@ def test_multi_turn_escalation():
     assert client._call_qwen_fired is False, "标志位未复位（多轮失效 bug）"
 
     rec.fed.clear()
-    client._on_text("再帮我<<CALL_QWEN>>查天气\n")
+    client._on_text("再帮我<<CALL_QWEN>>查天气。")
     assert client._call_qwen_fired, "第二次升级未被触发（多轮失效 bug）"
     joined = "".join(rec.fed)
     assert "<<CALL_QWEN>>" not in joined, f"第二轮令牌文本被朗读: {joined!r}"
