@@ -43,7 +43,8 @@ class Config:
     omni_port: int = 9060
     omni_quant: str = "Q8_0"                              # Q4_K_M 在 Metal 上劣化，锁定 Q8_0
     omni_ref_audio: str = "voices/silverwalf_voice.wav"   # 声纹克隆参考音（JAC 原音色）
-    omni_fps: int = 5                                     # 视频上行帧率
+    omni_fps: int = 5                                     # 摄像头刷新率（影响 GUI 预览与「最新帧」新鲜度，与上行解耦）
+    omni_video_interval: float = 1.0                      # 视频上行间隔（秒/帧，P1 图像降频；<=0=每段都带图）
     omni_mic_gain: float = 1.0                           # 麦克风采集增益（OMNI 全双工，内建麦离嘴远时调高）
     omni_listen_prob_scale: float = 0.5                  # 全双工采样参数：<1 压低 <|listen|> 概率逼模型回复，>1 增 listen
     # 回声门控："auto"=按输出设备自动判定（耳机→关、扬声器→开）；"1"/"on"=强制开；"0"/"off"=强制关
@@ -117,6 +118,7 @@ class Config:
             omni_quant=os.environ.get("OMNI_QUANT", "Q8_0"),
             omni_ref_audio=os.environ.get("OMNI_REF_AUDIO", "voices/silverwalf_voice.wav"),
             omni_fps=int(os.environ.get("OMNI_FPS", "5")),
+            omni_video_interval=float(os.environ.get("OMNI_VIDEO_INTERVAL", "1.0")),
             omni_mic_gain=float(os.environ.get("OMNI_MIC_GAIN", "1.0")),
             omni_listen_prob_scale=float(os.environ.get("OMNI_LISTEN_PROB_SCALE", "0.5")),
             omni_echo_gate=os.environ.get("OMNI_ECHO_GATE", "auto"),

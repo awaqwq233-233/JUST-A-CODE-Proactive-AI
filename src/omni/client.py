@@ -18,6 +18,26 @@
   - 全双工下必须按「真实实时节奏」喂音频（约 1 秒音频 / 1.0 秒墙钟），
     喂太快模型只 LISTEN 不 SPEAK；喂太慢则延迟增大。
   - 声纹克隆参考音用项目内 voices/silverwalf_voice.wav（44.1k → 重采样 16k）。
+
+P0 修复（2026-09-13，真机 + 服务端日志实测后落地；共三轮迭代）：
+  - **P0-a 令牌前缀 holdback + 畸形令牌容忍**：服务端按 token 逐片下发文本，`<<CALL_QWEN>>`
+    会被切成 `<<CALL_Q` 这类碎片；碎片到达瞬间缓冲里没有完整令牌，于是被当普通对话朗读
+    （Voicebox 里那段 `<<CALL_Q` 怪音）。三轮追加两条硬事实：①**模型不保证原样吐出令牌**
+    （真机确认会吐 `<<CALL_ QWEN>>`，中间夹空格/换行，空格来自模型本身），精确匹配会漏、
+    且 `<<CALL_` 后接空格就不再是前缀、holdback 也拦不住；②`listen` 在 full_duplex 下
+    **每段都会来**，不能用它清文本缓冲（会把令牌拦腰截断）。现令牌识别统一在 `tokens.py`
+    （容忍空白/换行的匹配 + holdback + 含尖括号一律不外发的硬安全网），命中后消费掉令牌；
+    释放点只有 listen / session.closed / 文本静默 `OMNI_HOLD_IDLE`。
+  - **P0-b 推流背压 + 水位 + 段事件去重**：服务端 full_duplex 是串行「读一段 → prefill+decode
+    一步」，单段实测 0.69s（VPM 图像编码 190ms 是大头）。三轮发现**一段会发两个终局事件且
+    共用同一 `response_id`**（listen delta + response.done），若都算「本段完成」则推流翻倍、
+    出现 0.02s 级极小块 → 每轮仍要重做图像编码（成本与块大小无关）→ 消费速率腰斩 →
+    积压丢帧（真机累计丢 5.1s，丢在句子中间 → 模型只听得到残句 → 答非所问）。
+    现按 response_id 去重 + 最小推流间隔 + 最小块时长（`OMNI_MIN_CHUNK_SECS`）+ 音频水位
+    （`max_buf_secs`），并保证**每帧必带音频**（服务端收到空音频会 fail_fast 打死会话）。
+  - **人声判据与门控**：判据改「峰值 或 RMS」双条件（RMS 阈值 0.02 正压在人声段下沿）、
+    窗口放宽到 6s（原 3s 小于端到端延迟，会把真实提问误判成幻觉）；门控 auto 判定同时看
+    输入与输出设备，自身播报窗口的排除从门控开关解耦。
 """
 import asyncio
 import base64
@@ -38,9 +58,24 @@ import websockets
 from src.capture.camera import Camera
 from src.audio import playback as _playback
 from .voicebox_bridge import VoiceboxBridge
+# 令牌识别统一在 tokens.py：容忍空白/换行/大小写的变体（真机确认模型会吐 `<<CALL_ QWEN>>`）
+from .tokens import (
+    CALL_TOKEN,
+    find_call_token,
+    token_prefix_suffix_len as _token_prefix_suffix_len,
+    sanitize_for_speech,
+)
 
 # 全双工音频目标采样率（omni 要求 16kHz float32 单声道）
 TARGET_SR = 16000
+
+
+async def _safe_close(ws):
+    """尽力关闭 WS（已关闭/正在关闭时忽略异常）。"""
+    try:
+        await ws.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class OmniCallbacks:
@@ -154,7 +189,9 @@ class OmniClient:
                  push_interval: float = 0.4, video_fps: int = 5,
                  camera_width: int = 1280, camera_height: int = 720,
                  video_quality: int = 80, voicebox_speaker=None,
-                 echo_gate: bool = None):
+                 echo_gate: bool = None, flow_control: bool = True,
+                 max_buf_secs: float = None, chunk_wait_timeout: float = None,
+                 video_interval: float = None):
         """初始化客户端。
 
         Args:
@@ -174,10 +211,26 @@ class OmniClient:
                 >1 增 listen。服务端默认 1.0（偏置 0）会让模型恒 listen 导致「只听不说」，
                 客户端显式传 0.5（偏置 -1.0）可修复。
             push_interval: 每多少秒把累积音频 + 最新视频帧推一次（≈实时节奏）。
-            video_fps: 视频上行帧率（仅影响最新帧刷新频率，与 push 解耦）。
+            video_fps: 摄像头刷新率（只影响「最新帧」的刷新频率与 GUI 预览观感，
+                与上行帧率解耦——上行由 video_interval 单独控制）。
+            video_interval: **视频上行间隔（秒）**。P1：默认 1.0，即音频照常按块上行、
+                但图像每秒只带 1 帧。为什么必须降：服务端每带一帧图就要做一次 VPM 编码
+                （实测约 190ms）并往 KV 里塞约 64 个视觉 token，而每一段音频只有个位数
+                token——按 2.5 段/秒推就是 160 视觉 token/秒，n_ctx=8192 约 45 秒填满，
+                导致每约 30 秒一次上下文滑动（滑掉之后模型只剩 system prompt，于是照
+                示例复读令牌）。降到 1 帧/秒可把 KV 增长降约三成、上下文寿命 +约四成，并每轮省下一次 VPM 编码，
+                同时每轮省下约 190ms 让实时性有余量。<=0 表示退回旧行为（每段都带图）。
+                None=读环境变量 OMNI_VIDEO_INTERVAL（默认 1.0）。
             camera_width/height: 自建摄像头分辨率。
             video_quality: jpeg 编码质量（0~100）。
             echo_gate: 回声门控开关；None 表示读环境变量 OMNI_ECHO_GATE（默认开）。
+            flow_control: P0-b 推流背压开关（默认开）。开则「一段在飞」——等服务端把上
+                一段 prefill+decode 完再推下一段，避免音频积压线性增长（真机实测 64s 会话
+                曾落后 27s，模型回答的是半分钟前的用户）。关闭则退回固定 0.4s 猛推。
+            max_buf_secs: 上行音频水位上限（秒），超过就丢最旧的音频以保住实时性。
+                None=读环境变量 OMNI_MAX_BUF_SECS（默认 1.2s）。
+            chunk_wait_timeout: 背压等待单段处理完成的最长秒数（超时兜底，防服务端不响应
+                时死等）。None=读环境变量 OMNI_CHUNK_WAIT（默认 1.0s）。
         """
         _ensure_no_proxy()
         self.url = url
@@ -196,6 +249,20 @@ class OmniClient:
         self.camera_width = camera_width
         self.camera_height = camera_height
         self.video_quality = video_quality
+        # ---- P1 图像降频（视频上行间隔）----
+        # 服务端每带一帧图就要做一次 VPM 编码（实测约 190ms）并往 KV 塞约 64 个视觉 token，
+        # 而每段音频只有个位数 token。按 2.5 段/秒带图 = 约 160 视觉 token/秒 →
+        # n_ctx 8192 约 45 秒填满 → 每约 30 秒一次上下文滑动（滑掉后模型只剩 system prompt，
+        # 于是照示例复读令牌，真机三轮已复现「查询一下最近的新闻」）。
+        # 降到 1 帧/秒后的实测收益（真机日志：VPM p50=196ms/均值 232ms，图像 64 视觉 token/帧，
+        # 块节奏约 1.5 段/秒）：KV 增长 109→79 token/秒（降约三成）、VPM 负载 0.34→0.23 秒/秒
+        # （降约三分之一）、上下文寿命 69→95 秒（+约四成），且每轮省下一次 VPM 编码。
+        self.video_interval = float(
+            video_interval if video_interval is not None
+            else os.environ.get("OMNI_VIDEO_INTERVAL", "1.0")
+        )
+        self._last_frame_ts = 0.0            # 上次带图时刻（0=本会话还没带过图）
+        self._frames_sent = 0                # 已带图段数（诊断用）
 
         # ---- M7b/M7a：本地 Voicebox 克隆 TTS 复用（None=走 omni 自带 audio）----
         self._voicebox_speaker = voicebox_speaker
@@ -228,9 +295,18 @@ class OmniClient:
         # 升级令牌护栏：记录「最近一次检测到真实人声」的墙钟时间（monotonic）。
         # omni 会在静音期幻觉出 <<CALL_QWEN>> 任务并自触发（真机已复现：静音段 RMS 0.003
         # 却凭空生成"查电池电量"任务），令牌出现前若无真实人声则判定为幻觉、拒绝升级。
-        self._last_speech_ts = 0.0           # 最近一次 RMS≥阈值的人声时刻（0=尚无）
-        self._speech_window = 3.0            # 令牌前多少秒内有人声才算"真实触发"（秒）
-        self._speech_rms_th = 0.02           # 判定人声的 RMS 阈值（mic_check 实测说话段 0.08+）
+        self._last_speech_ts = 0.0           # 最近一次「有人声」的时刻（0=尚无）
+        # 窗口：令牌从「用户说话」到「客户端收到」的端到端延迟 = 音频积压 + 服务端一轮
+        # prefill/decode + TTS 排队，实测远超 3s。窗口小于链路延迟会把**真实提问**判成
+        # 幻觉（真机三轮：真实提问被拦截、升级任务丢失）。默认放宽到 6s。
+        self._speech_window = float(os.environ.get("OMNI_SPEECH_WINDOW", "6.0"))
+        # 人声判据：RMS + 峰值双条件（真机实测：底噪 RMS 0.002~0.013，人声 RMS 0.020~0.056
+        # ——阈值 0.02 正压在人声段下沿，单看 RMS 会让人声帧在阈值附近来回抖；
+        # 而人声峰值 0.088~0.277 与底噪分离干净，两个条件取「或」更稳）。
+        self._speech_rms_th = float(os.environ.get("OMNI_SPEECH_RMS_TH", "0.02"))
+        self._speech_peak_th = float(os.environ.get("OMNI_SPEECH_PEAK_TH", "0.06"))
+        # 自身播报窗口的排除策略：always（默认，无论门控开关都排除）| gate（只在门控开时排除）
+        self._echo_guard = os.environ.get("OMNI_ECHO_GUARD", "always").strip().lower()
 
         # ---- 回声门控（Echo Gate）：J.A.C. 说话时把麦克风当「听不见」----
         # 根因（真机 2026-09-06 复现）：TTS 外放被本机麦克风重新采集，日志里
@@ -247,11 +323,53 @@ class OmniClient:
         self._echo_tail = float(os.environ.get("OMNI_ECHO_TAIL", "0.8"))  # 播放结束后的拖尾保护秒数
         self._echo_gated = False             # 当前是否正处于门控中（供日志/诊断）
 
+        # ---- P0-b 推流背压（Flow Control）----
+        # 根因（2026-09-13 读 temp/omni_server.log 实测）：服务端 full_duplex 是串行循环
+        # 「读一条 input.append → prefill + decode 一步」，其单段耗时 ≈0.69s（图像 VPM 编码
+        # 190ms 是大头，decode p50=330ms/p90=759ms），而客户端固定每 0.4s 猛推一段，
+        # 于是积压线性增长——64.4s 的会话服务端累计落后 **27.2 秒**，模型回答的是半分钟前
+        # 的用户（这正是 boss 反馈「我问的和它理解的不一样」的直接原因）。
+        # 修法：改成「一段在飞」——等服务端把上一段处理完（收到 listen 或 response.done
+        # 即算完）再推下一段；服务端慢就自动放慢节拍（chunk 变大），但延迟不再累积。
+        # 另设音频水位上限：极端情况宁可丢最旧的音频，也要保证「模型听到的是现在」。
+        _fc_env = os.environ.get("OMNI_FLOW_CONTROL", "1").strip().lower()
+        self._flow_control = bool(flow_control and _fc_env not in ("0", "off", "false", "no"))
+        self._max_buf_secs = float(
+            max_buf_secs if max_buf_secs is not None
+            else os.environ.get("OMNI_MAX_BUF_SECS", "1.2")
+        )
+        self._chunk_wait_timeout = float(
+            chunk_wait_timeout if chunk_wait_timeout is not None
+            else os.environ.get("OMNI_CHUNK_WAIT", "1.0")
+        )
+        self._chunk_done_ev = None           # asyncio.Event：服务端处理完本段的信号
+        self._chunk_seq = 0                  # 已上行段号（诊断用）
+        self._dropped_secs = 0.0             # 累计因超水位被丢弃的音频秒数（诊断用）
+        # 终局事件去重：服务端「一段」会发 listen + response.done 两个终局事件且共用同一
+        # response_id（真机三轮踩坑），不去重则一段被算两次完成 → 推流翻倍、块变小 →
+        # 服务端每轮重做图像编码 → 消费速率腰斩 → 积压丢帧。
+        self._last_chunk_resp_id = ""
+        self._last_push_ts = 0.0             # 上次上行时刻（配合最小间隔，防小块洪泛）
+        # 最小块时长：小于这个长度的音频不值得单独占一轮服务端算力（图像编码成本固定），
+        # 极小块（真机见过 0.02s）会把真实吞吐量腰斩。默认与 push_interval 一致。
+        self._min_chunk_secs = float(os.environ.get("OMNI_MIN_CHUNK_SECS", "0.4"))
+        # 最小推流间隔：即使终局信号提前到达，也不许比 push_interval 更密
+        self._min_push_interval = float(
+            os.environ.get("OMNI_MIN_PUSH_INTERVAL", str(push_interval))
+        )
+
         self._call_qwen_fired = False        # 本次会话是否已触发过升级（幂等 + 停止朗读）
         self._token_seen = False             # 是否已发现令牌但尚未 fire（pending 累积中，停止朗读）
         self._hallucinated = False           # 本轮令牌已被判定为幻觉（禁止后续任何 fire）
         self._pending_task = None            # 令牌已命中但任务描述尚未完整时的临时累积
         self._pending_timer = None           # 令牌后无换行时的兜底触发定时器
+        # P0-a 文本静默兜底释放：holdback 扣留的尾巴只能在「本轮真的说完了」时释放。
+        # 真机教训（2026-09-13）：`response.done` 在 full_duplex 下是**每段一次**，
+        # 不是每轮一次；用它当轮末会在段边界把令牌碎片 `<<CALL_QW` 放出去（乱念）。
+        # 故真正的轮末只用 listen 事件；`response.done` 之后若文本静默超过该秒数
+        # （模型这一轮确实不再说话了），再由 _hold_flush_loop 兜底释放。
+        self._hold_idle_secs = float(os.environ.get("OMNI_HOLD_IDLE", "1.5"))
+        self._text_idle_deadline = 0.0       # >0 表示有待释放尾巴，到点由静默循环释放
 
         # ---- GUI 实时展示用缓存（由 omni 接收/采集线程写入，GUI 定时器轮询读取）----
         self._last_mic_level = 0.0           # 最近一次麦克风 RMS（供 GUI 音量条）
@@ -327,6 +445,10 @@ class OmniClient:
     def stop(self):
         """停止会话并释放所有资源。"""
         self._stop_ev.set()
+        # 主动关掉 WS：接收协程 `async for raw in ws` 会一直阻塞等消息，不关连接
+        # gather 永不返回 → 本线程活到最后（stop 会白等满 join 超时 10s，
+        # 且 daemon 升级线程等残留物继续跑）。关连接后接收循环立即结束。
+        self._close_ws_soon()
         # 取消可能还在等待的令牌兜底定时器
         if self._pending_timer is not None and self._pending_timer.is_alive():
             try:
@@ -361,6 +483,22 @@ class OmniClient:
     def is_running(self) -> bool:
         """是否仍在运行。"""
         return self._thread is not None and self._thread.is_alive()
+
+    def _close_ws_soon(self):
+        """把 WS 关闭动作投递到客户端自己的事件循环（跨线程安全）。
+
+        用于 stop()：接收协程阻塞在 `async for raw in ws` 上，只有关闭连接才能让它退出，
+        否则 gather 不返回、线程活到 join 超时（实测 stop 会卡满 10s）。
+        """
+        ws, loop = self._ws, self._loop
+        if ws is None or loop is None or loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(_safe_close(ws))
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def get_latest_frame(self):
         """返回最新摄像头帧（BGR numpy），无则返回 None（供 GUI 预览）。"""
@@ -417,15 +555,41 @@ class OmniClient:
 
                 # 4) 启动采集（麦克风 + 摄像头 + 播放器）
                 self._start_capture()
+                # 4.2) 丢掉采集在启动期间攒下的音频：麦克风线程先于推流循环启动，
+                # 而相机初始化要 ~1.5s，期间会攒下一大段——不清掉会「首帧就超水位被裁」，
+                # 造成开局音频不连续 + 一条吓人的水位警告。
+                self._take_audio()
 
-                # 5) 推送协程 + 接收协程并发运行，直到停止或断连
+                # 4.5) P0-b 背压信号：本段已被服务端处理完（首次立即放行，避免开局空等）
+                self._chunk_done_ev = asyncio.Event()
+                self._chunk_done_ev.set()
+
+                # 5) 推送协程 + 接收协程 + 文本静默兜底协程并发运行，直到停止或断连
                 try:
-                    await asyncio.gather(self._push_loop(ws), self._receiver_loop(ws))
+                    await asyncio.gather(
+                        self._push_loop(ws),
+                        self._receiver_loop(ws),
+                        self._hold_flush_loop(),
+                    )
                 finally:
                     self._stop_capture()
+                    self._chunk_done_ev = None
         except asyncio.CancelledError:
             pass
         except Exception as e:  # noqa: BLE001
+            # WS 断开要给出可诊断的信息：服务端 fail_fast（协议层判定非法输入）会
+            # 「发 session.closed 后立刻 ws.close(1000)」，客户端不加解释地报
+            # 「received 1000 (OK)」时根本无从下手（真机已踩）。
+            try:
+                import websockets.exceptions as _wse
+                if isinstance(e, _wse.ConnectionClosed):
+                    rcvd = getattr(e, "rcvd", None)
+                    print(f"[omni-client] ⚠️ WebSocket 关闭：code={getattr(rcvd, 'code', None)} "
+                          f"reason={getattr(rcvd, 'reason', None)!r} "
+                          f"（1000=对端正常关闭；若上一条日志有 session.closed reason，"
+                          f"以那个为准）", flush=True)
+            except Exception:  # noqa: BLE001
+                pass
             self.cb.on_error(e)
         finally:
             self._ws = None
@@ -521,12 +685,24 @@ class OmniClient:
                 self.cb.on_error(f"播放器启动失败（OMNI 语音将不播放）: {e}")
                 self.player = None
 
-        # 回声门控状态提示：真机验收时一眼确认是否生效（默认按输出设备自动判定）
+        # 回声门控状态提示：真机验收时一眼确认是否生效（默认按输入/输出两端口自动判定）
         if self.enable_mic:
+            in_name, out_name = detect_audio_devices()
             print(f"[omni] 回声门控：{'开启' if self._echo_gate else '关闭'}"
-                  f"（{self._echo_gate_reason}）。外放时开启可防 omni 听到自己而自言自语；"
-                  f"耳机时关闭可随时打断。可用 --no-echo-gate / OMNI_ECHO_GATE 覆盖。",
+                  f"（{self._echo_gate_reason}）\n"
+                  f"[omni] 设备：输入={in_name or '未知'} / 输出={out_name or '未知'}\n"
+                  f"[omni] 外放时开启可防 omni 听到自己而自言自语；耳机+独立麦克风时可关闭以保留打断。"
+                  f"可用 --no-echo-gate / OMNI_ECHO_GATE 覆盖；自身播报窗口排除策略 "
+                  f"OMNI_ECHO_GUARD={self._echo_guard}。",
                   flush=True)
+
+        # 图像上行间隔提示（P1）：真机验收时一眼确认降频是否生效
+        if self.enable_camera:
+            _vi = ("每段都带图（已关闭降频）" if self.video_interval <= 0
+                   else f"{self.video_interval:.2f}s/帧")
+            print(f"[omni] 图像上行间隔：{_vi}（摄像头刷新 {self.video_fps}fps，上行已解耦）。"
+                  f"实测收益：KV 增长降约三成、上下文寿命 +约四成、每轮省下一次 VPM 编码。"
+                  f"可用 OMNI_VIDEO_INTERVAL 调整，<=0 退回每段带图。", flush=True)
 
     def _stop_capture(self):
         """停止采集线程与流。"""
@@ -549,16 +725,29 @@ class OmniClient:
             self._cam_thread = None
 
     def _mic_loop(self):
-        """麦克风采集循环：持续读取 float32 音频累加到缓冲。"""
+        """麦克风采集循环：持续读取 float32 音频累加到缓冲。
+
+        ⚠️ 死亡必须**大声报出来**：此前 `read()` 抛异常时静默 `break`，采集线程无声退出，
+        表现就是「怎么说话 omni 都不回应」，而日志里只有 RMS≈0（很容易被误判成权限问题）。
+        真机踩坑：默认输入设备从蓝牙耳机切到内建麦（采样率 48000）时最容易触发。
+        """
         while not self._stop_ev.is_set() and self._mic_stream is not None \
                 and self._mic_stream.is_active():
             try:
                 data = self._mic_stream.read(1024, exception_on_overflow=False)
-            except Exception:  # noqa: BLE001
-                break
+            except Exception as e:  # noqa: BLE001
+                print(f"[omni-client] ⚠️ 麦克风读取失败，采集线程已退出——"
+                      f"之后只会上行静音，OMNI 将完全听不到你说话（请重开 OMNI 或换设备）: {e}",
+                      flush=True)
+                self.cb.on_error(f"麦克风采集中断（之后将听不到声音）: {e}")
+                return
             if data:
                 with self._mic_lock:
                     self._mic_buf.extend(data)
+        # 循环自然退出：停止时属正常；非停止状态退出则说明流被外部关掉了，要报警
+        if not self._stop_ev.is_set():
+            print("[omni-client] ⚠️ 麦克风采集流已停止（非本程序主动停止），"
+                  "OMNI 将听不到声音。", flush=True)
 
     def _cam_loop(self):
         """摄像头采集循环：按 video_fps 刷新最新帧（jpeg），由推送协程取用。"""
@@ -578,22 +767,150 @@ class OmniClient:
             time.sleep(interval)
 
     # ============================================================ 收发
-    async def _push_loop(self, ws):
-        """实时推流循环：每隔 push_interval 把累积音频 + 最新帧打包发送。
+    async def _wait_chunk_slot(self):
+        """P0-b 背压：等上一段被服务端处理完再放行下一段（超时兜底防死等）。
 
-        关键点：累积的音频量 ≈ push_interval 秒的真实录音，保证按实时节奏喂给模型，
-        避免全双工下「只听不说」（M0 实测踩坑）。同时回报麦克风 RMS 用于诊断，
-        持续静音（RMS≈0）时周期警告，帮助排查「用户说话但 omni 无反应」这类问题。
+        服务端是串行循环：读一条 input.append → prefill + decode 一步 → 回 listen 或
+        response.done。所以「收到任一终局事件」就等于「上一段已消费完」，可以推下一段。
+        非背压模式（flow_control=False / 环境变量 OMNI_FLOW_CONTROL=0）退化为固定节拍。
+
+        三轮追加：**最小推流间隔**。即使终局信号提前到达（例如同一段的第二个终局事件，
+        或有积压的历史信号），也不允许比 `push_interval` 更密——否则会退化成
+        「小块洪泛」：服务端每一轮都要重做图像编码（VPM 190ms，与块大小无关），
+        真实消费速率腰斩 → 积压 → 丢帧（真机累计丢 5.1s）。
+        """
+        ev = self._chunk_done_ev
+        if not self._flow_control or ev is None:
+            await asyncio.sleep(self.push_interval)
+            return
+        try:
+            await asyncio.wait_for(ev.wait(), timeout=self._chunk_wait_timeout)
+        except asyncio.TimeoutError:
+            # 服务端未回终局事件（响应慢/无响应/纯 EOF 段）：不阻塞，按超时继续推
+            pass
+        ev.clear()
+        if self._min_push_interval > 0:
+            gap = time.monotonic() - self._last_push_ts
+            if gap < self._min_push_interval:
+                await asyncio.sleep(self._min_push_interval - gap)
+
+    async def _wait_min_chunk(self):
+        """等采集缓冲攒够「最小块时长」，避免发出极小块白烧服务端一轮算力。
+
+        为什么值得等：服务端每一轮都要把随帧图像重新编码（VPM 约 190ms）+ 跑一次
+        decode，**这个成本与音频块大小无关**。音频以每秒 1 秒的速度累积，所以
+        「每块至少 0.4s」不会降低实时性（本来也推不更快），却能让每轮算力都被有效利用。
+        上限 `min_chunk_secs + 0.1s`：麦克风异常（不再产出数据）时不能死等，
+        交给 `_push_loop` 的补静音兜底保证报文合法。
+        """
+        need = int(self._min_chunk_secs * TARGET_SR) * 4
+        if need <= 0:
+            return
+        deadline = time.monotonic() + self._min_chunk_secs + 0.1
+        while not self._stop_ev.is_set() and time.monotonic() < deadline:
+            with self._mic_lock:
+                have = len(self._mic_buf)
+            if have >= need:
+                return
+            await asyncio.sleep(0.02)
+
+    def _should_attach_frame(self, now: float) -> bool:
+        """本段是否附带视频帧（P1 图像降频：默认 video_interval 秒一帧）。
+
+        为什么把「图像上行」与「音频上行」解耦：服务端每一段都要为随帧图像做一次 VPM
+        编码（约 190ms）并把约 64 个视觉 token 写进 KV，而一段音频只有个位数 token。
+        带图频率越高，KV 越快被视觉 token 填满——真机实测每约 30 秒就触发一次上下文
+        滑动，滑掉之后模型只剩 system prompt，于是照 `prompts.py` 里的示例复读令牌
+        （「查询一下最近的新闻」就是这么来的）。降到 1 帧/秒后模型仍能「看着你」，
+        但 KV 增长降约三成、上下文寿命 +约四成，并让每轮少一次 VPM 编码。
+
+        Args:
+            now: 当前 monotonic 时刻。
+
+        Returns:
+            bool: True=本段带图（并刷新计时），False=本段只上音频。
+        """
+        if self.video_interval <= 0:
+            return True                      # <=0：退回旧行为（每段都带图，便于对照排查）
+        if self._last_frame_ts <= 0.0:
+            self._last_frame_ts = now
+            self._frames_sent += 1
+            return True
+        if now - self._last_frame_ts >= self.video_interval:
+            # 计时「累加」而非「赋值」：块节奏（0.4~0.9s）不是间隔的整数倍，
+            # 赋值会让长期平均变成 0.6~0.8 帧/秒；累加可让长期均值准确落在 1/间隔。
+            # 落后超过 2 个间隔（例如刚开始推流/长时间暂停）则重新对齐，避免连发补帧。
+            self._last_frame_ts += self.video_interval
+            if now - self._last_frame_ts > 2 * self.video_interval:
+                self._last_frame_ts = now
+            self._frames_sent += 1
+            return True
+        return False
+
+    def _take_audio(self):
+        """取出本轮要上行的音频；超过水位就丢最旧的（保证「模型听到的是现在」）。
+
+        非背压模式下音频会累积到超过水位（真机曾落后 27s），此时**丢最旧的保最新的**：
+        宁可让模型听到一段有断点的音频，也不能让它对着半分钟前的声音回答。
+        """
+        with self._mic_lock:
+            audio = bytes(self._mic_buf)
+            self._mic_buf = bytearray()
+        max_bytes = int(self._max_buf_secs * TARGET_SR) * 4
+        if max_bytes > 0 and len(audio) > max_bytes:
+            dropped = len(audio) - max_bytes
+            self._dropped_secs += dropped / 4 / TARGET_SR
+            print(f"[omni-client] ⚠️ 上行积压超水位 "
+                  f"({len(audio) / 4 / TARGET_SR:.2f}s > {self._max_buf_secs:.2f}s)，"
+                  f"丢弃最旧的 {dropped / 4 / TARGET_SR:.2f}s 以保住实时"
+                  f"（累计已丢 {self._dropped_secs:.1f}s）", flush=True)
+            audio = audio[-max_bytes:]
+        return audio
+
+    async def _push_loop(self, ws):
+        """实时推流循环：按「服务端消费得过来」的节奏上行音频 + 最新帧。
+
+        关键点 1（P0-b）：不再是雷打不动每 0.4s 推一次，而是**一段在飞**——等服务端把
+        上一段 prefill+decode 完（listen / response.done 任一到达即算完）再推下一段。
+        服务端慢时自动放慢节拍（单段音频变长），但延迟不再累积；配合水位丢帧兜底。
+        关键点 2：累积的音频量 ≈ 真实录音，保证按实时节奏喂给模型，避免全双工下
+        「只听不说」。同时回报麦克风 RMS 用于诊断，持续静音（RMS≈0）时周期警告，
+        帮助排查「用户说话但 omni 无反应」这类问题。
         """
         silent_secs = 0.0
+        t_last = time.monotonic()
         while not self._stop_ev.is_set():
-            await asyncio.sleep(self.push_interval)
+            await self._wait_chunk_slot()
+            if self._stop_ev.is_set():
+                break
 
-            with self._mic_lock:
-                audio = bytes(self._mic_buf)
-                self._mic_buf = bytearray()
+            await self._wait_min_chunk()          # 攒够最小块时长，别发极小块白烧服务端算力
+            audio = self._take_audio()
+            # 每一帧都必须带音频：服务端 full_duplex 分支拿到空音频会
+            # `fail_fast("missing_audio")` → 直接发 session.closed 并关掉整个 WS
+            # （真机已复现：采集侧一断，首帧无音频就把会话打死，表现为「怎么说话都不回」）。
+            # 缓冲空时先短暂等采集线程产出数据，仍为空则补 0.1s 静音（等价「这帧没听到人」）。
+            if not audio:
+                for _ in range(8):
+                    await asyncio.sleep(0.02)
+                    audio = self._take_audio()
+                    if audio:
+                        break
+            if not audio:
+                audio = b"\x00" * (int(0.1 * TARGET_SR) * 4)
+                if os.environ.get("OMNI_DEBUG") == "1":
+                    print("[omni-client][debug] 采集缓冲为空，补 0.1s 静音以保证 "
+                          "input.append 合法（否则服务端会 fail_fast 关会话）", flush=True)
+            now = time.monotonic()
+            elapsed = max(1e-3, now - t_last)     # 本轮实际间隔（背压下会随服务端变长）
+            t_last = now
+            self._last_push_ts = now
+            self._chunk_seq += 1
 
-            # 计算麦克风音量（RMS），用于诊断采集是否正常
+            # 计算麦克风音量（RMS + 峰值）：两者都用于「是否有人声」判定与诊断。
+            # 单看 RMS 不可靠——真机实测底噪 RMS 0.002~0.013 与人声 RMS 0.020~0.056 只差
+            # 3~5 倍，阈值 0.02 正压在人声段下沿，人声帧会在阈值附近来回抖；而人声峰值
+            # 0.088~0.277 与底噪分离干净，故用「峰值≥阈值 或 RMS≥阈值」的双条件。
             if audio:
                 arr = np.frombuffer(audio, dtype=np.float32)
                 rms = float(np.sqrt(np.mean(arr * arr))) if arr.size else 0.0
@@ -604,6 +921,7 @@ class OmniClient:
                     audio = arr.tobytes()
             else:
                 rms = 0.0
+            peak = float(np.max(np.abs(arr))) if audio and arr.size else 0.0
             self.cb.on_mic_level(rms)
             self._last_mic_level = rms        # 缓存供 GUI 音量条轮询
 
@@ -616,30 +934,32 @@ class OmniClient:
             if echoing:
                 audio, is_speech = self._apply_echo_gate(audio, rms)
             else:
-                # 检测到真实人声（RMS≥阈值）时刷新时间戳，供升级令牌护栏判定
-                is_speech = rms >= self._speech_rms_th
+                # 检测到真实人声就刷新时间戳，供升级令牌护栏判定。
+                # 双条件（峰值 或 RMS）：单看 RMS 时阈值 0.02 正压在人声段下沿，
+                # 真机实测人声帧会在阈值附近来回抖（日志同一秒内「检测到人声 0.023」
+                # →「进入静音 0.004」），导致"最近有人声"这条判据不可靠、真实提问被误杀。
+                is_speech = self._is_speech_frame(rms, peak)
             if is_speech:
                 self._last_speech_ts = time.monotonic()
             # 推流诊断日志治理（#4）：默认只在「人声↔静音」状态翻转时打印一行，
             # 避免每 ~0.4s 刷屏；仅当环境变量 OMNI_DEBUG=1 时才逐块打印 RMS 诊断详情。
-            self._push_seq = getattr(self, "_push_seq", 0) + 1
             prev_state = getattr(self, "_last_speech_state", None)
             if is_speech != prev_state:
                 if is_speech:
-                    peak = float(np.max(np.abs(arr))) if audio and arr.size else 0.0
-                    print(f"[omni-client] 🎙 检测到人声（RMS={rms:.3f} 峰值={peak:.3f}）",
+                    print(f"[omni-client] 🎙 检测到人声（RMS={rms:.3f} 峰值={peak:.3f} "
+                          f"判据={self._speech_peak_th:.2f}/{self._speech_rms_th:.2f}）",
                           flush=True)
                 else:
-                    print(f"[omni-client] 进入静音（RMS={rms:.3f}）", flush=True)
+                    print(f"[omni-client] 进入静音（RMS={rms:.3f} 峰值={peak:.3f}）", flush=True)
                 self._last_speech_state = is_speech
             # 逐块诊断仅在显式开启时打印，便于排查「说话但 omni 无反应」类问题
             if os.environ.get("OMNI_DEBUG") == "1":
-                peak = float(np.max(np.abs(arr))) if (is_speech and audio and arr.size) else 0.0
-                print(f"[omni-client][debug] 推流#{self._push_seq} "
-                      f"{'人声' if is_speech else '静音'} RMS={rms:.3f} 峰值={peak:.3f} 块={len(audio)}B",
-                      flush=True)
+                print(f"[omni-client][debug] 推流#{self._chunk_seq} "
+                      f"间隔={elapsed:.2f}s {'人声' if is_speech else '静音'} "
+                      f"RMS={rms:.3f} 峰值={peak:.3f} 块={len(audio)}B "
+                      f"距上次人声={self._seconds_since_speech():.1f}s", flush=True)
             if rms <= 1e-4:
-                silent_secs += self.push_interval
+                silent_secs += elapsed
                 if silent_secs >= 5.0:
                     print("[omni-client] ⚠️ 持续未检测到麦克风音频（RMS≈0）："
                           "请检查 macOS 麦克风权限（系统设置→隐私与安全→麦克风）"
@@ -654,8 +974,16 @@ class OmniClient:
                 payload["audio_base64"] = base64.b64encode(audio).decode("ascii")
             with self._latest_jpg_lock:
                 jpg = self._latest_jpg
-            if jpg is not None:
+            # P1 图像降频：音频每段都上，图像默认 1 秒才带一帧。
+            # 带图的那一轮服务端要多做一次 VPM 编码（约 190ms）并往 KV 塞约 64 个视觉
+            # token——这是 KV 被快速填满、上下文每约 30 秒被滑动清空的主因。
+            attach_frame = bool(jpg is not None) and self._should_attach_frame(now)
+            if attach_frame:
                 payload["video_frames"] = [base64.b64encode(jpg).decode("ascii")]
+            elif os.environ.get("OMNI_DEBUG") == "1":
+                print(f"[omni-client][debug] 推流#{self._chunk_seq} 本段不带图"
+                      f"（图像间隔 {self.video_interval:.2f}s，已带 {self._frames_sent} 帧）",
+                      flush=True)
 
             if payload:
                 try:
@@ -688,6 +1016,7 @@ class OmniClient:
                                 self._emit_audio(base64.b64decode(ab))
                     elif kind == "listen":
                         self._listen_ev.set()  # 标记 omni 已真正进入聆听（模型就绪）
+                        self._flush_text_holdback()   # 轮末释放 P0-a 扣留的尾巴（未升级时）
                         self.cb.on_listen()
                         # 升级已完成且主会话回到聆听态 → 解除静音，恢复正常播报
                         with self._audio_lock:
@@ -696,12 +1025,21 @@ class OmniClient:
                         # 新一轮聆听开始 = 上一轮对话已结束 → 复位升级标志，
                         # 允许本轮再次触发 <<CALL_QWEN>>（修复"第二次升级被吞"）
                         self._reset_escalation_state()
+                        # P0-b：本段已消费完，放行下一段（按 response_id 去重，
+                        # 因为紧随其后的 response.done 属于同一段）
+                        self._signal_chunk_done(e.get("response_id"))
                 elif et == "response.done":
                     txt = e.get("text", "")
                     if txt:
                         self.cb.on_text_final(txt)
-                    # M7b：会话正常结束（未触发升级、也未发现令牌）时 flush 尾句，让主对话
-                    # 残留文本播完；已触发升级或发现令牌则主对话已转回灌，不再播主对话尾巴
+                    # ⚠️ 这里**不能**释放 P0-a 的 holdback：full_duplex 下 `response.done`
+                    # 是「本段（chunk）处理完」而非「本轮流说完」——模型接着说会跨很多段，
+                    # 段边界完全可能落在一个正在下发的令牌中间。真机已复现：在段边界释放
+                    # 会把扣留的 `<<CALL_QW` 当普通文本播出去（乱念碎片），并且把升级任务
+                    # 截断成「查一下」。真正的轮末信号是 listen 事件（模型切回聆听）。
+                    # 兜底释放交给 `_hold_flush_loop` 的「文本静默超时」。
+                    # M7b：本段残留文本先让桥接播完（提升实时感；桥接自身也会扣留令牌前缀，
+                    # 所以这里既不会念出碎片，也不会丢字）
                     if (self._voicebox_bridge is not None
                             and not self._call_qwen_fired and not self._token_seen):
                         self._voicebox_bridge.flush_remaining()
@@ -711,12 +1049,23 @@ class OmniClient:
                             self._emit_audio(base64.b64decode(da))
                         except Exception:
                             pass
+                    # P0-b：本段已消费完，放行下一段（与上面 listen 分支同一段时会被去重忽略）
+                    self._signal_chunk_done(e.get("response_id"))
                 elif et == "session.closed":
+                    # 把服务端给的关闭原因打出来：服务端 fail_fast 会「发 session.closed
+                    # 后立刻 ws.close()」，客户端只看到 closed 会完全摸不着头脑
+                    # （如 missing_audio = 我们发了一帧没有音频的 input.append）。
+                    print(f"[omni-client] ⚠️ 服务端关闭会话：reason={e.get('reason')!r}"
+                          f"（若为 missing_audio / invalid_input / mode_mismatch，"
+                          f"属协议层 fail_fast，不是模型问题）", flush=True)
+                    # P0-a：连接关闭也释放一次尾巴（保证最后一句能显示完整）
+                    self._flush_text_holdback()
                     # M7b：连接关闭时 flush 尾句（未升级、未发现令牌时）
                     if (self._voicebox_bridge is not None
                             and not self._call_qwen_fired and not self._token_seen):
                         self._voicebox_bridge.flush_remaining()
                     self.cb.on_state("closed", e.get("reason"))
+                    self._signal_chunk_done()         # 放行（避免推流协程空等后继续发）
                     break
         except Exception:  # noqa: BLE001
             # 连接断开等异常由外层统一处理
@@ -740,19 +1089,30 @@ class OmniClient:
 
     # ============================================================ M2 升级路由
     def _on_text(self, txt: str):
-        """文本增量处理：先广播回调，再做 <<CALL_QWEN>> 令牌检测与拦截。
+        """文本增量处理：先做 <<CALL_QWEN>> 令牌检测，再把可信文本广播 / 送朗读。
 
-        令牌可能跨多个 delta 分片到达，故先做全文累积再查找。**关键修复**：令牌检测
-        必须在把文本喂给 Voicebox 桥接之前完成——否则承载 `<<CALL_QWEN>>查电池` 的
-        delta 会先被送进朗读队列（即"把问题本身读出来"的 bug）。命中令牌时只把令牌
-        之前的文本送桥接朗读，令牌本身及任务描述一律丢弃（绝不朗读问题），并触发升级。
-        升级触发后主会话后续文本一律不再朗读。
+        **关键修复 1**：令牌检测必须在把文本喂给 Voicebox 桥接之前完成——否则承载
+        `<<CALL_QWEN>>查电池` 的 delta 会先被送进朗读队列（即"把问题本身读出来"）。
+
+        **关键修复 2（P0-a，2026-09-13）**：omni 是**按 token 逐片**下发文本的，
+        `<<CALL_QWEN>>` 必然被切成 `<<CALL_Q` 这类碎片；碎片到达时缓冲里还没有完整令牌，
+        于是走了「正常对话」分支被广播并朗读出去（Voicebox 里那段 `<<CALL_Q` 怪音即由此
+        而来）。现对缓冲末尾「可能是令牌前缀」的字符做 holdback：不外发、不朗读，
+        等下一片到齐确认构不成令牌后再放行。
+
+        **关键修复 3（2026-09-13 三轮）**：①令牌匹配改为**容忍空白/换行/大小写**的变体
+        （bo s s 已确认模型会吐 `<<CALL_ QWEN>>`，空格来自模型本身）；②命中令牌后把
+        令牌本身**从缓冲里消费掉**（而不是等 listen 事件把整个缓冲清空）——listen 在
+        full_duplex 下是**每段**都会来的信号，用它清缓冲会把正在下发的令牌拦腰截断，
+        剩下的裸片段（如 `QWEN>>`）就会被当普通对话朗读，这正是真机「同一句被反复念」
+        的机制。
 
         **显示治理（2026-09-06）**：令牌之后的文本是「发给大脑的内部任务描述」，
-        不是要说给用户听的话；此前它会被广播到控制台 / GUI 文字区，用户于是看到
-        omni 自言自语的「给您推荐一部电」「么样天气怎」（实为模型幻觉输出，不是 ASR
-        识别结果）。现改为：令牌命中后的一切 delta 既不朗读、也不显示。
+        不是要说给用户听的话，一律既不朗读也不显示。
         """
+        # 诊断：原始 delta 的 repr（OMNI_DEBUG=1 时开启），用于坐实畸形令牌的确切形态
+        if os.environ.get("OMNI_DEBUG") == "1":
+            print(f"[omni-client][debug] text delta repr={txt!r}", flush=True)
         # 1) 令牌已发现：后续 delta 均为任务描述（内部指令），不朗读、不显示
         if self._token_seen:
             self._pending_task = (self._pending_task or "") + txt
@@ -764,39 +1124,53 @@ class OmniClient:
 
         # 3) 累积全文用于跨分片令牌检测（先累积、后广播，才能把令牌之后的内容截掉）
         self._text_buf += txt
-        token = "<<CALL_QWEN>>"
-        idx = self._text_buf.find(token)
-        if idx < 0:
-            # 尚未出现令牌：正常主对话文本，广播显示 + 送 Voicebox 句子级桥接朗读
-            self._broadcast(txt)
-            if self._voicebox_bridge is not None:
-                self._voicebox_bridge.feed(txt)
+        self._trim_text_buf()
+        m = find_call_token(self._text_buf)
+        if m is None:
+            # 尚未出现完整令牌：扣掉「可能是令牌前缀」的尾巴，只把安全部分外发
+            hold = _token_prefix_suffix_len(self._text_buf)
+            safe_len = len(self._text_buf) - hold
+            emit = self._text_buf[self._shown_len:safe_len]
+            if emit:
+                self._shown_len = safe_len
+                self._emit_text(emit)
+            # 有扣留就登记静默兜底截止时间：段末不再释放（段末≠轮末），
+            # 只有「模型这轮确实不再说话」时才由 _hold_flush_loop 放行
+            self._text_idle_deadline = (
+                time.monotonic() + self._hold_idle_secs if hold else 0.0
+            )
             return
 
-        # 命中令牌：只把「令牌之前、且尚未显示过」的部分广播出去；
-        # 令牌本身与其后的任务描述一律不显示（否则用户会看到 omni 自言自语的幻觉任务）
-        self._broadcast(self._text_buf[self._shown_len:idx])
+        # 命中令牌：只把「令牌之前、且尚未外发过」的部分显示 + 朗读（绝不重复、
+        # 也不显示令牌本身与其后的任务描述——否则用户会看到 omni 自言自语的幻觉任务）
+        emit = self._text_buf[self._shown_len:m.start()]
+        if emit:
+            self._emit_text(emit)
+
+        # 命中令牌：**消费掉令牌及其之前的内容**。缓冲使命结束（后续 delta 由
+        # `_token_seen` 分支累积进 `_pending_task`），这样既避免同一令牌被反复命中
+        # 导致重复触发，也不依赖 listen 事件清缓冲（listen 每段都会来，会拦腰切断令牌）。
+        tail = self._text_buf[m.end():]
+        self._text_buf = ""
+        self._shown_len = 0
+        self._text_idle_deadline = 0.0
 
         # 命中令牌：先判幻觉——若令牌出现前「最近 window 秒内无真实人声」，
         # 判定为 omni 在静音期幻觉生成的自触发任务（真机已复现：纯静音段 RMS≈0.003
-        # 却凭空生成"查电池电量"并自动执行，且因 _call_qwen_fired 静音导致用户随后
-        # 真实发言也无回复）。幻觉时不触发升级、不静音，仅丢弃该任务并停止朗读幻觉内容。
+        # 却凭空生成"查电池电量"并自动执行）。幻觉时不触发升级、不静音，仅丢弃该任务。
         if not self._has_recent_speech():
             self._token_seen = True      # 停止朗读/显示，但不静音、不触发升级
             self._hallucinated = True    # 后续任务描述即使出现句号也不得 fire（防偷偷升级）
-            reason = "播放回声期" if (self._echo_gate and self._is_echoing()) else "静音期"
-            print(f"[omni-client] ⚠️ 升级令牌疑似{reason}幻觉（令牌前无真实人声），已拦截丢弃。",
-                  flush=True)
+            reason = "播放回声期" if self._is_echoing() else "静音期"
+            print(f"[omni-client] ⚠️ 升级令牌疑似{reason}幻觉，已拦截丢弃"
+                  f"（距上次人声 {self._seconds_since_speech():.1f}s > 窗口 "
+                  f"{self._speech_window:.1f}s）", flush=True)
             return
-        # 命中令牌：标记已发现，停止后续朗读；仅把令牌之前的内容送桥接朗读
+        # 命中令牌：标记已发现，停止后续朗读
         self._token_seen = True
-        pre = self._text_buf[:idx]
-        if pre.strip() and self._voicebox_bridge is not None:
-            self._voicebox_bridge.feed(pre)
-        # 令牌及后续任务描述：跨换行累积（不再按首个换行截断），交由 _try_finalize_pending
-        # 在命中句末标点时结算触发；若模型迟迟不给标点，由 1.5s 兜底定时器触发，避免升级永不触发。
-        after = self._text_buf[idx + len(token):]
-        self._pending_task = after
+        # 令牌及后续任务描述：跨换行累积，交由 _try_finalize_pending 在命中句末标点时
+        # 结算触发；若模型迟迟不给标点，由 1.5s 兜底定时器兜底，避免升级永不触发。
+        self._pending_task = tail
         self._try_finalize_pending()
         if not self._call_qwen_fired:
             if self._pending_timer is None or not self._pending_timer.is_alive():
@@ -804,11 +1178,77 @@ class OmniClient:
                 self._pending_timer.daemon = True
                 self._pending_timer.start()
 
+    def _trim_text_buf(self):
+        """惰性裁掉 `_text_buf` 里「已外发过的前缀」，防止它随会话无限增长。
+
+        只在已外发长度足够大时才裁，且**不碰未外发的尾巴**（holdback 扣留区必须完整保留），
+        所以既能控内存，又不会漏字或让令牌被切断。
+        """
+        if self._shown_len <= 512:
+            return
+        drop = self._shown_len - 128
+        self._text_buf = self._text_buf[drop:]
+        self._shown_len -= drop
+
+    def _emit_text(self, text: str):
+        """把「可信对话文本」外发：显示 + 送 Voicebox 朗读（统一过硬安全网）。
+
+        硬安全网（`sanitize_for_speech`）：任何含 `<` / `>>` 或裸标记词（`QWEN`）的片段
+        一律截掉——语音助手的正常输出不可能含这些，留着只可能是畸形令牌残留，
+        宁可少说几个字也绝不把内部标记念出来（真机曾反复念出 `<<CALL_QW`）。
+        """
+        safe = sanitize_for_speech(text)
+        if not safe:
+            if text:
+                print(f"[omni-client] 🛡 已拦截疑似标记残留（不显示/不朗读）: {text!r}",
+                      flush=True)
+            return
+        self._broadcast(safe)
+        if self._voicebox_bridge is not None:
+            self._voicebox_bridge.feed(safe)
+
+    def _flush_text_holdback(self):
+        """轮末释放 P0-a 扣留在缓冲末尾的文本（确认它终究不是令牌前缀）。
+
+        只在「没发现令牌、没触发升级」时释放：一旦命中令牌，尾巴属于内部任务描述，
+        必须继续藏着（既不显示也不朗读）。
+        """
+        if self._token_seen or self._call_qwen_fired:
+            return
+        tail = self._text_buf[self._shown_len:]
+        if not tail:
+            return
+        self._shown_len = len(self._text_buf)
+        self._emit_text(tail)
+        self._text_idle_deadline = 0.0
+
+    async def _hold_flush_loop(self):
+        """文本静默兜底：模型这一轮不再吐字后，才释放被 holdback 扣住的尾巴。
+
+        为什么需要：full_duplex 下 `response.done` 是每段一次、不是每轮一次，
+        段末不能释放 holdback（否则段边界正好落在令牌中间就会把 `<<CALL_QW` 念出去，
+        真机已复现）。真正的轮末信号是 listen 事件；万一某轮模型说完却不回 listen
+        （以 `__END_OF_TURN__` 收尾），就靠这里「静默超过 _hold_idle_secs」兜底放行。
+        跑在事件循环里（与接收协程同线程），避免与 `_text_buf` 的跨线程读写竞态。
+        """
+        while not self._stop_ev.is_set():
+            await asyncio.sleep(0.2)
+            deadline = self._text_idle_deadline
+            if deadline and time.monotonic() >= deadline:
+                self._text_idle_deadline = 0.0
+                self._flush_text_holdback()
+                if (self._voicebox_bridge is not None
+                        and not self._call_qwen_fired and not self._token_seen):
+                    self._voicebox_bridge.flush_remaining()
+
     def _broadcast(self, text: str):
         """把文本广播给回调（控制台 / GUI 实时文字区）并累积到回复缓存。
 
         只显示「可信的主对话文本」：令牌及其之后的任务描述不经过这里，
         避免用户看到 omni 自言自语生成的内部指令（如「给您推荐一部电」）。
+
+        注：本方法**不**负责推进 `_shown_len`——调用侧按需自行推进（P0-a 引入 holdback
+        后，「已外发位置」与「缓冲末尾」不再相等，由调用侧精确控制才不会漏字或重字）。
 
         Args:
             text: 待显示的文本片段（已在调用侧裁掉令牌及之后的部分）。
@@ -821,8 +1261,27 @@ class OmniClient:
             self._reply_buf += text
             if len(self._reply_buf) > 4000:
                 self._reply_buf = self._reply_buf[-2000:]
-        # 记录「已显示到 _text_buf 的哪个位置」，供下一个 delta 增量显示
-        self._shown_len = len(self._text_buf)
+
+    def _signal_chunk_done(self, response_id=None):
+        """P0-b：标记「本段已被服务端消费完」，放行推流协程发下一段。
+
+        ⚠️ 必须按 `response_id` 去重（2026-09-13 三轮真机踩坑）：服务端
+        「模型说了话、然后切回聆听」的这一段会**先发 listen delta 再发 response.done**，
+        而两者共用同一个 `response_id`（`ws_handler.cpp:1173` / `:1232` 传的是同一个 id）。
+        若不按 id 去重，一段会被算作两次完成 → 推流次数翻倍、每块音频变小 → 而服务端
+        每轮都要重做图像编码（VPM 190ms，**与块大小无关**）→ 真实消费速率腰斩 →
+        积压超水位丢帧（真机累计丢 5.1s，音频被切碎后模型只能听到残句）。
+
+        Args:
+            response_id: 服务端下行事件里的 response_id；缺失时退回「只认第一次」的无脑放行。
+        """
+        if response_id:
+            if response_id == self._last_chunk_resp_id:
+                return                      # 同一段的第二个终局事件，忽略
+            self._last_chunk_resp_id = response_id
+        ev = self._chunk_done_ev
+        if ev is not None:
+            ev.set()
 
     def _apply_echo_gate(self, audio: bytes, rms: float):
         """回声门控：把本帧真实采集替换成等长静音，并判定为「非人声」。
@@ -859,21 +1318,59 @@ class OmniClient:
         except Exception:  # noqa: BLE001
             return False
 
+    def _is_speech_frame(self, rms: float, peak: float) -> bool:
+        """单帧是否计为「检测到人声」：峰值 或 RMS 任一达标即算。
+
+        为什么用双条件（2026-09-13 三轮）：真机实测同一台机器上——
+          底噪 RMS 0.002~0.013 / 人声 RMS 0.020~0.056（只差 3~5 倍，阈值 0.02 正压在
+          人声段下沿，人声帧会在阈值附近来回抖，日志里同一秒内「检测到人声 0.023」
+          →「进入静音 0.004」）；
+          而人声峰值 0.088~0.277 与底噪分离干净。
+        单看 RMS 会让「最近有人声」这条护栏判据不可靠，把**真实提问**误判成静音期幻觉
+        （真机三轮：真实提问被拦截、升级任务丢失）。
+
+        Args:
+            rms: 本帧 RMS。
+            peak: 本帧峰值（abs 最大值）。
+
+        Returns:
+            bool: True=本帧计为人声，会刷新护栏的「最近人声」时间戳。
+        """
+        return (peak >= self._speech_peak_th) or (rms >= self._speech_rms_th)
+
+    def _seconds_since_speech(self) -> float:
+        """距最近一次检测到真实人声的秒数（从未检测到则为一个大数，便于日志展示）。"""
+        if self._last_speech_ts <= 0.0:
+            return float("inf")
+        return time.monotonic() - self._last_speech_ts
+
     def _has_recent_speech(self) -> bool:
         """升级令牌护栏：令牌出现前「最近 window 秒内是否检测到真实人声」。
 
         返回 True 表示令牌大概率源于用户真实发言（可信触发），False 表示静音期
-        幻觉（应拦截）。判定依据：_push_loop 在每帧 RMS≥阈值时刷新 _last_speech_ts。
+        幻觉（应拦截）。判定依据：_push_loop 在每帧「峰值≥阈值 或 RMS≥阈值」时
+        刷新 _last_speech_ts。
+
+        ⚠️ 三轮修正（2026-09-13）：
+          1. **窗口 3.0s → 6.0s**：令牌到达时间 = 音频积压 + 服务端一轮 prefill/decode
+             + TTS 排队，端到端远超 3s；窗口小于链路延迟时，**真实提问会被判成幻觉**
+             （真机已复现：同一份日志里一条令牌放行、随后几条又被拦截，判据自相矛盾）。
+          2. **自身播报窗口的排除与门控开关解耦**：此前写作 `if self._echo_gate and
+             self._is_echoing()`，耳机场景门控为关时这条判据被整体短路，等于丢掉了
+             唯一能识别「这是我自己在说话」的手段。现默认无论门控开关都排除播报窗口
+             （OMNI_ECHO_GUARD=gate 可退回旧行为）。
         """
         # 回声窗口（正在播报 / 刚播报完）：此时 omni 听到的其实是自己的声音，
         # 由此产生的「任务」一律视为幻觉（真机已复现：TTS 播放期间 RMS 0.022 被误判为
         # 人声，omni 随即吐出 <<CALL_QWEN>>给您推荐一部电）。
+        if self._is_echoing() and self._echo_guard != "gate":
+            return False
         if self._echo_gate and self._is_echoing():
             return False
         # 全程从未检测到人声（如开局模型自言自语）：必为幻觉
         if self._last_speech_ts <= 0.0:
             return False
-        return (time.monotonic() - self._last_speech_ts) <= self._speech_window
+        return self._seconds_since_speech() <= self._speech_window
 
     def _fire_call_qwen(self, task: str):
         """触发升级：置位标志 + 静音主会话 + 回调（幂等，只触发一次）。"""
@@ -960,15 +1457,23 @@ class OmniClient:
     def _reset_escalation_state(self):
         """升级标志复位：在新一轮 listen（新用户轮）时调用，允许再次触发升级。
 
-        不清空 _escalation_done（由 listen 分支按需复位静音标志）；只复位令牌检测/
-        升级触发相关状态，避免"第二次升级被吞"（_call_qwen_fired 永不复位）的 bug。
+        ⚠️ **只丢掉已外发的前缀，必须保留扣留中的尾巴**（2026-09-13 三轮修正）：
+        此前无条件 `_text_buf = ""`，而 listen 在 full_duplex 下是**每段**都会来的信号，
+        于是「正在下发的令牌」会被拦腰截断——剩下的裸片段（`QWEN>>`）既无法匹配令牌
+        （用户请求静默丢失），又可能被当普通对话朗读（真机「同一句被反复念」）。
+        现在保留未外发的尾巴，让跨 listen 的令牌仍能拼齐并正常触发升级。
         """
         self._call_qwen_fired = False
         self._token_seen = False
         self._hallucinated = False
-        self._text_buf = ""
+        # 保留未外发的尾巴（holdback 扣留区），丢掉已显示过的前缀
+        self._text_buf = self._text_buf[self._shown_len:]
         self._shown_len = 0
         self._pending_task = None
+        # 尾巴若还在扣留中，重新登记静默兜底截止时间，避免它永远不被释放
+        self._text_idle_deadline = (
+            time.monotonic() + self._hold_idle_secs if self._text_buf else 0.0
+        )
         if self._pending_timer is not None and self._pending_timer.is_alive():
             self._pending_timer.cancel()
         self._pending_timer = None
@@ -1027,46 +1532,89 @@ _HEADPHONE_HINTS = ("耳机", "headphone", "headset", "airpods", "earpods", "ear
 _SPEAKER_HINTS = ("扬声器", "speaker", "内建输出", "built-in", "internal", "monitor")
 
 
-def detect_headphones() -> bool:
-    """检测系统默认输出设备是否为耳机 / 蓝牙（即硬件层面已隔离回声）。
+def _device_name(p, kind: str) -> str:
+    """读取默认输入/输出设备名（失败返回空串，绝不抛错）。"""
+    try:
+        info = (p.get_default_input_device_info() if kind == "input"
+                else p.get_default_output_device_info())
+        return str(info.get("name", ""))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def detect_audio_devices():
+    """返回 (默认输入设备名, 默认输出设备名)，供门控判定与启动日志使用。
+
+    三轮修正（2026-09-13）的动机：门控自动判定此前**只看输出设备名**——只要输出是耳机
+    就关掉门控。但如果**输入也是同一个耳机/蓝牙设备**，耳机麦克风会采到耳机自己的输出
+    （强回声），这时关掉门控等于放任自激。所以判定必须同时看两边。
 
     Returns:
-        bool: True=耳机类输出（外放不会进麦克风，可关闭门控保留打断能力）；
-              False=扬声器外放或无法判定（保守起见按外放处理，开启门控防自激）。
+        tuple[str, str]: (输入设备名, 输出设备名)；取不到时为 ""。
     """
     try:
         p = pyaudio.PyAudio()
         try:
-            name = str(p.get_default_output_device_info().get("name", "")).lower()
+            return _device_name(p, "input"), _device_name(p, "output")
         finally:
             p.terminate()
     except Exception:  # noqa: BLE001
-        return False
-    if any(h in name for h in _HEADPHONE_HINTS):
+        return "", ""
+
+
+def _is_headphone_like(name: str) -> bool:
+    """设备名是否像耳机/蓝牙（大小写不敏感）。"""
+    n = (name or "").lower()
+    return any(h in n for h in _HEADPHONE_HINTS)
+
+
+def detect_headphones() -> bool:
+    """检测系统默认输出设备是否为耳机 / 蓝牙（即硬件层面是否隔离回声）。
+
+    保留此函数是为了兼容既有调用/测试；门控判定请用 `resolve_echo_gate`。
+
+    Returns:
+        bool: True=耳机类输出；False=扬声器外放或无法判定（保守按外放处理）。
+    """
+    _, out_name = detect_audio_devices()
+    if _is_headphone_like(out_name):
         return True
-    if any(h in name for h in _SPEAKER_HINTS):
+    if any(h in out_name.lower() for h in _SPEAKER_HINTS):
         return False
     return False      # 无法判定：保守按外放处理（宁可牺牲打断，也不要自激）
 
 
 def resolve_echo_gate(pref=None):
-    """解析回声门控最终开关；auto / None 时按当前输出设备自动判定。
+    """解析回声门控最终开关；auto / None 时按「输入 + 输出」两个设备自动判定。
 
     bo s s 的使用约定：戴耳机（硬件隔离回声）→ 关闭门控以保留打断能力；
     用内建扬声器外放 → 开启门控，否则 omni 会听到自己的声音而自言自语。
 
+    三轮修正（2026-09-13）：auto 判定规则改为同时看两端口——
+      - 输出是耳机 **且** 输入不是耳机类 → 关（真隔离，可放心保留打断）；
+      - **输入本身是耳机/蓝牙 → 开**（耳机麦会采到耳机自己的输出，关掉即自激，
+        历史日志里默认输入被切到 AirPods 时正是这个情形）；
+      - 输出是扬声器 / 任一端无法判定 → 开（保守）。
+
     Args:
-        pref: True/False 手动指定；None 或 "auto" 表示按输出设备自动检测；
+        pref: True/False 手动指定；None 或 "auto" 表示按设备自动检测；
               字符串 "1/on/true" 强制开，"0/off/false" 强制关。
 
     Returns:
         tuple[bool, str]: (是否启用门控, 人类可读的原因，用于启动日志)
     """
     if pref is None or (isinstance(pref, str) and pref.strip().lower() in ("auto", "")):
-        phones = detect_headphones()
-        if phones:
-            return False, "自动检测：耳机/蓝牙输出，无需门控（可打断）"
-        return True, "自动检测：扬声器外放，开启防自激"
+        in_name, out_name = detect_audio_devices()
+        out_phone = _is_headphone_like(out_name)
+        in_phone = _is_headphone_like(in_name)
+        if out_phone and not in_phone:
+            return False, (f"自动检测：输出是耳机/蓝牙（{out_name or '未知'}）且输入是独立麦克风"
+                           f"（{in_name or '未知'}）→ 硬件已隔离回声，关闭门控（可随时打断）")
+        if in_phone:
+            return True, (f"自动检测：输入设备本身是耳机/蓝牙（{in_name}），其麦克风会采到"
+                          f"耳机自己的输出 → 开启门控防自激；想让 J.A.C. 被打断可换独立麦克风")
+        return True, (f"自动检测：输出为扬声器或无法判定（输入={in_name or '未知'}，"
+                      f"输出={out_name or '未知'}）→ 开启门控防自激")
     if isinstance(pref, str):
         v = pref.strip().lower()
         if v in ("1", "on", "true", "yes"):

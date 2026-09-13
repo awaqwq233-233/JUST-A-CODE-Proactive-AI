@@ -17,6 +17,12 @@ import queue
 import threading
 import time
 
+from .tokens import (
+    find_call_token,
+    sanitize_for_speech,
+    token_prefix_suffix_len as _token_prefix_suffix_len,
+)
+
 # 句末标点集合（遇到即切句）
 _SENT_END = set("。！？!?；;\n")
 # 单句最大字数（超长强制切，防 omni 迟迟不给标点导致主对话卡住）
@@ -50,42 +56,75 @@ class VoiceboxBridge:
         self._play_thread.start()
 
     def feed(self, delta: str):
-        """喂入 text delta：累积并按句边界切句入队（非阻塞，可在 asyncio 事件循环里调用）。"""
+        """喂入 text delta：累积并按句边界切句入队（非阻塞，可在 asyncio 事件循环里调用）。
+
+        三道防线（纵深防御，client 侧已做前置拦截，这里防止漏网）：
+          1. 命中升级令牌（**容忍空白/换行/大小写**的变体，如真机出现过的
+             `<<CALL_ QWEN>>`）→ 截断到令牌之前，绝不朗读"问题本身"；
+          2. 末尾「疑似令牌前缀」的字符做 holdback，不参与切句、不入朗读队列，
+             等下一片 delta 到齐确认不是令牌前缀后再放行；
+          3. 入队前过 `sanitize_for_speech` 硬安全网——含 `<` / `>>` / 裸标记词的
+             片段一律截掉（段边界会把令牌切成只剩 `QWEN` 这种裸碎片，必须挡住）。
+        """
         if not delta:
             return
         self._buf += delta
-        # 防御：若文本里混入了升级令牌 <<CALL_QWEN>>，截断到令牌之前，绝不把"问题本身"
-        # 送进朗读队列（client._on_text 已做前置拦截，这里兜底防止漏网）
-        token = "<<CALL_QWEN>>"
-        t_idx = self._buf.find(token)
-        if t_idx >= 0:
-            self._buf = self._buf[:t_idx]
+        # 防线 1：完整令牌（含变体）→ 截到令牌之前
+        m = find_call_token(self._buf)
+        if m is not None:
+            self._buf = self._buf[:m.start()]
+        # 防线 2：holdback——扣掉「可能是令牌前缀」的尾巴，只在安全区（head）上切句
+        hold = _token_prefix_suffix_len(self._buf)
+        head = self._buf[:len(self._buf) - hold] if hold else self._buf
         # 按句末标点切句：每遇到一个标点，把之前的整句切出并入队
         while True:
             cut = -1
-            for i, ch in enumerate(self._buf):
+            for i, ch in enumerate(head):
                 if ch in _SENT_END:
                     cut = i
                     break
             if cut < 0:
                 break
-            sentence = self._buf[:cut + 1].strip()
-            self._buf = self._buf[cut + 1:]
+            sentence = head[:cut + 1].strip()
+            head = head[cut + 1:]
             if sentence:
-                self._q.put(sentence)
-        # 超长强制切（防无标点长句卡住主对话）
-        if len(self._buf) >= self._max_chars:
-            sentence = self._buf.strip()
-            self._buf = ""
+                self._enqueue(sentence)
+        # 超长强制切（防无标点长句卡住主对话）；仍在安全区内切，不含 holdback 尾巴
+        if len(head) >= self._max_chars:
+            sentence = head.strip()
+            head = ""
             if sentence:
-                self._q.put(sentence)
+                self._enqueue(sentence)
+        # 安全区剩余 + 扣留的尾巴一起回写缓冲
+        self._buf = head + (self._buf[len(self._buf) - hold:] if hold else "")
         self._last_flush = time.time()
+
+    def _enqueue(self, sentence: str):
+        """防线 3：入朗读队列前过一遍硬安全网（含标记残留的片段一律丢弃）。"""
+        safe = sanitize_for_speech(sentence)
+        if not safe:
+            print(f"[TTS] 🛡 已拦截疑似标记残留（不朗读）: {sentence!r}", flush=True)
+            return
+        self._q.put(safe)
+
+    def _drain_tail(self) -> str:
+        """取出缓冲里「可以正常朗读」的尾句，并**丢弃**疑似令牌前缀的尾巴。
+
+        P0-a：`<<CALL_Q` 这类悬空的令牌碎片永远不会变成合法台词，只能丢弃；
+        若把它当尾句 flush 出去，就会被 Voicebox 念出来（这正是真机复现的 bug）。
+        """
+        hold = _token_prefix_suffix_len(self._buf)
+        if hold:
+            self._buf = self._buf[:len(self._buf) - hold]
+        tail = self._buf.strip()
+        self._buf = ""
+        return sanitize_for_speech(tail)
 
     def flush_remaining(self):
         """正常会话结束时调用：把缓冲里残留的尾句入队（不清空队列，让其自然播完）。"""
-        if self._buf.strip():
-            self._q.put(self._buf.strip())
-            self._buf = ""
+        tail = self._drain_tail()
+        if tail:
+            self._q.put(tail)
 
     def flush_and_stop(self):
         """升级令牌触发时调用：把残留尾句入队，然后清空未播队列（避免与回灌重叠）。
@@ -93,9 +132,9 @@ class VoiceboxBridge:
         当前正在播的句子由 speak() 自然播完（不强行中断，避免爆音）；队列里尚未播放的
         主对话后续句子被丢弃，交给回灌通道播报升级结果，避免主对话尾巴与回灌声音重叠。
         """
-        if self._buf.strip():
-            self._q.put(self._buf.strip())
-            self._buf = ""
+        tail = self._drain_tail()
+        if tail:
+            self._q.put(tail)
         while not self._q.empty():
             try:
                 self._q.get_nowait()
@@ -108,12 +147,16 @@ class VoiceboxBridge:
             try:
                 sentence = self._q.get(timeout=0.2)
             except queue.Empty:
-                # 超时尾句 flush：缓冲有残留且距上次切句超过 max_wait 仍无新 delta
+                # 超时尾句 flush：缓冲有残留且距上次切句超过 max_wait 仍无新 delta。
+                # P0-a：只放行「安全区」（不含疑似令牌前缀的尾巴），否则句子会卡着不播；
+                # 扣留的前缀继续等下一片确认——真到轮末由 flush_remaining 统一丢弃，
+                # 所以悬空的 `<<CALL_Q` 永远不会被念出来。
                 if self._buf and time.time() - self._last_flush >= self._max_wait:
-                    s = self._buf.strip()
-                    self._buf = ""
-                    if s:
-                        self._q.put(s)
+                    hold = _token_prefix_suffix_len(self._buf)
+                    head = self._buf[:len(self._buf) - hold] if hold else self._buf
+                    self._buf = self._buf[len(self._buf) - hold:] if hold else ""
+                    if head.strip():
+                        self._enqueue(head.strip())
                 continue
             if sentence is None:
                 break

@@ -259,6 +259,9 @@ class JACRuntime:
             enable_playback=True,
             push_interval=0.4,
             video_fps=config.omni_fps,
+            # P1 图像降频：图像上行与音频上行解耦（默认 1 帧/秒），避免视觉 token 把
+            # KV 快速填满（真机实测每约 30 秒一次上下文滑动 → 模型照示例复读令牌）。
+            video_interval=config.omni_video_interval,
             mic_gain=config.omni_mic_gain,
             listen_prob_scale=config.omni_listen_prob_scale,  # 压低 listen 偏好，修复全双工只听不说
             # 回声门控：config 值可为 "auto"/"1"/"0" 字符串，由 client.resolve_echo_gate 解析

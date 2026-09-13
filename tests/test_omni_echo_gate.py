@@ -13,7 +13,9 @@ omni 把自己的语音当成用户发言 → 自问自答 → 幻觉出 `<<CALL
   3. 回声期令牌被拦截：不触发升级、不静音主会话。
   4. 幻觉拦截后即使任务描述出现句号也不得 fire（防「偷偷升级」）。
   5. 令牌后的任务描述不再广播到控制台 / GUI（不再显示「给您推荐一部电」）。
-  6. 关闭门控（OMNI_ECHO_GATE=0）时行为回退：有人声即可正常触发升级。
+  6. 关闭门控（OMNI_ECHO_GATE=0）时，**自身播报窗口仍默认排除**（2026-09-13 三轮修正：
+     旧实现把该判据写成 `if self._echo_gate and self._is_echoing()`，门控一关即被整体短路）；
+     `OMNI_ECHO_GUARD=gate` 可退回旧行为。
 """
 import os
 import sys
@@ -176,15 +178,38 @@ def test_task_text_not_broadcast():
     _reset_all()
 
 
-def test_gate_disabled_keeps_legacy_behavior():
-    """关闭门控（OMNI_ECHO_GATE=0，戴耳机场景）：有人声即正常触发升级。"""
+def test_gate_disabled_excludes_playback_window_by_default():
+    """关闭门控（OMNI_ECHO_GATE=0，耳机场景）：**自身播报窗口仍然排除**。
+
+    2026-09-13 三轮修正：此前 `_has_recent_speech()` 写作 `if self._echo_gate and
+    self._is_echoing()`，门控一关这条判据被整体短路——等于丢掉了唯一能识别
+    「这是我自己在说话」的手段，模型复读自己的台词就会直接触发一轮 GPU 升级。
+    现改为默认无论门控开关都排除播报窗口（`OMNI_ECHO_GUARD=always`）。
+    """
     _reset_all()
+    os.environ.pop("OMNI_ECHO_GUARD", None)
     client, cb = _make_client(echo_gate=False)
     assert client._echo_gate is False
     client._last_speech_ts = time.monotonic()
-    playback.mark_external_playback(2.0)           # 即便"正在播放"也不再门控
+    playback.mark_external_playback(2.0)           # 正在播报自己的台词
     client._on_text("<<CALL_QWEN>>打开浏览器。")
-    assert cb.tasks == ["打开浏览器"], f"关闭门控后应正常升级，实际: {cb.tasks}"
+    assert cb.tasks == [], f"自身播报窗口内不得升级，实际: {cb.tasks}"
+    _reset_all()
+
+
+def test_echo_guard_gate_mode_restores_legacy_behavior():
+    """OMNI_ECHO_GUARD=gate：退回旧行为——只在门控开启时才排除播报窗口。"""
+    _reset_all()
+    os.environ["OMNI_ECHO_GUARD"] = "gate"
+    try:
+        client, cb = _make_client(echo_gate=False)
+        assert client._echo_guard == "gate"
+        client._last_speech_ts = time.monotonic()
+        playback.mark_external_playback(2.0)
+        client._on_text("<<CALL_QWEN>>打开浏览器。")
+        assert cb.tasks == ["打开浏览器"], f"gate 模式应保留旧的放行行为，实际: {cb.tasks}"
+    finally:
+        os.environ.pop("OMNI_ECHO_GUARD", None)
     _reset_all()
 
 

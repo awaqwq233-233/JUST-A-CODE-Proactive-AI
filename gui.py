@@ -359,6 +359,21 @@ class MainWindow(QMainWindow):
         lps_row.addWidget(self.listen_prob_scale_spin)
         op.addLayout(lps_row)
 
+        # 图像上行间隔（OMNI，P1 图像降频）：音频每段都上，图像默认 1 秒 1 帧。
+        # 带图的那一轮服务端要多做一次 VPM 编码（实测 p50≈196ms）并写 64 个视觉 token 进 KV，
+        # 是上下文被快速填满、每约 30 秒滑动一次的元凶；0 表示退回「每段都带图」。
+        vi_row = QHBoxLayout()
+        vi_row.addWidget(QLabel("图像上行间隔s (OMNI)"))
+        self.video_interval_spin = QDoubleSpinBox()
+        self.video_interval_spin.setRange(0.0, 5.0)
+        self.video_interval_spin.setSingleStep(0.5)
+        self.video_interval_spin.setValue(float(getattr(self.config, "omni_video_interval", 1.0)))
+        self.video_interval_spin.setToolTip(
+            "秒/帧，默认 1.0（即 1 帧/秒）。实测：KV 增长降约三成、上下文寿命 +约四成、"
+            "每轮省下一次图像编码；0 = 每段都带图（旧行为，仅用于对照排查）。")
+        vi_row.addWidget(self.video_interval_spin)
+        op.addLayout(vi_row)
+
         # 回声门控（OMNI）：auto 按输出设备判定，关=戴耳机可打断，开=外放防自激
         gate_row = QHBoxLayout()
         gate_row.addWidget(QLabel("回声门控 (OMNI)"))
@@ -675,6 +690,7 @@ class MainWindow(QMainWindow):
             omni_quant=self.config.omni_quant,
             omni_ref_audio=self.config.omni_ref_audio,
             omni_fps=self.config.omni_fps,
+            omni_video_interval=self.video_interval_spin.value(),
             omni_mic_gain=self.mic_gain_spin.value(),
             omni_listen_prob_scale=self.listen_prob_scale_spin.value(),
             omni_echo_gate=self.echo_gate_combo.currentData(),

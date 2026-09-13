@@ -19,6 +19,8 @@
   python -m src.omni --no-voicebox         # 禁用本地 Voicebox 克隆 TTS（退回 omni/系统 TTS）
   python -m src.omni --mic 1               # 强制绑定 index=1 的麦克风（规避 AirPods 切麦）
   python -m src.omni --mic 2 --mic-gain 8  # 绑定内建麦并放大 8 倍能量（内建麦离嘴远触发不了 VAD 时用）
+  python -m src.omni --video-interval 2.0  # 图像上行改为 2 秒 1 帧（省算力/护上下文）
+  python -m src.omni --video-interval 0    # 退回「每段都带图」的旧行为（对照排查用）
   python -m src.omni --url ws://... --model-dir /path
 """
 import argparse
@@ -195,6 +197,10 @@ def main():
                     help="强制关闭回声门控（戴耳机时才建议关）：J.A.C. 说话期间麦克风不再静音，"
                          "可随时打断；外放场景关掉会让它听到自己的声音而自言自语。"
                          "默认按输出设备自动判定：检测到耳机/蓝牙即关、扬声器外放即开。")
+    ap.add_argument("--video-interval", type=float, default=None,
+                    help="图像上行间隔（秒/帧，P1 图像降频，默认 1.0）。音频仍按块上行，图像默认"
+                         "每秒 1 帧——降频可把 KV 增长降约三成、上下文寿命 +约四成；"
+                         "传 0 退回「每段都带图」的旧行为（对照排查用）。")
     args = ap.parse_args()
 
     # 列出麦克风设备后直接退出（便于定位内建麦 index）
@@ -225,6 +231,7 @@ def main():
         mic_gain=args.mic_gain,
         voicebox_speaker=voicebox_speaker,
         echo_gate=not args.no_echo_gate,
+        video_interval=args.video_interval,
     )
     cb = _ConsoleCallbacks(client)
     # client 内部读的是 self.cb（__init__: self.cb = callbacks or OmniCallbacks()）；
