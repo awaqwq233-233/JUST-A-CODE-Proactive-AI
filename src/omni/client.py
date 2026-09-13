@@ -4,7 +4,7 @@
   上行 session.init：
     {"type":"session.init","payload":{"mode":"full_duplex","use_tts":true,
      "voice":{"ref_audio":<16k float32 PCM base64>},
-     "system_prompt":"..."}}
+     "system_prompt":"...","config":{"listen_prob_scale":0.5}}}
   上行 input.append（实时推流）：
     {"type":"input.append","input":{"audio_base64":<16k float32 PCM base64>,
                                      "video_frames":[<jpeg base64>]}}
@@ -401,20 +401,9 @@ class OmniClient:
             ) as ws:
                 self._ws = ws
                 # 2) session.init（full_duplex + 声纹克隆 + 系统提示）
-                init_msg = {
-                    "type": "session.init",
-                    "payload": {
-                        "mode": "full_duplex",
-                        "use_tts": True,
-                        "voice": {"ref_audio": ref_b64},
-                        "system_prompt": self.system_prompt,
-                    },
-                    # 压低 <|listen|> 采样偏好，避免模型「只听不说」
-                    # （服务端默认 listen_prob_scale=1.0 偏置 0，会恒采样 listen 导致永不回复）
-                    "config": {
-                        "listen_prob_scale": self.listen_prob_scale,
-                    },
-                }
+                init_msg = self._build_session_init(ref_b64)
+                print(f"[omni] 会话参数：Listen 概率系数={self.listen_prob_scale:.2f}"
+                      "（已发送给服务端）", flush=True)
                 await ws.send(json.dumps(init_msg))
 
                 # 3) 等待 session.created
@@ -441,6 +430,27 @@ class OmniClient:
         finally:
             self._ws = None
             self.cb.on_state("closed")
+
+    def _build_session_init(self, ref_b64: str) -> dict:
+        """构造符合 llama.cpp-omni 协议的 full-duplex 会话初始化消息。
+
+        服务端 ``parse_session_init`` 只会读取 ``payload.config``，因此采样参数
+        不能放在消息顶层；否则后端悄然使用默认 ``listen_prob_scale=1.0``，表现为
+        持续输出 ``listen=1``、永远不结束回合。
+        """
+        return {
+            "type": "session.init",
+            "payload": {
+                "mode": "full_duplex",
+                "use_tts": True,
+                "voice": {"ref_audio": ref_b64},
+                "system_prompt": self.system_prompt,
+                # 压低 <|listen|> 采样偏好，避免模型「只听不说」。
+                "config": {
+                    "listen_prob_scale": float(self.listen_prob_scale),
+                },
+            },
+        }
 
     # ============================================================ 声纹
     def _load_ref_audio(self) -> str:

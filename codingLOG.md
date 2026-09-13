@@ -25,6 +25,7 @@
   - **全双工主链路（M5）已真机验收**（2026-08-15）：MiniCPM-o-4_5 经 llama.cpp-omni（9060，Metal，GGUF Q8_0）跑**全双工**——持续听/说闭环、主动打招呼、按 `<<CALL_QWEN>>` 令牌升级到 qwen3.6-35b 调 `src/tools/` 工具、回灌播报，整条闭环跑通。`src/omni/` 的 OMNI 模式与传统被动 `main.py` 互斥、不启动 judge。
   - **主对话 LLM 已流式 + M7b 句子级 TTS 桥接**：omni 下行 `response.output.delta` 逐字吐文本；`src/omni/voicebox_bridge.py` 按标点/句子边界把 text delta 攒成句，攒够一句即送本地 **Voicebox（JAC 克隆声纹）** 合成并播放（独立 daemon 播放线程串行保序），实现「说一句听一句」近似实时感；omni 自带 TTS 音频在桥接启用时丢弃。
   - **回灌（M7a）已改本地 Voicebox**：`speak_result` → `src/omni/backfeed.py` 的 `speak_text_via_voicebox` 用 JAC 克隆声纹播报（替代原 omni 第二 turn_based 会话——server 单会话限制会拒第二个会话、导致 `ConnectionClosedOK` 无声音，已根除）。
+  - **会话参数协议（2026-09-13 已修复）**：此前 GUI/环境变量中的 `omni_listen_prob_scale=0.5` 被错误发送到 `session.init` 顶层，llama.cpp-omni 仅读取 `payload.config`，导致服务端静默回退 1.0 并永久 `listen=1`。现由 `OmniClient._build_session_init()` 固定发送至 `payload.config`，并有离线协议回归测试；这是一次客户端协议接线错误，不是麦克风能量或模型加载问题。
 - **仍待做**：STT 仍为 Whisper tiny **非流式**（整段说完才识别）；TTS 为**句子级**桥接而非 token 级流式（Voicebox 无 token API，业界标准折中，每句多一个「攒句+合成」延迟，人耳基本无感）；全双工 RTF / 真机逐句听感流畅度待 bo s s 验收收尾。
 
 ## 5. 其他架构级缺口（未解决）
@@ -169,4 +170,3 @@
 - **普通对话无回复（部分解决，待真机复验）**：强化 `prompts.py` 强制寒暄回应（"你好/在吗"必须口语回应、纯寒暄不吐令牌）+ CLI 演示路径 `listen_prob_scale` 默认值 1.0→0.5（GUI 路径本就 0.5）。诊断结论：RMS=0.110 远超人声阈值，**非噪音误判**，是模型此前未生成寒暄回复。若真机复验仍无响应，需进一步排查 omni 是否仅回 audio 不回 text（届时加 audio 兜底）。
 
 **整体状态**：OMNI 全双工五项体验 Bug 的代码侧修复已全部完成，`py_compile` + `tests/test_omni_m2.py` 离线单测全过；剩余为 bo s s 真机验收（按 `jac-omni-m5-acceptance` SOP + 新增四项）。
-

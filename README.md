@@ -23,6 +23,7 @@ The current codebase is a **macOS-first Python desktop prototype** (Windows/Linu
 - **Multimodal Q&A** — sends the real camera frame to the brain for vision questions.
 - **Wake-word + console input** — wake words (`jac` / `杰克` / `你好` …) or just type in the console to talk.
 - **Persistent memory** — JSON long-term memory + lightweight local vector retrieval (`src/memory/`).
+- **Full-duplex OMNI takeover** — local MiniCPM-o-4_5 exchanges continuous audio/video through llama.cpp-omni; its Listen sampling setting is sent in the protocol-required `payload.config` field so it is actually applied by the server.
 
 ### Architecture (what's inside)
 
@@ -104,6 +105,7 @@ J.A.C. 是一个**本地优先的多模态 AI 管家**原型，灵感来自 JARV
 - **多模态问答** —— 视觉问题时把真实摄像头帧发给大脑。
 - **唤醒词 + 控制台输入** —— 唤醒词（`jac` / `杰克` / `你好` …）或直接控制台输入对话。
 - **持久记忆** —— JSON 长期记忆 + 轻量本地向量检索（`src/memory/`）。
+- **全双工 OMNI 接管** —— 本地 MiniCPM-o-4_5 通过 llama.cpp-omni 持续交换音视频；Listen 采样参数会放入服务端协议要求的 `payload.config`，确保配置实际生效。
 
 ### 架构（模块一览）
 

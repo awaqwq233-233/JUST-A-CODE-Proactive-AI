@@ -4,6 +4,14 @@
 
 ---
 
+## 2026-09-13 — 修复 OMNI「检测到人声却永远不回复」的协议层错误
+
+- **现象（bo s s 真机日志）**：麦克风连续检测到真实人声（RMS 最高 0.085），但服务端持续输出 `listen=1`、`is_end_of_turn=0`、`llm_text.len=0`；因此不是摄像头、麦克风权限或音量不足，而是模型始终选择继续聆听。
+- **根因**：客户端虽传了 `listen_prob_scale=0.5`，但错误地放在 WebSocket `session.init` 的顶层。llama.cpp-omni 的 `parse_session_init()` 只解析 `payload.config`，顶层字段被静默忽略，服务端实际回落到默认 `1.0`（不压低 `<|listen|>` 偏好），从而复现「只听不说」。
+- **修复**：`src/omni/client.py` 新增 `_build_session_init()`，统一把 `listen_prob_scale` 放进 `payload.config`，并在启动时回显实际发送的系数；更新顶部协议契约，避免维护时再次放错层级。
+- **验证**：新增 `tests/test_omni_protocol.py`，断言采样配置只位于服务端可读的 `payload.config`；无需模型、摄像头或麦克风即可回归。
+- **配置与复验**：默认仍为 0.5。重启 OMNI 后，启动日志应出现 `Listen 概率系数=0.50（已发送给服务端）`；正常对话时 `temp/omni_server.log` 不应再持续只有 `listen=1`，而应能出现非 listen 的生成/文本输出。若模型仍偏向聆听，可在 GUI 把「Listen 概率系数 (OMNI)」逐步降到 0.3 或 0.2 再复验。
+
 ## 2026-09-06 — OMNI 回声自激根因修复（回声门控 + 幻觉任务禁止显示/偷偷升级）
 
 - **背景（bo s s 真机日志）**：外放场景下 omni 自言自语——bo s s 全程没说话，控制台却冒出「给您推荐一部电」「么样天气怎」，LM Studio 还收到 `[升级任务] 给您推荐一部电`。日志铁证：`[TTS] 正在播放（Voicebox）` 出现的**同一时刻** `[omni-client] 🎙 检测到人声（RMS=0.022 峰值=0.106）`——**J.A.C. 听到了自己刚说的话**。
