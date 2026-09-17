@@ -262,6 +262,11 @@ class JACRuntime:
             # P1 图像降频：图像上行与音频上行解耦（默认 1 帧/秒），避免视觉 token 把
             # KV 快速填满（真机实测每约 30 秒一次上下文滑动 → 模型照示例复读令牌）。
             video_interval=config.omni_video_interval,
+            # P0 图像上行总开关：False = 完全不上图（纯音频全双工），用于隔离验证
+            # 「视觉 token 吃爆 KV → 上下文每约 30s 被滑动清空 → 模型照 prompt 示例复读」。
+            video_enabled=getattr(config, "omni_video_enabled", True),
+            # 逐块上行诊断日志（GUI 复选框 / CLI --debug / OMNI_DEBUG=1）
+            debug=getattr(config, "omni_debug_log", False),
             mic_gain=config.omni_mic_gain,
             listen_prob_scale=config.omni_listen_prob_scale,  # 压低 listen 偏好，修复全双工只听不说
             # 回声门控：config 值可为 "auto"/"1"/"0" 字符串，由 client.resolve_echo_gate 解析

@@ -4,6 +4,38 @@
 
 ---
 
+## 2026-09-17（二）— GUI 右侧选项面板改为可滚动侧栏（修「右下角被压住、比例抽象」）
+
+- **现象（bo s s 截图）**：右侧选项面板内容一多就出事——①底部「判断间隔（秒）」「判断请求超时（秒）」两个滑块被压成几像素高的小方块，数值被裁；②标签被截断成「MiniCPM-o-4_5 全双工（接管 T」「Listen 概率系数（ON」「图像上行间隔s（OMI」；③「麦克风音量」进度条的「0%」文字被裁在框外。
+- **根因（两条独立）**：①**高度**——面板内容（10+ 控件：复选框 / 数字框 / 下拉 / 音量条 / 文字区 / 两个滑块）直接堆在一个 `QVBoxLayout` 里，竖排总高度超过窗口可用高度时 Qt 会**压缩子控件**而不是给滚动条，于是滑块被压扁；②**宽度**——面板用 `setMinimumWidth(260)` 且以 `stretch=1` 与视频区(3)、控制台(2) 抢横向空间，窗口稍窄就被挤到 260px 以下，长标签被 `QLabel` 裁掉。
+- **改动（`gui.py`）**：
+  1. 面板内容整体搬进 **`QScrollArea`**（`widgetResizable=True`、**只竖滚**、`NoFrame`）；「« 收起选项」按钮**留在滚动区外**固定贴顶，滚到哪都能收起。
+  2. 面板改为**固定宽度带** `setMinimumWidth(340)` / `setMaximumWidth(420)`，且 `root.addWidget(..., 0)`（**stretch=0，退出横向争抢**）；视频区(3)/控制台(2) 才是弹性列。340 的下限按最长标签「图像上行间隔s (OMNI)」实测算出。
+  3. QSS 补 `QScrollArea#optionScroll` 及其内容 widget 的**去底去边**规则——`QScrollArea` 继承 `QFrame`，不显式覆盖会套上「QFrame 通用卡片样式」，形成**双层卡片**；同时给竖滚动条独立样式（8px 宽、`#3a3a44` 滑块、hover 变蓝、隐藏上下箭头）。
+  4. `_labeled_slider()` 的外层容器加 `setMinimumHeight(92)`、滑条加 `setMinimumHeight(24)`；`mic_bar` 加 `setMinimumHeight(18)`、`omni_reply` 加 `setMinimumHeight(80)`——**给「被压扁」设下限**：空间不够时就该出滚动条，而不是把控件比例压坏。
+- **验证**：`py_compile` 通过；**离屏渲染实测抓图**（`QT_QPA_PLATFORM=offscreen` + `QWidget.grab()`，脚本 `/tmp/jac_gui_shot.py`，不入库）：
+  - `1440×880`：全部控件完整显示、无滚动条，标签无截断，两个滑块与 4.0s/15.0s 数值均完整；
+  - `1200×700`：内容超高 → **出现竖滚动条**，控件保持自身比例（滑块不再是方块）。
+  - 回归 `tests/test_gui_runtime.py` + `tests/test_omni_video_switch.py` **11 passed**。
+- **顺带**：确认 `_toggle_panel()` 的 `hide()/show()` 仍作用于同一个面板 `QFrame`，折叠逻辑未受影响。
+
+## 2026-09-17 — P0 变量分离实验开关：图像上行总开关（GUI 复选框）+ 上行调试日志开关
+
+- **动机（bo s s 真机四组日志诊断，listen 系数 1.0 / 0.8 / 0.6 / 0.4 各跑一轮）**：症状是「我说话要么没反应，要么被『识别』成查电脑状态然后触发升级、又被自己拦截丢弃」。诊断结论是**三个独立故障叠加**，其中「乱识别成查电池」根本不是 ASR 结果（full_duplex 不回传用户 ASR 原文），而是**上下文被视觉 token 冲垮后模型照 `prompts.py` 里的示例复读**——服务端 `temp/omni_server.log` 实测 `n_past=6792`、`n_keep=675`，每带一帧图写约 64 个视觉 token，n_ctx=8192 时上下文每约 30 秒被滑动清空一次，清完只剩 system prompt，于是抄最近的例句「查一下这台电脑的电池电量百分比」。**要坐实这条机制，必须能一键把所有图像上行关掉，再对比幻觉是否消失**——此前只有「多久发一帧」（`video_interval`），没有「发不发」的总开关。
+- **改动 1（`src/omni/client.py`）**：`OmniClient` 新增两个参数——
+  - `video_enabled`（**图像上行总开关**，默认 `True`；`None` = 读 `OMNI_VIDEO_ENABLED`）。为 `False` 时 `_should_attach_frame()` **恒返回 False**（优先级高于 `video_interval <= 0` 的「每段都带图」旧行为），`_cam_loop` 也不再产 jpeg（反正没人取用，省掉每帧 JPEG 编码）；BGR 帧照常刷新，**GUI 本地预览不受影响**。
+  - `debug`（逐块上行诊断日志，默认 `False`；`None` = 读 `OMNI_DEBUG`）。把原先散在 5 处的 `os.environ.get("OMNI_DEBUG") == "1"` 统一收敛到 `self._debug`——**根因是 GUI 启动的进程改不了环境变量**，此前这个开关只能从命令行用，GUI 用户拿不到逐块日志（而量化「块长抖动」正需要它）。
+  - 启动日志新增一行 `[omni] 图像上行：已关闭（纯音频全双工）…`，真机验收时一眼可确认开关状态。
+- **改动 2（`src/utils/config.py`）**：新增 `omni_video_enabled`（默认 `True`）与 `omni_debug_log`（默认 `False`），支持 `OMNI_VIDEO_ENABLED` / `OMNI_DEBUG` 环境变量覆盖。
+- **改动 3（`gui.py`）**：OMNI 面板新增两个启动前配置项——
+  - **「图像上行（OMNI 视觉）」复选框**（默认勾选，位置在「图像上行间隔s」上方）。取消勾选即纯音频全双工；同时把下面的「间隔s」输入框灰掉（关掉图像时间隔无意义，避免误配）。
+  - **「上行调试日志（OMNI_DEBUG）」复选框**（默认不勾）。
+  - 两个控件都纳入 `_set_options_enabled()` 的启动/停止联动。
+- **改动 4（`src/runtime.py` / `src/omni/__main__.py`）**：runtime 透传 `omni_video_enabled` / `omni_debug_log`；CLI 新增 `--no-video`（关闭图像上行）与 `--debug`（等价 `OMNI_DEBUG=1`），未显式指定时传 `None`，把决定权交回环境变量（避免 CLI 默认值压掉 `OMNI_VIDEO_ENABLED=0`）。
+- **验证**：`py_compile` 通过；新增 `tests/test_omni_video_switch.py`（**6 个用例全过**，含 WS 级抓包断言）：配置层默认值与环境变量覆盖 / `video_enabled` 与 `debug` 的解析优先级（显式 > 环境变量 > 默认）/ 关闭时 `_should_attach_frame` 恒 False（且压过 `video_interval<=0`）/ 对照组开启时首段必带图 / **WS 级：关掉开关后 9 段上行全部纯音频、零 `video_frames`，且每帧仍带音频（不触发服务端 `fail_fast missing_audio`）** / 对照组带图段数 < 音频段数。omni + GUI 相关回归 **57 passed**（含新增 6 个共 63）。
+- **已知既有失败（与本次改动无关）**：全量跑 `tests/` 时 `test_smoke.py`（2 个）与 `test_memory_manager.py`（2 个）失败——`conftest.py` 的 `MockBrain.queue_decision()` 签名与 `test_smoke.py` 断言不同步（缺 `type` 关键字、decision schema 多了 `should_store/confidence/kind/reason` 字段），属 memory 子系统的既有问题，本次未触碰这三个文件（`git status` 可核对）。
+- **待 bo s s 真机复验（P0 实验第 1 项）**：勾掉 GUI「图像上行」→ 启动 → 长聊 1~2 分钟，观察：①控制台是否还会出现 `⚠️ 升级令牌疑似…幻觉，已拦截丢弃` 与「查一下这台电脑的电池电量百分比」；②`temp/omni_server.log` 里 `[prof] encoder index=` 与 `n_past` 的增长应停止（不再有 VPM 编码、KV 只按音频增长）。**若幻觉消失即坐实机制**。（第 2 项「逐块日志」对应 GUI「上行调试日志」复选框。）
+
 ## 2026-09-13（深夜二）— P1 图像降频：图像上行与音频上行解耦（默认 1 帧/秒）
 
 - **动机（真机日志实测）**：服务端每收到**带图**的一段就要做一次 VPM 图像编码（`[prof] encoder` 实测 p50=196ms / p90=285ms / 均值 232ms）并把 **64 个视觉 token** 写进 KV；而一段音频只有个位数 token。带图频率越高，KV 越快被视觉填满 → 每约 30~60 秒触发一次上下文滑动；而滑动之后模型只剩 system prompt，于是照 `prompts.py` 里的示例复读令牌（「查询一下最近的新闻」就是这么来的，三轮已复现）。原先「每段都带图」等于让图像占用服务端每轮算力的三分之一还多。

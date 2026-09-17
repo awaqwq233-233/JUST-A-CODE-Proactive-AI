@@ -191,7 +191,8 @@ class OmniClient:
                  video_quality: int = 80, voicebox_speaker=None,
                  echo_gate: bool = None, flow_control: bool = True,
                  max_buf_secs: float = None, chunk_wait_timeout: float = None,
-                 video_interval: float = None):
+                 video_interval: float = None,
+                 video_enabled: bool = None, debug: bool = None):
         """初始化客户端。
 
         Args:
@@ -221,6 +222,17 @@ class OmniClient:
                 示例复读令牌）。降到 1 帧/秒可把 KV 增长降约三成、上下文寿命 +约四成，并每轮省下一次 VPM 编码，
                 同时每轮省下约 190ms 让实时性有余量。<=0 表示退回旧行为（每段都带图）。
                 None=读环境变量 OMNI_VIDEO_INTERVAL（默认 1.0）。
+            video_enabled: **图像上行总开关**（P0 变量分离实验，默认 True）。False = 一个
+                视频帧都不发，纯音频全双工（等价「模型闭上眼睛」）。用途：隔离验证
+                「视觉 token 吃爆 KV」这条机制——真机日志显示每带一帧图就写约 64 个视觉
+                token 进 KV，n_ctx=8192 时上下文每约 30 秒被滑动清空一次，清完模型只剩
+                system prompt，于是照 prompts.py 里的示例复读「查一下这台电脑的电池电量
+                百分比」。关掉图像若幻觉消失，即可坐实该机制。None=读环境变量
+                OMNI_VIDEO_ENABLED（默认开）。注意与 video_interval 的区别：本开关是
+                「发不发」，video_interval 是「多久发一帧」；间隔 <=0 表示每段都发。
+            debug: 逐块上行诊断日志（默认 False）。True 时打印每段的推流序号/间隔/块长/
+                RMS/峰值/距上次人声，以及 omni 文本 delta 的 repr，用于量化「块长抖动」与
+                定位畸形令牌。会明显刷屏。None=读环境变量 OMNI_DEBUG（"1"/"true"/"on"/"yes" 为真）。
             camera_width/height: 自建摄像头分辨率。
             video_quality: jpeg 编码质量（0~100）。
             echo_gate: 回声门控开关；None 表示读环境变量 OMNI_ECHO_GATE（默认开）。
@@ -263,6 +275,23 @@ class OmniClient:
         )
         self._last_frame_ts = 0.0            # 上次带图时刻（0=本会话还没带过图）
         self._frames_sent = 0                # 已带图段数（诊断用）
+
+        # ---- P0 图像上行总开关（变量分离实验：关掉即可隔离「视觉 token 爆 KV」）----
+        # 与 video_interval 的区别：本开关决定「发不发」，video_interval 决定「多久发一帧」。
+        # 关闭后纯音频全双工，服务端不再做 VPM 编码、也不再往 KV 写视觉 token。
+        if video_enabled is None:
+            _ve = os.environ.get("OMNI_VIDEO_ENABLED")
+            video_enabled = True if _ve is None else _ve.strip().lower() not in (
+                "0", "false", "no", "off")
+        self.video_enabled = bool(video_enabled)
+
+        # ---- 逐块诊断日志开关 ----
+        # 原先 5 处直接读 os.environ（GUI 启动的进程改不了环境变量，开关只能靠命令行），
+        # 现统一收敛到 self._debug，支持 GUI 复选框 / CLI --debug / 环境变量三种入口。
+        if debug is None:
+            _db = (os.environ.get("OMNI_DEBUG") or "").strip().lower()
+            debug = _db not in ("", "0", "false", "no", "off")
+        self._debug = bool(debug)
 
         # ---- M7b/M7a：本地 Voicebox 克隆 TTS 复用（None=走 omni 自带 audio）----
         self._voicebox_speaker = voicebox_speaker
@@ -697,7 +726,13 @@ class OmniClient:
                   flush=True)
 
         # 图像上行间隔提示（P1）：真机验收时一眼确认降频是否生效
-        if self.enable_camera:
+        if self.enable_camera and not self.video_enabled:
+            print("[omni] 图像上行：已关闭（纯音频全双工）。服务端不再做 VPM 编码、"
+                  "也不再往 KV 写视觉 token —— 用于隔离验证「视觉 token 吃爆 KV → "
+                  "上下文每约 30s 被滑动清空 → 模型照 prompt 示例复读」这条机制。"
+                  "开关入口：GUI「图像上行」复选框 / CLI --no-video / OMNI_VIDEO_ENABLED=0。",
+                  flush=True)
+        if self.enable_camera and self.video_enabled:
             _vi = ("每段都带图（已关闭降频）" if self.video_interval <= 0
                    else f"{self.video_interval:.2f}s/帧")
             print(f"[omni] 图像上行间隔：{_vi}（摄像头刷新 {self.video_fps}fps，上行已解耦）。"
@@ -750,17 +785,22 @@ class OmniClient:
                   "OMNI 将听不到声音。", flush=True)
 
     def _cam_loop(self):
-        """摄像头采集循环：按 video_fps 刷新最新帧（jpeg），由推送协程取用。"""
+        """摄像头采集循环：按 video_fps 刷新最新帧（jpeg），由推送协程取用。
+
+        图像上行总开关（`video_enabled`）关闭时不产 jpeg——反正没人取用，省掉每帧的
+        JPEG 编码开销；BGR 帧照常刷新，GUI 预览与「看着你」的本地画面不受影响。
+        """
         interval = 1.0 / max(1, self.video_fps)
         while not self._stop_ev.is_set() and self.camera is not None:
             ret, frame = self.camera.get_frame()
             if ret and frame is not None:
-                ok, buf = cv2.imencode(
-                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.video_quality]
-                )
-                if ok:
-                    with self._latest_jpg_lock:
-                        self._latest_jpg = buf.tobytes()
+                if self.video_enabled:
+                    ok, buf = cv2.imencode(
+                        ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, self.video_quality]
+                    )
+                    if ok:
+                        with self._latest_jpg_lock:
+                            self._latest_jpg = buf.tobytes()
                 # 缓存 BGR 帧供 GUI 预览（解码一次，避免高频重复解码）
                 with self._latest_frame_lock:
                     self._latest_frame = frame.copy()
@@ -817,6 +857,10 @@ class OmniClient:
     def _should_attach_frame(self, now: float) -> bool:
         """本段是否附带视频帧（P1 图像降频：默认 video_interval 秒一帧）。
 
+        最高优先级是总开关 `video_enabled`：为 False 时本方法永远返回 False（一个视频帧
+        都不发），用于 P0 变量分离实验——坐实「视觉 token 吃爆 KV → 上下文每约 30s 被
+        滑动清空 → 模型照 prompt 示例复读『查电池』」这条机制。
+
         为什么把「图像上行」与「音频上行」解耦：服务端每一段都要为随帧图像做一次 VPM
         编码（约 190ms）并把约 64 个视觉 token 写进 KV，而一段音频只有个位数 token。
         带图频率越高，KV 越快被视觉 token 填满——真机实测每约 30 秒就触发一次上下文
@@ -830,6 +874,8 @@ class OmniClient:
         Returns:
             bool: True=本段带图（并刷新计时），False=本段只上音频。
         """
+        if not self.video_enabled:
+            return False                     # 图像上行总开关关闭：永不带图（P0 变量分离实验）
         if self.video_interval <= 0:
             return True                      # <=0：退回旧行为（每段都带图，便于对照排查）
         if self._last_frame_ts <= 0.0:
@@ -898,7 +944,7 @@ class OmniClient:
                         break
             if not audio:
                 audio = b"\x00" * (int(0.1 * TARGET_SR) * 4)
-                if os.environ.get("OMNI_DEBUG") == "1":
+                if self._debug:
                     print("[omni-client][debug] 采集缓冲为空，补 0.1s 静音以保证 "
                           "input.append 合法（否则服务端会 fail_fast 关会话）", flush=True)
             now = time.monotonic()
@@ -942,7 +988,8 @@ class OmniClient:
             if is_speech:
                 self._last_speech_ts = time.monotonic()
             # 推流诊断日志治理（#4）：默认只在「人声↔静音」状态翻转时打印一行，
-            # 避免每 ~0.4s 刷屏；仅当环境变量 OMNI_DEBUG=1 时才逐块打印 RMS 诊断详情。
+            # 避免每 ~0.4s 刷屏；仅当逐块诊断开关 self._debug 打开时才打印 RMS 诊断详情
+            # （GUI「上行调试日志」复选框 / CLI --debug / OMNI_DEBUG=1 三个入口）。
             prev_state = getattr(self, "_last_speech_state", None)
             if is_speech != prev_state:
                 if is_speech:
@@ -953,7 +1000,7 @@ class OmniClient:
                     print(f"[omni-client] 进入静音（RMS={rms:.3f} 峰值={peak:.3f}）", flush=True)
                 self._last_speech_state = is_speech
             # 逐块诊断仅在显式开启时打印，便于排查「说话但 omni 无反应」类问题
-            if os.environ.get("OMNI_DEBUG") == "1":
+            if self._debug:
                 print(f"[omni-client][debug] 推流#{self._chunk_seq} "
                       f"间隔={elapsed:.2f}s {'人声' if is_speech else '静音'} "
                       f"RMS={rms:.3f} 峰值={peak:.3f} 块={len(audio)}B "
@@ -980,7 +1027,7 @@ class OmniClient:
             attach_frame = bool(jpg is not None) and self._should_attach_frame(now)
             if attach_frame:
                 payload["video_frames"] = [base64.b64encode(jpg).decode("ascii")]
-            elif os.environ.get("OMNI_DEBUG") == "1":
+            elif self._debug:
                 print(f"[omni-client][debug] 推流#{self._chunk_seq} 本段不带图"
                       f"（图像间隔 {self.video_interval:.2f}s，已带 {self._frames_sent} 帧）",
                       flush=True)
@@ -1111,7 +1158,7 @@ class OmniClient:
         不是要说给用户听的话，一律既不朗读也不显示。
         """
         # 诊断：原始 delta 的 repr（OMNI_DEBUG=1 时开启），用于坐实畸形令牌的确切形态
-        if os.environ.get("OMNI_DEBUG") == "1":
+        if self._debug:
             print(f"[omni-client][debug] text delta repr={txt!r}", flush=True)
         # 1) 令牌已发现：后续 delta 均为任务描述（内部指令），不朗读、不显示
         if self._token_seen:
@@ -1296,7 +1343,7 @@ class OmniClient:
         Returns:
             tuple[bytes, bool]: (替换后的音频字节, 是否计为真实人声)
         """
-        if os.environ.get("OMNI_DEBUG") == "1":
+        if self._debug:
             print(f"[omni-client][debug] 回声门控生效（正在播报）"
                   f" 麦克风已按静音推送 实测RMS={rms:.3f}", flush=True)
         out = (b"\x00" * len(audio)) if audio else audio

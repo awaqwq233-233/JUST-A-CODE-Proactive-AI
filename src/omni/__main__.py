@@ -21,6 +21,8 @@
   python -m src.omni --mic 2 --mic-gain 8  # 绑定内建麦并放大 8 倍能量（内建麦离嘴远触发不了 VAD 时用）
   python -m src.omni --video-interval 2.0  # 图像上行改为 2 秒 1 帧（省算力/护上下文）
   python -m src.omni --video-interval 0    # 退回「每段都带图」的旧行为（对照排查用）
+  python -m src.omni --no-video            # 完全关闭图像上行（纯音频全双工，P0 变量分离实验）
+  python -m src.omni --debug               # 打开逐块上行诊断日志（间隔/块长/RMS/峰值）
   python -m src.omni --url ws://... --model-dir /path
 """
 import argparse
@@ -201,6 +203,14 @@ def main():
                     help="图像上行间隔（秒/帧，P1 图像降频，默认 1.0）。音频仍按块上行，图像默认"
                          "每秒 1 帧——降频可把 KV 增长降约三成、上下文寿命 +约四成；"
                          "传 0 退回「每段都带图」的旧行为（对照排查用）。")
+    ap.add_argument("--no-video", action="store_true",
+                    help="完全关闭图像上行（P0 变量分离实验）：一个视频帧都不发，纯音频全双工。"
+                         "服务端不再做 VPM 编码、也不往 KV 写视觉 token，用于坐实"
+                         "「视觉 token 吃爆 KV → 上下文每约 30s 被滑动清空 → 模型照 prompt "
+                         "示例复读」这条机制。GUI 侧对应「图像上行」复选框。")
+    ap.add_argument("--debug", action="store_true",
+                    help="打开逐块上行诊断日志（等价 OMNI_DEBUG=1）：打印每段推流序号/间隔/"
+                         "块长/RMS/峰值/距上次人声，以及 omni 文本 delta 的 repr。会明显刷屏。")
     args = ap.parse_args()
 
     # 列出麦克风设备后直接退出（便于定位内建麦 index）
@@ -232,6 +242,9 @@ def main():
         voicebox_speaker=voicebox_speaker,
         echo_gate=not args.no_echo_gate,
         video_interval=args.video_interval,
+        # False=显式关闭；未指定则传 None，交给 OmniClient 读 OMNI_VIDEO_ENABLED
+        video_enabled=False if args.no_video else None,
+        debug=True if args.debug else None,
     )
     cb = _ConsoleCallbacks(client)
     # client 内部读的是 self.cb（__init__: self.cb = callbacks or OmniCallbacks()）；

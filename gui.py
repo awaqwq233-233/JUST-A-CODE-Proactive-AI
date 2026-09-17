@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QPlainTextEdit, QPushButton, QFrame, QSplitter,
     QToolButton, QComboBox, QSlider, QSizePolicy, QCheckBox,
-    QProgressBar, QDoubleSpinBox,
+    QProgressBar, QDoubleSpinBox, QScrollArea,
 )
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import (
@@ -86,10 +86,32 @@ QSlider::handle:horizontal {
 }
 QSlider::handle:horizontal:hover { background: #6fa0ff; }
 
-QScrollBar:vertical, QScrollBar:horizontal {
+/* 横向滚动条（控制台等）；侧栏竖滚动条的专用样式见下方 */
+QScrollBar:horizontal {
     background: #111114;
     border-radius: 6px;
 }
+/* 右侧选项侧栏的滚动容器：必须显式去底去边，否则会套上上面「QFrame 通用卡片样式」
+   形成双层卡片（QScrollArea 本身继承 QFrame），观感很脏。 */
+QScrollArea#optionScroll,
+QScrollArea#optionScroll > QWidget > QWidget {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+QScrollBar:vertical {
+    background: transparent;
+    width: 8px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical {
+    background: #3a3a44;
+    border-radius: 4px;
+    min-height: 32px;
+}
+QScrollBar::handle:vertical:hover { background: #4f8cff; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 QCheckBox { background: transparent; border: none; padding: 4px; }
 QToolButton { padding: 6px; }
 
@@ -306,18 +328,38 @@ class MainWindow(QMainWindow):
         mid_w.setLayout(mid)
         root.addWidget(mid_w, 2)
 
-        # ============ 右：折叠开关选项面板 ============
+        # ============ 右：折叠开关选项面板（可滚动侧栏）============
+        # 为什么要滚动：面板里堆了 10+ 个控件（复选框 / 数字框 / 下拉 / 音量条 / 文字区 /
+        # 两个滑块，外加 OMNI 实时诊断区）。竖排总高度超过窗口可用高度时，QVBoxLayout 会把
+        # 子控件**压扁**——真机表现是底部两个滑块被压成几像素的方块、进度条文字被裁掉
+        # （bo s s 2026-09-17 截图）。塞进 QScrollArea 后控件保持自身比例，放不下就出竖滚动条。
+        # 宽度同理不能靠拉伸：三组 3:2:1 抢空间时面板会被挤到 260px 以下，标签被截断成
+        # 「Listen 概率系数（ON」这种。故面板给固定宽度带 + stretch=0，宽度恒定不压缩。
         self.option_panel = QFrame()
         self.option_panel.setObjectName("options")
-        self.option_panel.setMinimumWidth(260)
-        op = QVBoxLayout(self.option_panel)
-        op.setContentsMargins(14, 14, 14, 14)
-        op.setSpacing(14)
+        self.option_panel.setMinimumWidth(340)     # 保证最长标签「图像上行间隔s (OMNI)」不截断
+        self.option_panel.setMaximumWidth(420)     # 上限防止它吞掉视频区
+        op_outer = QVBoxLayout(self.option_panel)
+        op_outer.setContentsMargins(10, 10, 10, 10)
+        op_outer.setSpacing(8)
 
         self.collapse_btn = QToolButton()
         self.collapse_btn.setText("« 收起选项")
         self.collapse_btn.clicked.connect(self._toggle_panel)
-        op.addWidget(self.collapse_btn)
+        op_outer.addWidget(self.collapse_btn)      # 固定贴在顶部，不随内容滚动
+
+        self.option_scroll = QScrollArea()
+        self.option_scroll.setObjectName("optionScroll")
+        self.option_scroll.setWidgetResizable(True)         # 内容宽度跟随视口
+        self.option_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 只竖滚
+        self.option_scroll.setFrameShape(QFrame.NoFrame)
+        op_outer.addWidget(self.option_scroll, 1)
+
+        op_w = QWidget()
+        op = QVBoxLayout(op_w)
+        op.setContentsMargins(4, 4, 4, 4)
+        op.setSpacing(14)
+        self.option_scroll.setWidget(op_w)
 
         self.judge_chk = QCheckBox("前置判断模型（主动感知）")
         self.judge_chk.setChecked(False)  # bo s s 偏好：GUI 默认不勾选判断模型
@@ -359,6 +401,17 @@ class MainWindow(QMainWindow):
         lps_row.addWidget(self.listen_prob_scale_spin)
         op.addLayout(lps_row)
 
+        # 图像上行总开关（OMNI，P0 变量分离实验）：取消勾选 = 一个视频帧都不发，纯音频全双工。
+        # 真实用途：坐实「视觉 token 吃爆 KV → 上下文每约 30s 被滑动清空 → 模型照 prompts.py
+        # 里的示例复读「查一下这台电脑的电池电量百分比」」这条机制（关掉后模型完全看不见画面）。
+        self.video_enabled_chk = QCheckBox("图像上行（OMNI 视觉）")
+        self.video_enabled_chk.setChecked(bool(getattr(self.config, "omni_video_enabled", True)))
+        self.video_enabled_chk.setToolTip(
+            "勾选（默认）：omni 能看见摄像头画面。取消勾选：完全不上图，纯音频全双工——"
+            "服务端不再做 VPM 编码、也不往 KV 写视觉 token。用于隔离验证「视觉 token 吃爆 KV "
+            "导致上下文每约 30 秒被清空、模型照 prompt 示例复读」这条机制。")
+        op.addWidget(self.video_enabled_chk)
+
         # 图像上行间隔（OMNI，P1 图像降频）：音频每段都上，图像默认 1 秒 1 帧。
         # 带图的那一轮服务端要多做一次 VPM 编码（实测 p50≈196ms）并写 64 个视觉 token 进 KV，
         # 是上下文被快速填满、每约 30 秒滑动一次的元凶；0 表示退回「每段都带图」。
@@ -373,6 +426,19 @@ class MainWindow(QMainWindow):
             "每轮省下一次图像编码；0 = 每段都带图（旧行为，仅用于对照排查）。")
         vi_row.addWidget(self.video_interval_spin)
         op.addLayout(vi_row)
+        # 总开关关闭时「间隔」无意义，直接灰掉避免误配（与启动/停止的禁用状态叠加）
+        self.video_enabled_chk.toggled.connect(
+            lambda on: self.video_interval_spin.setEnabled(on))
+        self.video_interval_spin.setEnabled(self.video_enabled_chk.isChecked())
+
+        # 逐块上行诊断日志（OMNI，P0 实验第 2 项）：等价 OMNI_DEBUG=1。
+        # 用于量化「块长抖动」（水位丢帧的根因）：打印每段的间隔/块长/RMS/峰值/距上次人声。
+        self.debug_log_chk = QCheckBox("上行调试日志（OMNI_DEBUG）")
+        self.debug_log_chk.setChecked(bool(getattr(self.config, "omni_debug_log", False)))
+        self.debug_log_chk.setToolTip(
+            "打印每一帧上行的序号/间隔/块长/RMS/峰值，以及 omni 文本增量的原始内容。"
+            "用于量化块长抖动、定位令牌泄漏。会明显刷屏，排障时再开。")
+        op.addWidget(self.debug_log_chk)
 
         # 回声门控（OMNI）：auto 按输出设备判定，关=戴耳机可打断，开=外放防自激
         gate_row = QHBoxLayout()
@@ -400,11 +466,13 @@ class MainWindow(QMainWindow):
         self.mic_bar = QProgressBar()
         self.mic_bar.setRange(0, 100)
         self.mic_bar.setValue(0)
+        self.mic_bar.setMinimumHeight(18)     # 防被压扁导致「0%」文字被裁
         live.addWidget(self.mic_bar)
         live.addWidget(QLabel("OMNI 实时回复"))
         self.omni_reply = QPlainTextEdit()
         self.omni_reply.setReadOnly(True)
         self.omni_reply.setMaximumHeight(150)
+        self.omni_reply.setMinimumHeight(80)  # 下限：不够就出滚动条，不压缩显示区域
         self.omni_reply.setObjectName("omniReply")
         live.addWidget(self.omni_reply)
         op.addWidget(self.omni_live)
@@ -418,7 +486,8 @@ class MainWindow(QMainWindow):
         ))
 
         op.addStretch(1)
-        root.addWidget(self.option_panel, 1)
+        # stretch=0：面板宽度由 min/max 决定，不参与横向争抢（视频区与控制台才该是弹性的）
+        root.addWidget(self.option_panel, 0)
 
         # 折叠后显示的细条
         self.expand_btn = QToolButton()
@@ -464,14 +533,21 @@ class MainWindow(QMainWindow):
         return s
 
     def _labeled_slider(self, title, slider, label):
-        """带标签滑块"""
+        """带标签滑块（三行：标题 / 滑条 / 数值）。
+
+        给外层容器设**最小高度**：侧栏空间不足时 QVBoxLayout 会把这种「一个 widget 装
+        三行」的块整体压扁，滑条被压成一条线甚至小方块（bo s s 2026-09-17 截图里底部
+        两个滑块就是这么变形的）。设下限后空间不够时会触发滚动条，而不是压坏比例。
+        """
         box = QVBoxLayout()
         box.setSpacing(4)
         box.addWidget(QLabel(title))
+        slider.setMinimumHeight(24)          # 滑条本身也不许被压成一条线
         box.addWidget(slider)
         box.addWidget(label)
         w = QWidget()
         w.setLayout(box)
+        w.setMinimumHeight(92)               # 标题 + 滑条 + 数值三行的下限
         return w
 
     # ----------------------------------------------------- 计时器
@@ -654,8 +730,11 @@ class MainWindow(QMainWindow):
     def _set_options_enabled(self, en):
         """设置选项已启用"""
         for w in (self.judge_chk, self.tts_chk, self.tools_chk, self.omni_chk,
-                  self.interval_slider, self.timeout_slider):
+                  self.interval_slider, self.timeout_slider,
+                  self.video_enabled_chk, self.debug_log_chk):
             w.setEnabled(en)
+        # 图像间隔输入框：除运行状态外还要看「图像上行」总开关——关掉图像时间隔无意义
+        self.video_interval_spin.setEnabled(en and self.video_enabled_chk.isChecked())
         # OMNI 模式下传统 judge/TTS/tools 与 omni 架构互斥，仍保持灰掉状态
         if en and self.omni_chk.isChecked():
             self._on_omni_toggled(True)
@@ -691,6 +770,8 @@ class MainWindow(QMainWindow):
             omni_ref_audio=self.config.omni_ref_audio,
             omni_fps=self.config.omni_fps,
             omni_video_interval=self.video_interval_spin.value(),
+            omni_video_enabled=self.video_enabled_chk.isChecked(),
+            omni_debug_log=self.debug_log_chk.isChecked(),
             omni_mic_gain=self.mic_gain_spin.value(),
             omni_listen_prob_scale=self.listen_prob_scale_spin.value(),
             omni_echo_gate=self.echo_gate_combo.currentData(),
