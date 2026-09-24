@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-09-24 — 遗留技术债清理（测试 4 失败 + 升级线程未取消）+ WebRTC AEC 方案
+
+### 一、测试套件 4 个既有失败：全部修复，**并更正上一轮的错误结论**
+
+上一轮 CHANGELOG 记为「4 个失败都是 `MockBrain` 签名不同步」——**这个结论是错的**，实际是**三类**完全不同的原因，其中 2 个连性质都判错了：
+
+| 用例 | 真实根因 | 修法 |
+|---|---|---|
+| `test_smoke.py` ×2 | 断言过时：`mock_brain` 的 JSON 契约已随 `MemoryRecorder` 演进为 `{should_store, reason, kind, confidence, content, tags}`，测试却仍在断言 memory 子系统 Phase 0 的旧草案 `{decision, type, ...}`；`queue_decision()` 也早已改为 `queue_decision(should_store, *, kind=...)` | 按真值来源（`recorder._parse_llm_json()` + `src/memory/prompts.py` 的 schema）重写断言 |
+| `test_memory_manager.py` ×2 | **测试时序假设过时，生产代码完全正确**：worker 首次落库前要 lazy 加载 fastembed 模型（诊断实测 **约 1.3s**，日志「[Embedder] 已加载向量模型…维度 384」），而测试只 `sleep(0.5)` 就断言 | ①新增 `_wait_until(predicate, timeout)` 轮询助手；②**注入离线 stub embedder**（`embed_texts` 返回 `None`）彻底隔离向量链路。⚠️ **第一版只做了 ①，本地单跑通过、全量重跑仍失败**，才发现更深一层根因：`fastembed.TextEmbedding(...)` **构造时会联网**查模型 revision，代理异常下进入 3~9s 重试链（stderr：`ProxyError ... Tunnel connection failed: 502` → `sleeping for 9.0 seconds`），把落库拖过任何合理超时。本类用例验证的是「规则阶段落库 / 限流是否误伤显式保存」，与向量检索无关，隔离才是正解 |
+
+- **诊断证据**（`/tmp/diag_memory.py`，临时脚本）：`t=0.5s count=0`（测试在此断言 → 假失败）→ `t=1.5s count=1`（落库完成）；且直接调 `classify("记住我喜欢爬山")` 返回 `should_store=True, kind=preference, content='我喜欢爬山', source=explicit`。**规则阶段从一开始就是对的，不存在落库 bug。**
+- **顺带修掉一处「假通过」**：`test_classify_exception_caught` 原本也是 `sleep(0.3)` 后断言 `count == 0`——worker 没跑完时该断言必然通过，回归价值为零。改为反向轮询「给足 3s，期间一旦出现记录就失败」。
+- **第 3 类失败：`tests/unit/test_tools.py::test_search_files_finds_and_blocks_scope`**。该用例把临时目录建在**用户主目录**下的固定路径 `~/fc_test_tmp`，`finally` 的 `rmtree` 一旦被外部保护机制拦下就会**跨运行累积**（实测残留 58 个文件）；而它断言的是「搜索结果里含目标文件」且 `max_results=5`——文件一多，目标就被挤出前 5 名，表现为「代码正确、测试假失败」。**修法**：改用 `tempfile.mkdtemp(prefix="fc_test_tmp_", dir=~)`（每次唯一子目录、清理量恒为 1 个文件、仍满足 `search_files` 只扫用户目录的约束），并给清理加 `try/except BaseException` 兜底——保护机制抛的是 **`SystemExit` 而非 `Exception`**，`ignore_errors=True` 只兜 `OSError`、兜不住它，而"清理失败"不该让已经断言通过的用例变红。
+- **环境坑（记下来，下次别再误判成代码失败）**：①沙箱内跑 `tmp_path` 系用例会报 `PermissionError: EEXIST: mkdir '.../pytest-of-root'`（沙箱把 `mkdir` 拦截后抛的是 **`PermissionError` 而非 `FileExistsError`**，pytest 的编号目录逻辑只捕获后者，于是整批 ERROR）——绕过方式是把 `TMPDIR` 指向**一个全新的、`pytest-of-*` 尚不存在**的目录；②本机工具链有**按「轮次」累计的批量删除配额**（`safe-delete`，阈值 50），一轮内累计删除超阈值后**任何** `rmtree` 都会被拦并 `SystemExit` 终止进程（连 librosa 的 `__pycache__` 临时目录都不放过），表现为"测试莫名其妙 FAILED/ERROR"——这与代码无关，**换个轮次重跑即恢复**。
+- **命令备忘**：本机未装 pytest-cov，而 `pytest.ini` 里配了 `--cov`，故需 `-o addopts=` 清空默认参数。
+
+### 二、`runtime.stop()` 后升级线程仍在跑工具调用与 TTS：已修
+
+- **根因（两条，缺一不可）**：
+  1. `_handle_escalation` 的 worker **从不检查 `runtime.running`**。`EscalationRouter.escalate()` 内部是同步阻塞的 LLM + 工具循环，无法抢占式中断，于是"点了停止"它照跑不误。
+  2. 更隐蔽的一条：`stop()` 会把 `self.omni_client` 置 `None`，worker 随后走 `else` 分支的 `speak_text_via_voicebox` **降级播报**——本意是"保证答案一定出声"，在停止场景下却变成"一定出声"，这正是"停止后还在念"的直接来源。
+- **改动**：
+  - `src/omni/router.py`：`escalate()` 新增 `should_stop` 回调，**每收到一个流式分片检查一次**，命中即返回空串并停止 `on_progress` 回调（否则控制台会继续打字输出）。
+  - `src/runtime.py`：三个检查点 —— ①线程入口 `if not self.running: return`（已停止时连 `EscalationRouter` 都不创建，不白烧算力）；②**结果播报前**（必须早于任何 TTS / GUI 写入）；③异常分支（停止后连"出错了"也不出声）。另维护 `self._escalation_thread`，`stop()` 里 `join(timeout=1.5s)`，**且必须先于关闭 `omni_client`**——顺序反了会让 worker 读到 `None` 又走降级播报。
+- **测试**：新增 `tests/test_runtime_escalation_stop.py`（6 例）：router 层取消 / 不传 `should_stop` 的向后兼容 / 检查点 1 / 检查点 2 / **正例（未停止时照常播报，防修复过度把正常路径也堵掉）** / `stop()` join 与清引用。
+
+### 三、WebRTC AEC 方案（**仅方案，未实施**，见 `docs/webrtc_aec_plan.md`）
+
+- **核心结论先行**：第一前提不是选 AEC 库，而是**播放路径必须能吐出 far-end 参考 PCM**。`src/audio/playback.py:111` 确认所有发声都走 `afplay` 子进程，Python 侧只剩文件路径，而 AEC 对时间对齐极敏感（±几毫秒）——所以"换播放实现"这一步绕不过去。
+- **三条路线**：①`pywebrtc-audio` + 自建 PyAudio 播放（**推荐**）；②macOS 原生 `AVAudioEngine` VoiceProcessingIO（质量最好，但采集/播放要全搬到 AVFoundation）；③保留 `afplay` + 预解码 WAV 当参考（**不推荐**，对齐不可控）。
+- **依赖可得性已实测**（非推测）：`pywebrtc-audio 0.2.0` 存在 `cp313-macosx_11_0_arm64` 预编译 wheel，与本机 Apple Silicon + Python 3.13.14 完全匹配，**无需编译**（对国内网络友好）。
+- **文档中明确标注了「已核实」与「待实测」的界限**：`afplay` 无参考信号（读源码确认）、wheel 可得（本机实测）、AVAudioEngine 语音处理语义（Apple 官方 WWDC2019/510）为已核实；macOS 只接受 44100Hz、库的 CPU 开销、本机 AirPods+内建麦的实际抑制比均标注为**待实测**。
+- **建议先做阶段 0**（独立最小脚本，半天）：播放固定语音 + 实时 AEC，人工听 + 量化回声抑制比，**判据 ≥15~20 dB**。不达标则整条路线作废、零代码损失。
+
+### 四、JEV 路线否决
+
+TypeSafe JEV 决策模型接入评估的结论为**否定**（闭源 + 托管 API + 中国大陆未开放 + 数据需出本机，与"本地优先"原则冲突），相关调研记录已按 bo s s 指示删除。
+
 ## 2026-09-17（二）— GUI 右侧选项面板改为可滚动侧栏（修「右下角被压住、比例抽象」）
 
 - **现象（bo s s 截图）**：右侧选项面板内容一多就出事——①底部「判断间隔（秒）」「判断请求超时（秒）」两个滑块被压成几像素高的小方块，数值被裁；②标签被截断成「MiniCPM-o-4_5 全双工（接管 T」「Listen 概率系数（ON」「图像上行间隔s（OMI」；③「麦克风音量」进度条的「0%」文字被裁在框外。

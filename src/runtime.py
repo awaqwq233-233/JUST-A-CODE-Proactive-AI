@@ -110,6 +110,9 @@ class JACRuntime:
         self.omni_launcher = None        # OmniServerLauncher（按需启动服务）
         self.omni_mode = False           # 当前是否 OMNI 模式
         self.omni_router = None          # EscalationRouter（升级路由，首次升级时懒创建）
+        # 当前升级线程引用（最后一次启动的那个）。用于 stop() 时短暂 join，
+        # 避免「点了停止，升级线程还在跑工具调用 / 念结果」。
+        self._escalation_thread = None
 
     # ---------------------------------------------------------------- 生命周期
     def start(self, config: Config):
@@ -117,6 +120,8 @@ class JACRuntime:
             return
         main.running = True
         self.running = True
+        # 新一轮启动：清掉上一次会话遗留的升级线程引用（stop() 里 join 前会再查 is_alive）
+        self._escalation_thread = None
         self.config = config
         # 把 GUI 选项面板的「工具功能」开关桥接到 main 的 FC 总开关：
         # process_response 在判定是否走 Function Calling 时读的是模块级
@@ -302,14 +307,28 @@ class JACRuntime:
         （注：原 omni 临时 turn_based 回灌因 server 单会话被拒，M7a 起改用本地 Voicebox）
         """
         def _worker():
+            # 停止检查点 1：runtime 已停止就直接放弃，不再浪费算力跑 LLM / 工具调用。
+            if not self.running:
+                print("[OMNI升级] runtime 已停止，丢弃本次升级任务。")
+                return
             try:
                 if self.omni_router is None:
                     self.omni_router = EscalationRouter()
-                # run_agentic 流式 yield 最终回答文本（打字机效果），on_progress 推到控制台
+                # run_agentic 流式 yield 最终回答文本（打字机效果），on_progress 推到控制台；
+                # should_stop 是协作取消信号——每个流式分片检查一次，命中即中断并丢弃结果
                 result = self.omni_router.escalate(
-                    task, on_progress=lambda c: print(c, end="", flush=True)
+                    task,
+                    on_progress=lambda c: print(c, end="", flush=True),
+                    should_stop=lambda: not self.running,
                 )
                 print()  # 换行，结束流式输出
+                # 停止检查点 2（关键）：escalate 是同步阻塞的，无法抢占式中断，可能刚刚才返回。
+                # 此处必须早于任何 TTS / GUI 写入——否则会出现「点了停止，J.A.C. 还在念升级结果」。
+                # 历史 bug 成因：stop() 会把 self.omni_client 置 None，于是 worker 走 else 的
+                # speak_text_via_voicebox 降级分支，反而「保证出声」。
+                if not self.running:
+                    print("[OMNI升级] runtime 已停止，丢弃升级结果（不播报）。")
+                    return
                 # 确保答案一定出声：优先经 client 回灌（Voicebox 克隆），否则降级系统 TTS。
                 # 关键修复：喂给 TTS 的文本必须是干净的（不带「（升级结果）」前缀），
                 # 否则会被 Voicebox 念出来；仅 GUI 实时文字区保留前缀显示（append_reply）。
@@ -318,7 +337,8 @@ class JACRuntime:
                 if self.omni_client is not None and self.omni_client.is_running():
                     self.omni_client.speak_result(clean)              # 干净文本进 TTS
                 else:
-                    # 客户端不可用：直接降级系统 TTS，避免答案静默丢失
+                    # 客户端不可用（例如已被 stop 置 None）：降级系统 TTS，避免答案静默丢失。
+                    # 注意此分支在 stop 竞态下也可能被走到，故上面那道 running 检查是必需的。
                     from src.omni.backfeed import speak_text_via_voicebox
                     speak_text_via_voicebox(None, clean)
                 # 把升级结果（带前缀）写入回复缓存，仅供 GUI 实时文字区显示，不参与 TTS
@@ -329,6 +349,9 @@ class JACRuntime:
                     )
             except Exception as e:  # noqa: BLE001
                 print(f"[OMNI升级] 异常: {e}")
+                # 停止后连错误提示也不该出声
+                if not self.running:
+                    return
                 if self.omni_client is not None and self.omni_client.is_running():
                     try:
                         self.omni_client.speak_result("抱歉 boss，升级处理出错了。")
@@ -346,7 +369,11 @@ class JACRuntime:
                     self.omni_client.mark_escalation_done()
                 self.context.is_thinking = False
 
-        threading.Thread(target=_worker, daemon=True, name="omni-escalation").start()
+        # 记录线程引用供 stop() 短暂 join；若已有上一个升级线程在跑，
+        # 它会在 should_stop 检查点（每流式分片一次）看到 running=False 自行退出。
+        t = threading.Thread(target=_worker, daemon=True, name="omni-escalation")
+        self._escalation_thread = t
+        t.start()
 
     def stop(self):
         """停止"""
@@ -355,6 +382,17 @@ class JACRuntime:
         self.running = False
         main.running = False
         self._audio_stop.set()
+        # 升级线程收尾（2026-09-24 修复「停止后仍在跑工具调用与 TTS」）：
+        # escalate 内部是同步阻塞的 LLM + 工具循环，无法抢占式中断，只能靠 worker 里的
+        # 协作检查点（`should_stop=lambda: not self.running`）在下一个流式分片处自行收手。
+        # 这里的短暂 join 是为了「等它走到那个检查点」，**必须早于关 omni_client**——
+        # 否则 worker 可能读到 self.omni_client 已是 None 而走降级 TTS 分支，
+        # 反而「保证出声」，正是该 bug 的历史成因。
+        # 超时取 1.5s：它是 daemon 线程，进程退出会一并回收，不该拖慢停止响应。
+        if self._escalation_thread is not None:
+            if self._escalation_thread.is_alive():
+                self._escalation_thread.join(timeout=1.5)
+            self._escalation_thread = None
         # OMNI 模式：关闭全双工客户端（不自杀服务进程，便于复用/与其它入口共存）
         if self.omni_client is not None:
             try:

@@ -57,15 +57,19 @@ class EscalationRouter:
         """初始化路由器（仅设置大脑后端，不加载模型，首次请求才真正联机）。"""
         self.brain = LocalBrain(backend=backend, lm_studio_model=lm_studio_model)
 
-    def escalate(self, task_text: str, on_progress=None) -> str:
+    def escalate(self, task_text: str, on_progress=None, should_stop=None) -> str:
         """执行升级任务，返回最终自然语言结果文本。
 
         Args:
             task_text: omni 给出的任务描述（一句话）。
             on_progress: 可选回调(text_chunk)，把流式打字机文本推到 GUI / 控制台。
+            should_stop: 可选回调() -> bool，返回 True 表示调用方已停止（如 `runtime.stop()`），
+                应尽快中断并**丢弃结果**（返回空串）。工具循环内部是同步 HTTP 流，
+                无法抢占式中断，因此采用「每收到一个流式分片检查一次」的协作取消——
+                这是不引入线程强制终止的前提下能做到的最细粒度。
 
         Returns:
-            str: qwen + tools 最终回答（可能为空串，表示执行失败 / 无结果）。
+            str: qwen + tools 最终回答（可能为空串，表示执行失败 / 无结果 / 被取消）。
         """
         if not task_text or not task_text.strip():
             return ""
@@ -87,6 +91,15 @@ class EscalationRouter:
                 max_tokens=512,
                 max_iterations=4,
             ):
+                # 协作取消检查点：调用方（runtime/GUI）已停止时立刻收手，
+                # 不再累积文本、不再回调进度——否则「点了停止」之后控制台还在打字。
+                if should_stop is not None:
+                    try:
+                        if should_stop():
+                            logger.info("升级路由被调用方取消，丢弃未完成结果")
+                            return ""
+                    except Exception:  # noqa: BLE001
+                        pass  # 取消判据本身出错不应中断正常流程
                 if chunk:
                     result_parts.append(chunk)
                     if on_progress is not None:
