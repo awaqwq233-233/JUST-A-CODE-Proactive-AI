@@ -198,6 +198,6 @@ python main.py
 - `AGENTS.md` —— 开发者契约（新架构、迁移状态、运行方式）。
 - `CHANGELOG.md` —— 变更日志**兼文档归口中心**：附 A 差距笔记、附 B~F 记忆契约 / 测试计划 / 用户指南 / 隐私 / 运维手册。
 - `new_computer_download/READMEfirst.md` —— 安装指南。
-- `brainstorming_projectPLAN/10月1日新架构.docx` —— 新架构权威基准（bo s s 维护）。
+- `brainstorming_projectPLAN/10月1日新架构.docx` —— 新架构权威基准（由项目维护者维护）。
 
-> `codinglog_by_awaqwq233/` 下的项目背景文档由 bo s s 手动维护，已加入 `.gitignore`，不自动同步。
+> `codinglog_by_awaqwq233/` 下的项目背景文档由项目维护者手动维护，已加入 `.gitignore`，不自动同步。
