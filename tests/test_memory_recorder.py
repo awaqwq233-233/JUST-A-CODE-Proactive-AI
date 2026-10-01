@@ -1,6 +1,6 @@
 """MemoryRecorder 黄金数据集测试（记录判定 DoD）。
 
-DoD 硬指标（对齐 docs/memory_test_plan.md）：
+DoD 硬指标（对齐 CHANGELOG.md 附 C §C3.4）：
   - A 类（显式保存）100% 落库；
   - 排除项（闲聊/一次性问答/任务结果/敏感人物/原始转录）100% 不记；
   - 频次阈值（2 次不晋升，3 次晋升 recurring_topic）；

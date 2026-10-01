@@ -5,6 +5,464 @@
 
 ---
 
+## 2026-10-01（晚）— 文档合并：差距笔记 + 记忆四份专项文档全量并入 CHANGELOG，并删除源文件
+
+> **本次只改文档，未改任何一行代码。** bo s s 原要求把 `codingLOG.md`、`docs/memory/schema.md`、`docs/memory_test_plan.md` 与 `docs/memory/` 下的子文档**全量并入**（不是折叠/摘要）并入 `AGENTS.md`，但核算体量后（合计约 1151 行 / 102KB，AGENTS.md 全量平铺会变成 ~1440 行）**改判为并入 `CHANGELOG.md`**；`docs/memory_test_plan.md` 需**先清理过时表述再并入**（「⚠️ 待架构师确认」的提议接口、§9.1 漂移矩阵结论均为 2026-07-22 的历史快照，照搬会让文档自相矛盾）。
+
+### 一、合并清单与删除动作
+
+| # | 被并入的源文件 | 行数 | 现在的位置 | 源文件状态 |
+|---|---|---|---|---|
+| 1 | `codingLOG.md`（与最终目标的差距） | 189 | 本文 **附 A** | 🗑 删除 |
+| 2 | `docs/memory/schema.md`（记忆 JSON 契约 v1.0.0） | 237 | 本文 **附 B** | 🗑 删除 |
+| 3 | `docs/memory_test_plan.md`（记忆测试计划，已清理） | 481 | 本文 **附 C** | 🗑 删除 |
+| 4 | `docs/memory/README.md`（用户指南） | 44 | 本文 **附 D** | 🗑 随目录删除 |
+| 5 | `docs/memory/privacy.md`（隐私说明） | 65 | 本文 **附 E** | 🗑 随目录删除 |
+| 6 | `docs/memory/runbook.md`（运维手册） | 135 | 本文 **附 F** | 🗑 随目录删除 |
+
+- **保留**：`docs/minicpmo_master_plan.md`、`docs/webrtc_aec_plan.md`（bo s s 未要求合并）。
+- **未触碰**：`codinglog_by_awaqwq233/`（只由 bo s s 手动维护，Agent 禁止编辑）。
+- **交叉引用已修正**：`AGENTS.md`、`README.md`、`new_computer_download/READMEfirst.md` 中对 `codingLOG.md` 与 `docs/memory/*` 的引用，统一改为「见 `CHANGELOG.md` 附 A/C/D/E/F 或附 B」；`docs/memory/` 目录整体已不存在，任何指向它的路径都失效。
+- **新归口原则**：日后「差距笔记」「记忆子系统契约 / 运维 / 隐私」的新增与修订，**直接写 `CHANGELOG.md` 对应附录**（差距动态条目建议追加在 `## 2026-09-28` 之前的位置，即按时间倒序），不再新建 `docs/` 专项。
+
+### 二、`docs/memory_test_plan.md` 做了哪些清理（并入前）
+
+原文件 §2「⚠️ 待架构师确认」是**测试专家提的约定接口草案**，§9.1 是 2026-07-22 的**实现漂移快照**（结论「在 Reconcile 之前不得据本计划写测试逻辑」）。这两块现已全部实现，并入时按代码真值改写为：
+
+| 原表述 | 清理为 |
+|---|---|
+| §2 标题「提议的模块接口（⚠️ 待架构师确认）」、类签名「MemoryStore / MemoryRecorder / MemoryManager」 | 改为 **「已落地实现真值」**，类签名全部换成 `src/memory/` 的实际方法（`store.py` upsert/get/delete/query_by_keywords/query_by_vector/query_hybrid/query_by_tags/compact/export/clear_all/clear_by_id；`recorder.py` `classify` / `normalize_topic` / `_rule_stage` / `_llm_stage` / `_apply_pii_gate`；`manager.py` `retrieve_for_prompt` / `record_turn` / `_worker_loop` / `_capture_person_id`） |
+| §2 `SCHEMA_VERSION = "1.0.0"` 常量名 | 代码真值是 `store.CURRENT_VERSION = "1.0.0"`（`store.py:52`），已纠正 |
+| §2 `RECURRING_PROMOTED_WEIGHT = 0.8` | 代码真值是 `recorder.RECURRING_WEIGHT = 0.8`（`recorder.py:35`），已纠正 |
+| §2 `ACTIVE_MAX_BYTES = 2*1024*1024` | 代码真值是 `store.DEFAULT_MAX_BYTES = 2_000_000`（等价 2MB，名字不同），已纠正 |
+| §2/§5/§9 `MAX_ARCHIVE_FILES = 6`、`ARCHIVE_RETENTION_DAYS = 180` | 代码真值是 `MAX_ARCHIVE_FILES = 12`、`ARCHIVE_RETENTION_DAYS = 365`（归档保留 1 年、约 12 个月归档），已纠正 |
+| §3.4 提及的六条判定正则 | 确认 `recorder.py:37-56` 已实现且与 oracle 字面一致（仅 `PREFERENCE_RE` 多补了「我叫/我的名字」），标注为 ✅ 已落地 |
+| §9.1 漂移矩阵 14 条的「受影响的计划章节 / 严重度」+「Reconcile 二选一待 team-lead 裁定」 | 改写为 **「契约 vs 代码真值·收敛状态表」**（见附 C §C9），13 条标 ✅ 已收敛，剩 2 项真实缺口单独列出 |
+| §0「`tests/` 目录不存在 / 依赖缺失 / 覆盖 0%」 | 全部过时：**`tests/` 已存在**（16 个测试文件 + `fixtures/record_samples.jsonl`），`requirements-test.txt` 已建，`pytest.ini` 已配（⚠️ 本机未装 pytest-cov，跑测试要 `-o addopts=`），基线 **134 passed**。已整段替换为真值 |
+| §5「Tier2 取证不可恢复 / 密钥销毁」等 | 保留，但明确「**明文 v1（当前状态）无加密、无密钥**，Tier2 的加密分支属于未来路线图」——当前实现只有 `clear_all()` / `clear_by_id()` |
+
+### 三、清理后暴露的两个真实缺口（不是文档问题，是代码缺口）
+
+并入过程中顺手核对代码，发现**隐私承诺里写了、但代码还没做**的两件事，已在附 C §C9 与附 E/F 标注：
+
+1. **范围级清除 API 不存在**。`privacy.md` §5 / `runbook.md` §4 承诺「一键清除所有 `inferred` 而保留 `explicit`」「`clear(pii=True)`」，但 `MemoryStore` 只有 `clear_all()` / `clear_by_id(id)`，`_purge_replicas(matched_ids, secure)` 是内部方法**没有 public 入口**。→ 当前只能「全清 + 逐条删」，「一键清 inferred」与「安全擦除」**尚未落地**（P1）。
+2. **`consent.json` / 可见同意机制未实现**。全仓库无 `consent.json` 的读写；`privacy.md` §4.3「记录于同目录 `consent.json`」属**设计态**，非实现态。
+
+> 这两条会写进下一轮待办，bo s s 拍板优先级。
+
+### 四、验证与同步
+
+- 无代码改动 → 不跑 `py_compile` / 测试套件。
+- grep 校验：确认 `codingLOG.md`、`docs/memory*`、`docs/memory_test_plan.md` 在本文件之外无残留引用（除本文内的「已并入/已删除」说明）；`docs/` 下仅剩两份 plan。
+- 文档四件套（`AGENTS.md` / `README.md` / `CHANGELOG.md` / `codingLOG.md`）中，`codingLOG.md` 已并入本文并删除，其职责由本文附 A 承接。
+
+---
+
+### 附 A · 与最终目标的差距（原 `codingLOG.md`，已并入）
+
+> 本附录承接原 `codingLOG.md` 全部内容。文件已删除，日后修订**直接改本附录**。
+> 注：本附录是"差距笔记"，不是精确实现状态。已落地的进展（主动判断引擎、多模态图像问答、多后端大脑）以 `AGENTS.md` 为准。
+
+#### A1. 交互方式：从被动到主动（部分解决）
+
+- **目标**：唤醒词 + VAD，能自动判断你什么时候说完话，无需物理按键；最终实现持续主动感知与闭环介入。
+- **现状**：使用 MiniCPM-o 作为判断模型（实际加载 `minicpm-v-4_5`，9B；文档此前统称 "MiniCPM-o"），**已在 M5 Pro 48G 统一内存机器上实跑验证通过**（主动介入闭环可用）。
+- **⚠️ 代码真值（2026-10-01 补正）**：判断引擎的代码默认值是 **`minicpm-v-4_5`**（`src/judgment/judge.py:58` 的 `model_name` 与 `src/utils/config.py:18` 的 `judgment_model_name`），走 LM Studio 标准 `chat/completions`（**只传图＋文，o 版的听与主动决策用不上**）。下文凡写「MiniCPM-o 作为判断模型」均指这一对关系的意图，**实际标识符以 V 版为准**；OMNI 全双工链路里常驻的是另一份 `MiniCPM-o-4_5`（GGUF Q8_0，llama.cpp-omni `:9060`），两者不可混为一谈。
+- **【选型决策 2026-08-11 · 方向待办】判断模型选型**：MiniCPM-o 4.5 与 V 4.5 同为 9B；o 版的「看＋听原始音频＋1Hz 主动发言决策」依赖面壁自研 omni 推理框架（llama.cpp-omni / transformers 全双工接口），标准 LM Studio `chat/completions` 无法触发。当前 judge.py 经 LM Studio 标准 API 仅传图＋文，o 版的「听」与主动决策用不上，换上即退化为 9B VLM、与 V 版重叠、收益≈0。**若要实现理想图景（主动感知＋预警＋应急接管），方向待办是将 judge 从「外部轮询独立模型」重构为「持续喂音视频流给 o-omni 进程、订阅其主动发言事件」，并把音频输入由 Whisper 文本改为原始音频波形**——属架构改造，非改 `model_name`。
+
+#### A2. 缺乏"手"——Function Calling（部分解决）
+
+- **目标**：工具调用能力，例如查实时天气、控制电脑音量、打开网页、管理日程、搜索文件等。
+- **现状**：**基础"装手"能力已实现**（2026-08-11）。大脑 `qwen/qwen3.6-35b-a3b` 经 `verify_toolcall.py` 验证支持 OpenAI 风格 function calling；`src/brain/llm.py` 新增 `think_with_tools` / `run_agentic`（工具调用循环），`src/tools/` 提供四个白名单工具（打开应用/网页、只读本地文件搜索、系统状态查询、受限 shell），`process_response` 非视觉分支已接入，默认开启（`TOOLS_ENABLED` 可关）。当前工具集偏"本地操作"类，尚未含实时联网（天气/日程）类，属能力扩展项（未解决）。
+
+#### A3. 记忆力有限（部分解决）
+
+- **目标**：长期记忆（Vector DB / JSON），记住用户喜好、历史对话摘要，实现个性化陪伴。
+- **现状**：记忆功能已落地（fastembed 向量检索 + JSON 长期记忆），机器升级后已具备端到端验证条件，待实跑个性化闭环。数据契约见 **附 B**，运维见 **附 F**，隐私见 **附 E**。
+
+#### A4. 响应速度 / 流式（已落地：全双工 M5 验收 + M7b 句子级桥接；token 级 TTS 待做）
+
+- **目标**：流式对话——一边思考一边生成语音，大幅降低感知延迟。
+- **现状**：
+  - **全双工主链路（M5）已真机验收**（2026-08-15）：MiniCPM-o-4_5 经 llama.cpp-omni（9060，Metal，GGUF Q8_0）跑**全双工**——持续听/说闭环、主动打招呼、按 `<<CALL_QWEN>>` 令牌升级到 qwen3.6-35b 调 `src/tools/` 工具、回灌播报，整条闭环跑通。`src/omni/` 的 OMNI 模式与传统被动 `main.py` 互斥、不启动 judge。
+  - **主对话 LLM 已流式 + M7b 句子级 TTS 桥接**：omni 下行 `response.output.delta` 逐字吐文本；`src/omni/voicebox_bridge.py` 按标点/句子边界把 text delta 攒成句，攒够一句即送本地 **Voicebox（JAC 克隆声纹）** 合成并播放（独立 daemon 播放线程串行保序），实现「说一句听一句」近似实时感；omni 自带 TTS 音频在桥接启用时丢弃。
+  - **回灌（M7a）已改本地 Voicebox**：`speak_result` → `src/omni/backfeed.py` 的 `speak_text_via_voicebox` 用 JAC 克隆声纹播报（替代原 omni 第二 turn_based 会话——server 单会话限制会拒第二个会话、导致 `ConnectionClosedOK` 无声音，已根除）。
+  - **会话参数协议（2026-09-13 已修复）**：此前 GUI/环境变量中的 `omni_listen_prob_scale=0.5` 被错误发送到 `session.init` 顶层，llama.cpp-omni 仅读取 `payload.config`，导致服务端静默回退 1.0 并永久 `listen=1`。现由 `OmniClient._build_session_init()` 固定发送至 `payload.config`，并有离线协议回归测试；这是一次客户端协议接线错误，不是麦克风能量或模型加载问题。
+  - **语音输入方案（2026-09-13 澄清）**：**不是「录完再发」，但是 0.4s 粒度的分块流式**——麦克风 16k float32 每 64ms 读入内存缓冲，推送协程每 0.4s 打包「0.4s 音频 + 1 帧 JPEG」为一条 `input.append`；服务端每段做一次 prefill+decode、由模型自行决定 listen/speak。**离 GPT-Live 级还差三步**：①无真正的 barge-in 打断（回声门控在播放期推等长静音＝放弃打断，需 WebRTC AEC 替代）；②omni 原生 token 级音频流被 M7b 的 Voicebox 攒句桥接丢弃（+`_MAX_WAIT=2s`，需恢复原生流或给 Voicebox 做增量合成）；③分块仍为 0.4s（需先把单段成本压下来才能降到 0.16s）。另有一条**架构级缺口**：full_duplex 下行只有 `listen`/`text`/`audio`/`response.done`，**没有任何「用户说了什么」的转写**，客户端无法校验模型是否听懂——补法是对同一 `_mic_buf` 并行跑本地 Whisper（仅用于显示 + 升级任务相关性校验）。
+  - **实时性根因（2026-09-13 实测已修）**：服务端 full_duplex 是串行「读一段 → prefill+decode 一步」，实测单段 **0.69s**（VPM 图像编码 190ms 是大头），而客户端固定每 0.4s 猛推 → 积压线性增长，实测 64.4s 会话服务端累计落后 **27.2 秒**（模型回答的是半分钟前的用户）。已落地 **P0-b 背压**（改为「一段在飞」：收到 `listen`/`response.done` 才推下一段）+ **音频水位**（超 1.2s 丢最旧的，保证「听到的是现在」）；实测背压后平均间隔 0.60s、单段 0.55s、零丢弃，**上行音频量不再超过流逝时间**。
+  - **上下文寿命短板（已定位，P1 待做）** ⚠️ **本段「视觉 token 吃爆 KV → 每 30s 清空 → 复读示例」的因果链已于 2026-09-28 被 A1 实验证伪**（`--no-video` 全程零视频帧、幻觉依旧），根因重定位为「o 版听不清 + prompt 示例是复读诱饵」，见下「说话不识别/乱识别」三条机制。**以下 KV / 降频量化数据本身仍有效（降频收益是真的），但别再按「视觉 token 是根因」去修 bug**：每段 KV 增长约 73 token，其中**视觉约 64、音频个位数**；n_ctx=8192 触发线 6144 → 实测每约 30 秒就被滑动清空一次（`slide n_past=7660→2652`）。记忆一清，模型只剩 system prompt，就照着 `prompts.py` 的示例原句吐令牌（真机那次「查一下这台电脑的…」即示例片段）。**图像降频已落地（P1，2026-09-13）：默认 1 帧/秒**（`OMNI_VIDEO_INTERVAL`）。**实测收益**（真机日志：VPM p50=196ms/均值 232ms、图像 64 视觉 token/帧、块节奏约 1.5 段/秒）：KV 增长 109→79 token/秒（降约三成）、VPM 负载 0.34→0.23 秒/秒（降约三分之一）、上下文寿命 69→95 秒（+约四成）；**并且它是 P2 的前置条件**——分块若降到 0.16s，不降频的话 VPM 会占掉每秒 1.14s 的算力，实时性直接崩。
+  - **令牌碎片（2026-09-13 已修，二轮才修净）**：服务端**按 token 逐片**下发文本，`<<CALL_QWEN>>` 必然被切成 `<<CALL_Q`；旧逻辑只在凑齐完整令牌时拦截，碎片被当普通对话朗读（Voicebox 里那段 `<<CALL_Q` 怪音）。已落地 **P0-a 令牌前缀 holdback**（末尾最多 12 字符扣留，确认非令牌前缀才外发；桥接层同款兜底），并有「分片令牌零泄漏」回归单测。**二轮教训（关键协议事实）**：full_duplex 下 **`response.done` 是「每段一次」而非「每轮一次」**，段边界可能落在令牌中间——一轮把释放挂在 `response.done` 上，等于每段都放一次碎片（真机又见 `<<CALL_QW`，升级任务被截断成「查一下」）。真正的轮末信号是 **listen 事件**；现改为「仅 listen / 会话关闭立即释放 + 文本静默 1.5s（`OMNI_HOLD_IDLE`）兜底释放」，离线一字不差复现过旧行为。
+  - **会话被服务端打死（2026-09-13 已修）**：服务端 full_duplex 对**空音频**的 `input.append` 会 `fail_fast("missing_audio")` → 发 `session.closed` 后立刻 `ws.close(1000)`，整个会话结束（真机表现：「怎么说话都不回」+ 客户端只看到 `received 1000 (OK)`）。P0-b 背压放行了这个风险窗口（终局事件已到时会立刻放行，此时麦克风可能还没产出数据）。现 `_push_loop` 保证**每帧必带音频**（先等 ≤0.16s，仍空则补 0.1s 静音）。
+  - **可观测性补强（2026-09-13）**：①`_mic_loop` 采集线程死亡不再静默（此前 `read()` 异常直接 `break`，表现就是「说话没反应」却只有 RMS≈0，极易误判成权限问题）；②打印服务端 `session.closed` 的 reason 与 WS 关闭码；③`stop()` 主动关 WS，不再白等满 10s `join` 超时（实测 10.00s→0.93s）。
+  - **令牌变体（2026-09-13 三轮已修）**：模型**不保证**原样吐出 `<<CALL_QWEN>>`——真机确认它会吐 `<<CALL_ QWEN>>`（中间夹空格/换行，空格来自模型本身）。精确匹配会漏，后果是碎片被当普通对话**显示并朗读**（同一句被反复念），且 holdback 也拦不住（`<<CALL_` 被扣住，但下一个字符是空格就不再是前缀）。现令牌识别统一到 `src/omni/tokens.py`：容忍空白/换行/大小写的正则 + 容忍空白的 holdback + **硬安全网**（含 `<`/`>` 或裸标记词一律不外发不朗读）；命中后**消费掉令牌**（不再靠 listen 清缓冲——listen 每段都会来，会把令牌拦腰截断）。
+  - **推流节奏（2026-09-13 三轮已修）**：服务端**一段会发两个终局事件且共用同一 `response_id`**（listen delta + response.done）。二轮把两个都算「本段完成」→ 一段被算两次 → 推流翻倍、极小块（真机见过 0.02s）→ 每轮都要重做图像编码（VPM 190ms，与块大小无关）→ 消费速率腰斩 → 积压丢帧 **5.1s**（丢在句子中间 → 模型听残句 → 答非所问）。现按 `response_id` 去重 + 最小推流间隔 + 最小块时长（`OMNI_MIN_CHUNK_SECS` 默认 0.4s）。WS 级集成实测：间隔 0.60s、单段最小 0.40s、零丢弃。
+  - **人声判据与门控（2026-09-13 三轮已修）**：护栏窗口 3.0s **小于端到端延迟**、RMS 阈值 0.02 **压在人声段下沿**（实测底噪 0.002~0.013 / 人声 RMS 0.020~0.056 / 人声峰值 0.088~0.277）→ **真实提问被误判成静音期幻觉**而拦截。现判据改「峰值 或 RMS」双条件、窗口 6.0s；门控 auto 判定改为**同时看输入与输出**（输入本身是耳机时不得关门控），并把「自身播报窗口」的排除从门控开关解耦。
+  - **图像降频（P1，2026-09-13 已落地）**：图像上行与音频上行**解耦**——音频照常按块上行，图像默认 **1 帧/秒**（`OMNI_VIDEO_INTERVAL`，<=0 退回每段带图）。动机是服务端每带一帧图就要做一次 VPM 编码（实测 p50=196ms/均值 232ms）并往 KV 塞 **64 个视觉 token**，而一段音频只有个位数 token。**实测收益**：KV 增长 109→79 token/秒（降约三成）、VPM 负载 0.34→0.23 秒/秒（降约三分之一）、上下文寿命 69→95 秒（+约四成）。**它同时是 P2 的前置条件**：分块若降到 0.16s，不降频的话 VPM 会吃掉每秒 1.14s 的算力，实时性直接崩。
+  - **「说话不识别 / 乱识别」三条机制（2026-09-17 诊断，P0 实验开关已落地）**：bo s s 四组真机日志（listen 系数 1.0/0.8/0.6/0.4）暴露三个**独立**故障叠加，别再当成一个 bug 修：
+    1. **「不识别」= 推流节拍抖动 + 水位丢帧**。自研「背压变长块（0.4~1.4s）」偏离官方推荐节拍（llama.cpp-omni 文档明确 `Recommended loop cadence: 1000ms per iteration`，且要求**播放 TTS 时静音麦克风**、**静音也要发音频块**）；服务端「说话段」要 VPM 276ms + decode 611ms ≈ 0.9s，「聆听段」仅 0.15s，客户端 1.2s 水位一超就丢最旧的。四组日志**每次启动都丢**（1.73/1.28/1.60/1.22s）且丢在最初一两秒＝**boss 开口那一刻**；服务端再把非整秒块补静音对齐到 100ms 网格（`Audio not aligned to 100ms (576ms), padded to 600ms`）→ 音频断续。**未解决**，方案（P1）是改成固定 1s 节拍且**宁延后不丢字**。
+    2. **「乱识别成查电池」= MiniCPM-o 音频理解失效 + prompt 示例是「复读诱饵」**（⚠️ 2026-09-28 A1 实验**证伪**了 09-17 的「视觉 token」假设）。**不是 ASR 结果**（full_duplex 不回传用户转写），是模型自己吐的令牌任务描述。09-17 曾归因「视觉 token 每段 +64 → 每约 30s 滑动清空 → 只剩 system prompt → 抄例句」，但 `--no-video` 全程零视频帧后**幻觉依旧**，故视觉 token **不是根因**。新证据链：boss 人声 RMS 仅 0.03~0.065（内建麦离嘴远、能量弱）+ 启动丢 0.59s → 模型**听不清**「你好，你在吗」这类寒暄，从 `prompts.py:31-35` 的 5 条具体示例里「捡」输出，「查电池」是第一条、最具体，故被反复选中。变量分离开关 `video_enabled`（GUI「图像上行」/ `--no-video` / `OMNI_VIDEO_ENABLED=0`）已落地、仍保留，但已证不是主因。**修法（P3，已实施 2026-09-28）**：删掉具体示例、改抽象规则 + 明确「任务描述用 boss 原话、听不清就请重复、绝不照抄示例」。
+    3. **「真实提问被自己拦截」= 护栏判据两处失准**。① `_has_recent_speech()` 首分支 `if self._is_echoing(): return False` **与门控开关解耦**（`OMNI_ECHO_GUARD=always`），戴 AirPods（硬件已隔离回声、门控自动关）时**照样生效** → 只要 J.A.C. 正在播报或播报后 0.8s 内，插话提问 100% 被判幻觉丢弃（日志 `距上次人声 1.0s > 窗口 6.0s` 自相矛盾即铁证）；② `OMNI_SPEECH_PEAK_TH=0.06` 过低，底噪级帧（峰值 0.061）反复越线 → `_last_speech_ts` 长期新鲜 → **护栏形同虚设、静音期幻觉令牌被放行**。**未解决**（P2 待做）：门控关时不该做「播报期＝幻觉」排除；峰值阈值提到 0.12~0.15 或改连续多帧判定；顺带修 `播放回声期` 分支的日志文案。
+  - **官方 web demo 与本地 app 的实质差异（2026-09-17 核对）**：官方同为 `浏览器 → gateway:8040 → worker:22440 → llama-server:19080` 的多层 HTTP/WS，**架构形式并非问题所在**。三处真实差异：①上行节拍（官方固定 1000ms，本地自研变长）；②播放与回声（官方要求播放期静音麦克风 + 浏览器 WebRTC AEC，本地用外部 Voicebox 播 AirPods、omni 音频回路断开、只能靠「播报窗口一刀切」）；③性能余量（官方基线 RTX 5070 / RTF 0.4，本地 Mac+Q8_0 实测 RTF≈0.9~1.0，**无余量，一抖就积压**）。
+- **仍待做**：STT 仍为 Whisper tiny **非流式**（整段说完才识别）；TTS 为**句子级**桥接而非 token 级流式（Voicebox 无 token API，业界标准折中）；**P2 真 GPT-Live 化（WebRTC AEC 打断 + 原生音频流 + 0.16s 分块 + 并行 Whisper 转写）**——其中 **WebRTC AEC 的方案已出（`docs/webrtc_aec_plan.md`，2026-09-24），待评审后分阶段实施**；方案的关键障碍是「所有发声都走 `afplay` 子进程，Python 侧拿不到 far-end 参考 PCM」，因此必须先改造播放链路；剩余三项（原生音频流 / 0.16s 分块 / 并行 Whisper 转写）仍待排期。另：会话被服务端意外关闭后客户端目前**直接停止**（是否加自动重连待定）；全双工 RTF / 真机逐句听感流畅度待 bo s s 验收收尾。
+  - **已解决（2026-09-24）**：`runtime.stop()` 后升级 daemon 线程仍在跑工具调用与 TTS —— 已通过「协作取消（`escalate(should_stop=...)` 每流式分片检查）+ 三个停止检查点 + `stop()` 先 join 再关 `omni_client`」修掉，回归见 `tests/test_runtime_escalation_stop.py`。
+
+#### A5. 其他架构级缺口（未解决）
+
+- 无 MCP / OpenClaw 集成；无云端/局域网卸载（重推理可上局域网/云）。`Qwen3.6-35B` 大脑已完整接入 LM Studio 并验证（`qwen/qwen3.6-35b-a3b`）。**agent 执行框架已落地**：Function Calling 工具层已实现（四个白名单工具 + 工具调用循环）。
+- 视觉理解仍只有 **YOLO 标签 + LLM 文本摘要**，无 OCR / 人脸识别 / 深度 / 场景图 / 视觉语言理解（旧的 LocateAnything-3B 方案已移除）。
+- TTS 语音栈已从 Genie-TTS（GPT-SoVITS）全面切换为开源本地 Qwen3-TTS（已删除 genie_tts.py 与 genie_assets/、GenieData/），支持情绪控制与声音克隆；实际选用链为 Voicebox（macOS 主力）→ Qwen3-TTS（仅 NVIDIA）→ 系统 TTS 兜底。注：2026-08-09 起 brain 输出改为纯文本，情绪化语音能力（各 TTS 仍支持 `emotion_hint`）当前未被调用，统一走中性朗读。
+- 当前项目树**已有自动化测试**：`tests/unit/test_tools.py`（Function Calling 工具层单测）、`tests/test_*.py` 系列（记忆 / 语音 / GUI 运行期等），基线 134 passed。
+
+---
+
+### 附 C · 记忆子系统测试计划与实现真值（原 `docs/memory_test_plan.md`，**已清理过时表述后并入**）
+
+> 原作者：泰莎 (Tessa)，测试专家。原文件写于「设计阶段」，§2 是**提议的约定接口**、§9.1 是 2026-07-22 的**实现漂移快照**。本次并入前已按 `src/memory/` 代码真值全部改写（见本文件「二、清理了什么」表），下文所有「真值」均指 2026-10-01 核对结果。
+
+#### C1. 测试策略（金字塔）
+
+```
+        /   E2E 小范围    \     少量：真实 main.py 跑一段带 mock 外设的对话
+       /     集成测试      \    中量：MemoryStore ↔ LocalBrain ↔ 主循环（mock brain）
+      /       单元测试      \   大量：MemoryStore 存储/恢复、MemoryRecorder 分类
+```
+
+- **记忆存储（MemoryStore）**：纯类/函数单元测试为主（快、可离线），原子写与损坏恢复为关键路径。
+- **记录判定（MemoryRecorder）**：规则单测 + 黄金数据集评估 LLM 判定的边界与误判率。
+- **集成**：memory 在 `LocalBrain.think()` 前注入、主循环读写时机 —— 全程 mock `LocalBrain`，不依赖 LM Studio。
+
+#### C2. 已落地实现真值（原 §2「⚠️ 待架构师确认的提议接口」→ 现状）
+
+**目录与文件（2172 行）**：
+
+| 文件 | 行数 | 职责 |
+|---|---|---|
+| `src/memory/models.py` | 167 | `MemoryFact` / `MemoryKind` / `MemorySource` / `RetrievalResult` / `_now_iso()` |
+| `src/memory/store.py` | 1001 | `MemoryStore` + `MemoryFileCorrupt` / `MemoryVersionIncompatible` / `LoadReport` + 归档留存 + 原子写 |
+| `src/memory/recorder.py` | 410 | `MemoryRecorder` / `RecordDecision` + 六条判定正则 + `normalize_topic` + PII 双层门控 |
+| `src/memory/manager.py` | 206 | `MemoryManager` 门面（检索注入 + 后台 worker） |
+| `src/memory/embedder.py` | 180 | `MemoryEmbedder`（fastembed，带 HF 镜像兜底） |
+| `src/memory/prompts.py` | 91 | `CLASSIFY_PROMPT` / `PII_CHECK_PROMPT` / `INJECTION_HEADER` / `format_injection()` |
+| `src/memory/seed.py` | 75 | `seed_base_memories()` 初始记忆种子 |
+| `src/memory/__init__.py` | 42 | 包级导出 |
+
+**常量与异常（代码真值，2026-10-01 核对）**：
+
+```python
+# store.py
+CURRENT_VERSION      = "1.0.0"          # semver 字符串，MAJOR 不符即拒载
+DEFAULT_MAX_BYTES    = 2_000_000        # 活动文件上限（2MB），触发压缩/归档
+MAX_ARCHIVE_FILES    = 12               # 归档文件数上限（按 YYYYMM，约一年）
+MAX_ARCHIVE_BYTES    = 10_000_000       # 归档总体积上限（约 10MB）
+ARCHIVE_RETENTION_DAYS = 365            # 归档保留天数上限
+FILE_MODE            = 0o600            # 文件权限；目录侧 chmod 0o700（try/except 尽力）
+# recorder.py
+RECURRENCE_THRESHOLD   = 3              # 同 topic_key 累计出现次数达到即晋升 recurring
+MIN_CLASSIFY_INTERVAL  = 3.0            # 距上次分类的最小间隔（秒），限流用
+RECURRING_WEIGHT       = 0.8            # 晋升 topic 的高权重 [0,1]
+# 判定正则（均 re.IGNORECASE，见 recorder.py:37-56）
+EXPLICIT_SAVE_RE / WEAK_INTENT_RE / PREFERENCE_RE / DECISION_RE / QUESTION_RE / SMALLTALK_RE
+_PII_RELATIONSHIP_RE   # PII 第一层：关系词启发式（「是/叫（我|我的）（儿子|女儿|…）」）
+# config.py / manager.py
+MEMORY_CAPTURE_PERSON_ID = False        # 写时 PII 把关（truthy 解析，src/utils/config.py:116）
+JAC_MEMORY_DIR           = None         # 环境变量覆盖 base 目录（store._resolve_dir 优先读它）
+```
+
+**顶层信封与字段（与契约一致，无漂移）**：
+
+```json
+{ "version": "1.0.0", "facts": [ {MemoryFact}, ... ] }
+```
+
+- 必填 6：`id`(UUID4 字符串) / `content` / `kind`(enum) / `source`(五值) / `created_at` / `updated_at`（均 ISO8601，带 `Z`），缺失 → 该条跳过并计入 `invalid_facts`。
+- 可选 5：`weight`[0,1] 默认 0.5 / `tags`[] 默认空 / `pii` bool 默认 false / `ttl` null / `embedding` null（v1 恒 null，向量走 `MemoryEmbedder` 运行期，不落 `memory.json`）。
+- 已彻底移除旧版术语：`importance`(IntEnum) / `consent_scoped` / `implicit_profile` / `occurrences` 持久化 / `user_consent` / 顶层 `updated_at`（见 `models.py` 文件头 docstring）。
+
+**类与方法（代码真值）**：
+
+```python
+class MemoryStore:                            # src/memory/store.py
+    __init__(self, base_dir=None, max_bytes=DEFAULT_MAX_BYTES, ...)
+    load() -> LoadReport                      # {version, facts, invalid_facts:[{id, reason}]}
+    flush() / close() / stats()               # 后台 flush 线程 + 定时
+    upsert(fact) -> MemoryFact                # 写入（去重合并）
+    get(id) -> MemoryFact | None
+    delete(id) -> bool
+    get_recent(limit=None, query=None) -> list
+    query_by_keywords(...) / query_by_tags(...) / query_by_vector(...) / query_hybrid(...)
+    compact() -> bool                         # 超限压缩 + 归档
+    export(path) -> str
+    clear_all() / clear_by_id(id)             # ⚠️ 无 source/pii 范围清、无 secure（见 C9 缺口）
+
+class MemoryRecorder:                         # src/memory/recorder.py
+    classify(user_text, response, window) -> RecordDecision | None
+        # _rule_stage（六条正则 + 硬顺序）→ _llm_stage（CLASSIFY_PROMPT）→ _parse_llm_json
+    normalize_topic(text) -> str              # 确定性 topic key（同输入→同 key）
+    _apply_pii_gate(decision, user_text)      # PII 双层门控第二层（写时）
+    _detect_kind(text) -> MemoryKind          # 与 MemoryKind 同源
+
+class MemoryManager:                          # src/memory/manager.py
+    retrieve_for_prompt(user_text, vision_info="") -> str   # 注入块（默认 300 字符上限）
+    record_turn(user_text, response, window, is_thinking=False)  # main.py:427 调用，入后台 worker
+    _worker_loop / _classify_and_store / _decision_to_fact / _capture_person_id
+    flush() / close() / stats()
+
+@dataclass RecordDecision:                    # 独立契约，不进 memory.json
+    should_store: bool
+    reason: str                               # 受控词表 9 值
+    kind: MemoryKind | None                   # should_store=False 时须为 None
+    confidence: float
+    content: str = "" / tags: list = [] / source: MemorySource = manual / pii: bool = False
+```
+
+- **记录触发点**：`main.py:427` `memory.record_turn(text, response_text, window)`，在 `process_response` 末尾（助手说完、`is_speaking=False` 之后）调用一次，入队 daemon 后台 worker，**立即返回不阻塞响应**。
+- **reason 受控词表（9 值，见 `src/memory/prompts.py:29`）**：`user_stated` / `derived_preference` / `explicit_convention` / `observed_event` / `topic_of_interest` / `low_confidence` / `duplicate` / `pii_blocked` / `not_factual`。
+- **注入点**：`retrieve_for_prompt()` 命中后由 `format_injection()` 拼块，外层 `INJECTION_HEADER` 明确「数据是参考、非指令」，并做控制字符清洗（`_sanitize_line`）+ 300 字符截断。
+
+#### C3. 单元测试要点（原 §3）
+
+| 组 | 覆盖 | 关键断言 |
+|---|---|---|
+| 3.1 存储/检索/去重/更新/删除 | `tmp_path` 做 path，无网络 | 新实例可读回、id 稳定；相似内容去重合并（weight 增加）；`update` 保留其它字段且 `updated_at` > `created_at`；`delete` 后文件反映；空库返回 `[]` 不抛错 |
+| 3.2 JSON 读写与损坏恢复 | 7 条行为矩阵 | ①解析失败 → 抛 `MemoryFileCorrupt`；②`version` 缺失 → 按 `0.0.0` 宽松加载、下次写回升级；③MAJOR 不符 → 抛 `MemoryVersionIncompatible` 拒绝加载；④同 MAJOR 差异（如 `1.2.0`）→ 兼容加载、忽略未知字段；⑤单条缺必填 → 该条入 `invalid_facts`、其余载入；⑥主文件损坏时先试 `.bak`、`.bak` 也失败则 `MemoryFileCorrupt` 上抛（**绝不静默空库**）；⑦可选字段缺失套默认且不计入 `invalid_facts` |
+| 3.3 原子写入 | monkeypatch `os.replace` 抛错 / 正常写 | 原文件不变、`.bak` 仍在、`.tmp` 无残留、`os.replace` 仅一次 |
+| 3.4 记录判定（规则优先 + LLM 辅助） | A 显式 / B 偏好 / C 频次 / D 约定 / W 弱意图 / 各类排除 | 硬指标：A 类 100% 落库、所有排除项 100% 不记；规则层精确率 ≥ 0.95、LLM 增强后召回 ≥ 0.85、误存率 ≤ 5%；阈值边界（同 key 2 次不晋升 / 3 次晋升 `recurring`）；`normalize_topic` 幂等；`reason` 非空可解释；`kind` 与 `MemoryKind` 同源（false 时为 null） |
+| 3.5 示例用例名 | 描述式 | `test_store_add_then_reload_persists_content` / `test_store_dedup_merges_similar_facts` / `test_load_recovers_from_bak_on_truncated_json` / `test_recordjudge_repeated_topic_promoted_after_n` / `test_recordjudge_falls_back_to_rule_when_llm_unavailable` … |
+| 3.6 门控与限流 | `is_thinking` / 3s 内多次触发 / 单轮至多 1 次 LLM 调用 | 大脑忙时分类调用数 = 0（宁可漏记）、不阻塞 |
+| 3.7 后台线程非阻塞 | `classify` 注入 200ms 耗时 | `process_response` 返回耗时不受影响；分类发生在非主线程 |
+| 3.8 路径解析与优雅降级 | 单 base 派生 / `JAC_MEMORY_DIR` 覆盖 / 跨平台默认 base / 不可写降级 | 所有副本路径派生自单一 base；mac/linux `~/.jac/memory`、Windows `%APPDATA%/jac/memory`；`MemoryManager(enabled=False)` 时不建 store 不抛异常 |
+
+#### C4. 集成测试（原 §4）
+
+全程 `LocalBrain(backend="mock")` + `monkeypatch` 拦 `requests.post`，不依赖 LM Studio。断言：注入时 `system_prompt` 含 `[已知信息]` 与记忆内容；空库不注入；`handle_user_text("记住我怕黑")` 后 fact 落库且发生在 think 之后；SLEEP 态未唤醒的闲聊不触发记录、AWAKE 下记录；控制台输入（`bypass_wake=True`）与语音路径一致；多轮同主题第 3 轮检索返回权重更高的合并条目；判定抛异常不影响对话。
+
+#### C5. 边界与异常 + 归档留存（原 §5）
+
+- 空记忆首启无文件 → 空库启动不崩；10k 条 / 单条 > 100KB → `stats()` 反映体积、`save` 仍能完成、注入时截断（断言注入块 ≤ 300 字符）；并发读写（audio + 手动 + judgment 三线程）用 `threading.Barrier` 制造竞争 + `pytest-timeout` 防挂死，断言数据一致、无部分写、无死锁。
+- 归档留存：`compact()` 幂等（按 id 比较不重复归档）；归档数 > `MAX_ARCHIVE_FILES`(12) 淘汰最旧；总字节 > `MAX_ARCHIVE_BYTES`(10MB) 淘汰至回落；超 `ARCHIVE_RETENTION_DAYS`(365) 删除（按月 `YYYYMM` 计算）；活动文件达 2MB 触发独立压缩，归档与活动上限互不绕过。
+- **测试性边界**：Tier1（逻辑删除）可机器验证；Tier2「取证级不可恢复」在 SSD/跨平台无法完全自动化 → 明文 v1（当前）**只对「文件消失 + 存储里不含已知字符串」做断言**，SSD 磨损残留归文档声明的 best-effort，**不写不可移植的硬断言**。
+
+#### C6. 覆盖率目标与 CI（原 §6）— 现状已变
+
+- 测试依赖已放 `requirements-test.txt`（pytest / pytest-mock / pytest-timeout / pytest-xdist / hypothesis）；`pytest.ini` 已配（⚠️ 本机未装 **pytest-cov**，跑测试要加 `-o addopts=` 清空默认参数）。
+- 建议阈值：`src/memory/**` ≥ 90%、`src/utils/context.py` 记忆相关 ≥ 85%、`main.py` 注入/判定分支 ≥ 70%、全局 `--cov-fail-under=85`。
+- Mock 策略：`LocalBrain(backend="mock")` 离线；LLM 判定用 `monkeypatch` 替 `requests.post`；摄像头/麦克风/TTS 用 fake 对象；磁盘用 `tmp_path` 隔离（⚠️ 沙箱里 `tmp_path` 会报 `PermissionError: EEXIST: mkdir '.../pytest-of-root'`，与代码无关，绕过方式是把 `TMPDIR` 指向一个全新的、尚无 `pytest-of-*` 的目录）。
+
+#### C7. 分阶段执行顺序（原 §7）
+
+阶段 0 基建 → 1 单测-存储 → 2 单测-判定（核心风险，黄金集优先）→ 3 集成 → 4 边界异常 → 5 E2E 小样 → 6 CI 固化。原则：先单测后集成，红→绿再进下一阶段。
+
+#### C8. 关键风险（原 §8）
+
+①记录判定误判（最高风险，必须规则兜底 + 黄金集量化）；②JSON 损坏/原子写缺失（必须证明 `.bak` + `os.replace` 生效）；③隐私清除不彻底（当前**只做到 Tier1 缺口见 C9**，Tier2 未落地）；④并发写竞争（单锁 + 竞争测试）；⑤`_mock_response` 是关键词回显，只能验证「注入发生」、不能验证「模型真用上记忆」；⑥超大记忆撑爆上下文（注入已限 300 字符）。
+
+#### C9. 契约 vs 代码真值 · 收敛状态表（原 §9.1 漂移矩阵，**结论已改写**）
+
+> 原 2026-07-22 结论是「存在系统性漂移、Reconcile 前不得据本计划写测试」。**该结论已于 2026-10-01 核对后作废**——除下方 2 项外，14 条漂移全部收敛。
+
+| # | 已定稿契约 | 代码真值（2026-10-01 核对） | 状态 |
+|---|---|---|---|
+| 1 | 顶层 `{version:str, facts:[...]}`，`user_consent` 移出 | `store._serialize` 写 `{"version": CURRENT_VERSION, "facts": [...]}` | ✅ 已收敛 |
+| 2 | 必填 6 字段 | `MemoryFact` 6 必填同名同义 | ✅ 已收敛 |
+| 3 | 可选 5：weight / tags / pii / ttl / embedding | 同，`weight:float=0.5`、`pii:bool=False` | ✅ 已收敛 |
+| 4 | `source` 五值 | `MemorySource`: explicit / inferred / recurring / judgment / manual | ✅ 已收敛（旧 `implicit_profile` 已删） |
+| 5 | `kind` 枚举 profile/preference/convention/event/topic | `MemoryKind` 同名；`recorder._detect_kind` 复用 | ✅ 已收敛 |
+| 6 | 无 `occurrences` 持久化 | 无该字段；频次在 recorder 会话级内存计数 + `_promoted` 集合去重 | ✅ 已收敛 |
+| 7 | `MemoryFileCorrupt` / `MemoryVersionIncompatible` | `store.py:84/88` 均已定义；MAJOR 不符且非 0 → 拒绝加载 | ✅ 已收敛 |
+| 8 | `load()` 返回 `{facts, invalid_facts:[{id,reason}]}` | `LoadReport` + `_parse_facts` 跳过坏条并计入报告 | ✅ 已收敛 |
+| 9 | 检索 API | `query_by_keywords` / `query_by_tags` / `query_by_vector` / `query_hybrid` / `get_recent` | ✅ 已收敛（命名不同） |
+| 10 | 两级清除 `clear(secure, source, pii)` | 🔴 **未收敛**：只有 `clear_all()` / `clear_by_id(id)`；`_purge_replicas(matched_ids, secure)` 无 public 范围入口 | 🔴 **缺口 P1** |
+| 11 | `MAX_ARCHIVE_FILES=6` / `ARCHIVE_RETENTION_DAYS=180` | 代码为 **12** / **365**（活动 `DEFAULT_MAX_BYTES=2_000_000`、`MAX_ARCHIVE_BYTES=10_000_000`）——语义一致、数值不同 | ⚠️ 常量值待对齐 |
+| 12 | `record_turn` 末尾入队后台 worker | `main.py:427` 已调用；`MemoryManager._worker_loop` daemon 线程 | ✅ 已收敛 |
+| 13 | `RECURRENCE_THRESHOLD=3` / `MIN_CLASSIFY_INTERVAL=3.0` | `recorder.py:33/34` 同名同值，manager 参数透传 | ✅ 已收敛 |
+| 14 | 权限 0o700 目录 / 0o600 文件 | `FILE_MODE=0o600`（`_write_atomic` 写后 chmod）；目录 `chmod 0o700` try/except 尽力 | ✅ 已收敛 |
+| 15 | 六条判定正则 + 判定顺序 oracle | `recorder.py:37-56` 已实现，`PREFERENCE_RE` 另补「我叫/我的名字」 | ✅ 已收敛 |
+| 16 | PII 第二层写时门控 | `_PII_RELATIONSHIP_RE` 启发式 + `PII_CHECK_PROMPT` LLM 复核 + `manager._capture_person_id` 读 `MEMORY_CAPTURE_PERSON_ID` | ✅ 已收敛 |
+| 17 | `consent.json` / 可见同意 | 🔴 **未实现**：全仓库无 `consent.json` 读写 | 🔴 **缺口 P1** |
+
+**剩余缺口（待 bo s s 拍板优先级）**：
+
+- **P1-1 范围级清除（影响隐私承诺）**：需新增 `store.clear_source(source)`（逻辑删除全部 `source==x` 的 fact，并同步剔除 `.bak` / 归档副本防复活）与 `store.clear_pii(secure=False)` / `clear(secure=True)`（密文态毁钥、明文态 3 遍覆盖写 + 删除 + best-effort TRIM）。**没有它，「一键清空 inferred 而保留 explicit」与「清除权」都无法兑现。**
+- **P1-2 可见同意机制**：`consent.json` + 首次记录前弹说明 + 可撤回（关记录即停写入，已记内容仍可清）。
+- **P2 常量对齐**：把 `MAX_ARCHIVE_FILES`/`ARCHIVE_RETENTION_DAYS` 改回契约值，或在契约里更新为 12/365 并同步本文。
+- **P2 测试基建**：`tests/fixtures/record_samples.jsonl`（黄金集）已存在但样本量待扩到 ≥40 条正负各半；记忆相关覆盖率数据待补。
+
+---
+
+### 附 D · 记忆功能用户指南（原 `docs/memory/README.md`，已并入）
+
+> J.A.C. 会**记住**关于你的一些关键事实，让以后的对话更懂你。记忆全部存在**你自己的电脑上**，不上传任何服务器。
+
+**记忆的 5 类（`kind`）**
+
+| 类别 | 含义 | 例子 |
+|---|---|---|
+| 画像 profile | 你是谁、什么身份 | 「我叫 boss」「我是做后端的」 |
+| 偏好 preference | 喜欢 / 讨厌 / 习惯 | 「我喜欢喝美式」「我不吃香菜」 |
+| 约定 convention | 项目或协作约定 | 「日志统一用中文」「提交前跑测试」 |
+| 事件 event | 重要决策、发生的事 | 「周五要交版本」 |
+| 主题 topic | 你反复在聊的一个话题 | 同一个 deadline 连提 3 次 → 自动升级成「主题」并加权 |
+
+**两种来源（`source`）**
+
+- `explicit`：**你自己说的**（说「记住我喜欢爬山」就是 explicit）——永远保留，可单独清空。
+- `inferred` / `recurring` / `judgment` / `manual`：系统从对话里推断、反复出现后升级、判断引擎触发、或你手动改的。
+- 隐私含义：**「一键清除系统推断」= 删掉所有 `inferred`，保留你主动说的**（⚠️ 该功能依赖 C9 缺口 P1-1 落地，当前只能逐条删）。
+
+**怎么查看 / 导出 / 清除**
+
+- **看**：文件在 `~/.jac/memory/memory.json`（macOS/Linux）或 `%APPDATA%/jac/memory/memory.json`（Windows），任意编辑器可开，**含个人数据，别在共享/同步盘打开**。
+- **导出备份**：整目录复制走即可（含 `.bak`、归档、`memory_archive_YYYYMM.json`）。迁移到新机器：拷过去 → 校验 `version` 为 `1.0.0` → 权限 600/700 → 启动。
+- **清除**：⚠️ **不可逆，无回收站、无云端副本**，清除前先导出。**先导出再清**是唯一保险。
+- **敏感人物默认不记**：涉及具体第三人身份（「我儿子小明」）的条目会被 `pii=true` 标记并在写入时拦掉，除非你显式打开开关（`MEMORY_CAPTURE_PERSON_ID=True`）且来源是「你自己说的」。
+
+**常见问题**
+
+- *它记错了我说过的话？* → 找到那条（`jq` 或编辑器搜内容）删掉，模型下一轮就会用新状态。
+- *它什么都记，好吵？* → 规则层有排除（一次性问答 / 闲聊 / 纯任务回显 / 敏感身份都不记），误存的按 id 删即可。
+- *我的数据在哪、会不会上传？* → 全在你本机，不进 git、不出网；**唯一例外是运行时 stdout 的明文打印（见附 E §7），属既有暴露点**。
+
+---
+
+### 附 E · 记忆功能隐私说明（原 `docs/memory/privacy.md`，已并入）
+
+#### E1. 核心隐私承诺
+
+本地优先、可见同意、用户可控制（查看 / 导出 / 清除）、日志受控。记忆内容**默认不出网**，仅本地持久化（呼应 `AGENTS.md`「工程指导—谨慎对待隐私」）。
+
+#### E2. 本地存储位置
+
+- 记忆文件：`<root>/memory/memory.json`
+  - macOS / Linux：`~/.jac/memory/memory.json`；Windows：`%APPDATA%/jac/memory/memory.json`
+- 同目录：`memory.json.bak`、`memory_archive_YYYYMM.json`、`*.tmp`、`.corrupt.*`（损坏隔离产物）；`JAC_MEMORY_DIR` 可改整个目录位置。
+- **不进 git**：默认在用户主目录，物理上不在仓库内。仅当 `JAC_MEMORY_DIR` 指向项目内（如 `data/`）时，需在 `.gitignore` 加 `data/` 并排除出 PyInstaller onedir 构建。
+- 权限：目录 **700**、文件 **600**（Windows 靠 `%APPDATA%` 用户私有）。
+
+#### E3. 是否加密
+
+- **v1：明文 JSON**。理由：本地优先、单用户本地原型、记忆内容不出网，作为可接受基线。
+- **路线图项（默认关闭）**：静态加密 `cryptography.Fernet` + 密钥来自系统钥匙串或用户口令（PBKDF2），**默认关、可按敏感类别开启**（如仅对 `pii=true` 的事实加密）。
+- 启用加密后，**必须提供带口令的导出/导入**以便迁移（钥匙串密钥不随机器转移）。
+- 小结：「v1 明文、本地优先、无出网；加密为后续项，默认关、可按敏感类别开」。
+
+#### E4. 同意机制
+
+- ⚠️ **当前为设计态，代码未实现**（见 C9 缺口 P1-2）：设计约定记忆与否由用户同意控制、记录于同目录 `consent.json`；应用应在首次记录前弹出说明、用户可撤回（关记录即停止新写入，已记内容仍可由用户清除）。
+- 已落地的等价保护：`MEMORY_CAPTURE_PERSON_ID` 默认 `False` → 敏感人物身份默认不落库，用户**无需主动操作**即可避免被持久化。
+
+#### E5. 敏感数据边界
+
+- 人物身份（identity）/ 语音转写（transcript）默认本地、不外发。
+- fact 的 `pii` 字段（bool，默认 false）标记敏感事实，审计时单独计数。
+- 用户可一键清除所有 `inferred` 而保留 `explicit`（⚠️ 依赖 C9 缺口 P1-1 落地）。
+- 误写入敏感数据时：立即清除（当前只能 `clear_by_id` 逐条或 `clear_all` 全清）+ 做隐私审计。
+- 写时门控（已落地）：`MEMORY_CAPTURE_PERSON_ID`（默认 `False`）+ `pii` + `source` 双层判定，拒存任何 `pii=True` 事实，除非显式开启且来源为 `explicit`。
+
+#### E6. 清除的不可逆性
+
+- 删除即永久：无回收站、无云端副本。全部清除前建议先导出。
+- 损坏恢复**绝不静默清空**：坏文件隔离为 `memory.json.corrupt.<时间戳>`。
+
+#### E7. 日志控制（现状缺口 + 目标设计）
+
+**现状（务必写实现状缺口）**：
+
+- `SharedContext._transcriptions = deque(maxlen=20)`：纯内存环形缓冲，**不持久化、无开关**，退出即清空，不是记忆、不进记忆文件。
+- `main.py` 全程 `print()`，无 logging 框架/级别/文件/脱敏；转录明文经 `print(f"[听写] {text}")` 与 `print(f"[J.A.C 原始回复] ...")` 打到 stdout —— **已存在的隐私暴露点**。
+- `log_queue` 声明但未消费（死代码）。
+- `codingLOG.md`（原文件，现已并入 CHANGELOG 附 A）：非运行时日志，是手写架构差距笔记，无留存策略/开关/自动生成。
+
+**结论**：今天**无任何日志控制开关**，`AGENTS.md`「日志控制」当前未满足。
+
+**目标设计**：记忆子系统引入受控 logging：环境变量 `JAC_MEMORY_LOG` 默认**不记内容**，仅 debug 记摘要/计数/时间戳/类型，**绝不记原始转录或人物 ID**；并把现有 `print([听写]...)` / `print([J.A.C 原始回复]...)` 改为受控日志。
+
+#### E8. 与 AGENTS.md 的呼应
+
+本说明是 `AGENTS.md`「工程指导—谨慎对待隐私」的可执行细则：本地优先、可见同意、本地过滤、日志控制、人物与云边界。
+
+---
+
+### 附 F · 记忆功能 Runbook（原 `docs/memory/runbook.md`，已并入）
+
+#### F1. 何时用本 Runbook
+
+查看当前记忆 / 清除某条或按来源清 / 导出备份与迁移 / 排查故障（不写入 / 误写入 / 损坏）/ 隐私审计（含 `pii` 与 `inferred` 统计）。
+
+#### F2. 前置条件与权限
+
+- 记忆文件位于 `<root>/memory/`（见 F3），需该目录读/写权限；目录 700 / 文件 600。
+- 清空/导出建议在**应用关闭时**做，避免与持久化线程争用 `.bak`；应用内「查看/导出/清除」则无需手动停。
+- `JAC_MEMORY_DIR` 可整体改目录位置（测试 / 便携版用）。
+
+#### F3. 查看当前记忆（v1 为明文 JSON）
+
+- **方式 A 直接开文件**：`~/.jac/memory/memory.json`（macOS/Linux）或 `%APPDATA%/jac/memory/memory.json`（Windows）。
+- **方式 B 应用内「查看/导出」**：自动按 `kind` / `source` / `pii` 过滤展示。
+- 按来源过滤（运维/排查用）：
+  ```bash
+  jq '.facts[] | select(.source=="inferred")' "$HOME/.jac/memory/memory.json"
+  ```
+- 同目录文件：`memory.json` / `memory.json.bak`（上一次成功写回前的好版本）/ `memory_archive_YYYYMM.json`（按月归档）/ `*.tmp` / `.corrupt.*`。
+
+#### F4. 清除某条 / 按来源 / 全部
+
+> ⚠️ **不可逆警告**：均为永久删除，无回收站、无云端副本。全部清除前建议先导出。
+
+- **清除某一条**：按 `id` 删（`MemoryStore.clear_by_id(id)`）。
+- **按来源清除**：⚠️ **当前 API 不支持**（`clear(source="inferred")` 未落地，见 C9 缺口 P1-1）。临时手写：
+  ```bash
+  jq '.facts |= map(select(.source != "inferred"))' \
+     "$HOME/.jac/memory/memory.json" > /tmp/m.json \
+     && mv /tmp/m.json "$HOME/.jac/memory/memory.json"
+  ```
+  ⚠️ 手动改文件后**必须重启应用**以重新加载；且该方式只改活动文件，`.bak` / 归档副本里仍留有 inferred，重启后会「复活」——真正的范围清除必须等 P1-1 落地。
+- **全部清除**：`MemoryStore.clear_all()`，或手动置 `{"version":"1.0.0","facts":[]}`。
+
+#### F5. 导出备份与迁移
+
+- 手动备份：复制整个 `<root>/memory/` 目录（含 `.bak` / 归档）。
+- 迁移新机器：整目录拷过去 → 校验 `version` 为 `1.0.0`、权限 600/700 → 启动确认 load 成功 → 失败见 F7 恢复。
+- 记忆数据默认在用户主目录、**不进 git**；仅当 `JAC_MEMORY_DIR` 指向项目内时才需在 `.gitignore` 加该目录。
+
+#### F6. 故障排查（不写入 / 误写入 / 损坏）
+
+- **不写入**：查 `RecordDecision.reason`（`low_confidence` / `duplicate` / `not_factual` / `pii_blocked`）；查 `JAC_MEMORY_DIR` 是否可写、权限 700/600；是否达活动上限 2MB（`compact()` 会压缩/归档）。
+- **误写入**：按 `id` 清除该条；若是 `inferred` 误记可批量清（受 F4 ⚠️ 限制）；若是 `pii` 误标，立即清除 + 隐私审计。
+- **损坏**（应用报 `MemoryFileCorrupt` / `MemoryVersionIncompatible`）：
+  - **自动恢复（已落地）**：load 失败 → 自动试 `.bak` → 成功则重写 `memory.json`；`.bak` 也失败 → **空启动**并把坏文件隔离为 `memory.json.corrupt.<时间戳>`，**绝不静默清空**。
+  - **手动恢复**：`cp "$HOME/.jac/memory/memory.json.bak" "$HOME/.jac/memory/memory.json"` 后重启。
+  - `.bak` 约定：后台持久化线程在每次 flush「写回替换」**之前**，若当前 `memory.json` 存在且有效，先复制为 `.bak`（覆盖）。写后读回校验失败则本轮回滚、不更新 `.bak`。
+  - 单条 fact 缺必填字段不会拖垮全部：loader 容忍跳过并计入 `invalid_facts`，其余正常加载。
+
+#### F7. PII 写入门控（默认不记敏感人物）
+
+| `MEMORY_CAPTURE_PERSON_ID` | fact 的 `pii` | fact 的 `source` | 是否落库 |
+|---|---|---|---|
+| `False`（**默认**） | 任意 | 任意 | **拒存**，`reason="pii_blocked"` |
+| `True` | `True` | `explicit` | 落库 |
+| `True` | `True` | 非 `explicit` | **拒存** |
+| `True` | `False` | 任意 | 正常落库 |
+
+**排查**：预期该记的敏感人物没记 → 确认 `MEMORY_CAPTURE_PERSON_ID=True` 且来源为 `explicit`；不应记的记上了 → 按 `id` 清除并做隐私审计。
+
+#### F8. 隐私审计
+
+```bash
+jq '{ total: (.facts|length),
+      pii: ([.facts[]|select(.pii)]|length),
+      inferred: ([.facts[]|select(.source=="inferred")]|length),
+      kinds: (.facts|group_by(.kind)|map({(.[0].kind): length})) }' \
+   "$HOME/.jac/memory/memory.json"
+```
+
+让用户核验「记了什么、哪些敏感、哪些是我没主动说的」。
+
+#### F9. 回滚 / 升级路径
+
+回滚：从 F5 备份恢复整个 `<root>/memory/`。升级：`version` 同 MAJOR 的 MINOR/PATCH 差异向前/向后兼容；跨 MAJOR 由迁移脚本处理（当前无）。
+
+---
+
 ## 2026-10-01 — 文档口径补正（judge 模型名 / 去情绪 TTS 措辞 / 补齐「项目暂停」状态）
 
 > **本次只改文档，未改任何一行代码。** 起因：盘点项目状态时交叉核对文档与代码，发现三处文档与实现不符，逐条补正。

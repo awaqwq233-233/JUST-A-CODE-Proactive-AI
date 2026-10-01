@@ -1,7 +1,7 @@
 """
 J.A.C. 持久记忆子系统 —— 数据模型（Phase 1，v1.0.0）
 
-严格对齐 docs/memory/schema.md（v1.0.0 锁定契约）：
+严格对齐 CHANGELOG.md 附 B（记忆 JSON 契约 v1.0.0）：
   - 单条记忆 = ``MemoryFact``，顶层信封为 ``{"version", "facts"}``。
   - 必填 6 字段：id / content / kind / source / created_at / updated_at。
   - 可选 5 字段：weight / tags / pii / ttl / embedding。

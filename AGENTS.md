@@ -20,10 +20,9 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 
 1. `README.md` — GitHub 首页文档（双语：英文在前、中文在后）。每次改动后确保其描述与项目真实状态一致。
 2. `AGENTS.md` — 本文件，开发者契约。架构/运行方式/依赖/文件路径变化必须同步。
-3. `CHANGELOG.md` — 变更日志。每次变更追加一条用户可读的改动说明。
-4. `codingLOG.md` — 与最终目标的差距笔记（根目录文件，区别于 `codinglog_by_awaqwq233/` 文件夹，后者**禁止**自动改动）。
+3. `CHANGELOG.md` — 变更日志。**同时是「文档归口中心」**：原 `codingLOG.md`（差距笔记）与原 `docs/memory/` 四份记忆子文档已于 2026-10-01 全量并入本文件（附 A 差距笔记 / 附 B 记忆契约 / 附 C 记忆测试计划与实现真值 / 附 D 用户指南 / 附 E 隐私说明 / 附 F 运维 Runbook），源文件已删除。每次变更追加一条用户可读的改动说明；涉及差距或记忆子系统的修订，**直接改 `CHANGELOG.md` 对应附录**，不再新建 `docs/` 专项。
 
-**查看改动时的强制动作**：每当 Agent 需要了解「最近改了什么 / 当前实现状态」，必须优先读取 `CHANGELOG.md` 与 `codingLOG.md` 这两个文件，而不是依赖记忆或过时摘要。
+**查看改动时的强制动作**：每当 Agent 需要了解「最近改了什么 / 当前实现状态」，必须优先读取 `CHANGELOG.md` 与 `AGENTS.md` 这两个文件，而不是依赖记忆或过时摘要；需要「与最终目标的差距」时读 `CHANGELOG.md` 附 A。
 
 配套检查项（每次提交/对话后）：
 
@@ -43,7 +42,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
   3. **"说/听切换"不稳**：`listen_prob_scale` 1.0 偏沉默、0.8 偏抢话，无稳定工作点；它是**开口意愿**旋钮（`listen_bias=(scale-1.0)*2.0`），**不是 VAD、不影响听清**。
 - **待 boss 拍板的三条路线**（挂起未动）：①继续 MiniCPM-o 全双工（接受天花板 + 视觉问题升级给 qwen）；②改 turn_based / half-duplex；③重构为「qwen 主 + MiniCPM-o 仅做 VAD」。
 - **已定位但未修的 bug**：①qwen `enable_thinking=false` 未生效 → `tool_calls` 空、**升级通道实际空转**（2026-09-28 LM Studio developer logs）；②「真提问被自己拦截」——护栏判据（峰值阈值 0.06 偏低、门控与护栏排除项耦合）失准（P2）；③无 WebRTC AEC（方案见 `docs/webrtc_aec_plan.md`，关键障碍是发声全走 `afplay` 子进程、Python 侧拿不到 far-end 参考 PCM，须先改播放链路）。
-- ⚠️ **文档口径提醒**：`codingLOG.md` 中 2026-09-17 那条「视觉 token 吃爆 KV → 每 30s 清空上下文 → 复读示例」的假设，**已被 2026-09-28 的 A1 实验（全程 `--no-video` 零视频帧，幻觉依旧）证伪**，勿再据此修 bug。
+- ⚠️ **文档口径提醒**：`CHANGELOG.md` 附 A 中 2026-09-17 那条「视觉 token 吃爆 KV → 每 30s 清空上下文 → 复读示例」的假设，**已被 2026-09-28 的 A1 实验（全程 `--no-video` 零视频帧，幻觉依旧）证伪**，勿再据此修 bug。
 
 ## 当前实现
 
@@ -142,12 +141,12 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - `temp/`：运行时临时音频文件。
 - `requirements.txt` / `requirements_fixed.txt`：依赖快照（`requirements.txt` 较新，`requirements_fixed.txt` 为旧稳定版）。
 - `Modelfile`：Ollama 构建定义（jac-qwen3.5）。
-- `docs/`：设计与方案文档——`minicpmo_master_plan.md`（MiniCPM-o 接入总规划）、`memory_test_plan.md`（记忆子系统测试计划，含锁定的正则 / `kind` 枚举 / `reason` 受控词表，是 `recorder.py` 的真值来源）、**`webrtc_aec_plan.md`（2026-09-24 新增）**：WebRTC AEC 接入方案——现状障碍（**所有发声都走 `afplay` 子进程，拿不到 far-end 参考 PCM**）/ 三条候选路线（`pywebrtc-audio` 自建播放｜macOS `AVAudioEngine` VoiceProcessingIO｜afplay+预解码对照）/ 四阶段实施路径 / 验收判据 / 「已核实 vs 待实测」界限表。**状态：方案待评审，未实施。**
-- `codingLOG.md`：与最终目标的差距笔记（Agent 查看改动时必读）。
+- `docs/`：设计与方案文档——`minicpmo_master_plan.md`（MiniCPM-o 接入总规划）、**`webrtc_aec_plan.md`（2026-09-24 新增）**（原 `memory_test_plan.md` 已于 2026-10-01 并入 `CHANGELOG.md` 附 C，测试/契约真值一律以附 C 与 `src/memory/` 代码为准）：WebRTC AEC 接入方案——现状障碍（**所有发声都走 `afplay` 子进程，拿不到 far-end 参考 PCM**）/ 三条候选路线（`pywebrtc-audio` 自建播放｜macOS `AVAudioEngine` VoiceProcessingIO｜afplay+预解码对照）/ 四阶段实施路径 / 验收判据 / 「已核实 vs 待实测」界限表。**状态：方案待评审，未实施。**
+- ~~`codingLOG.md`~~：**已于 2026-10-01 全量并入 `CHANGELOG.md` 附 A 并删除**（文件已不存在，不要再引向它）。
 - `codinglog_by_awaqwq233/`：项目背景、预期架构、进度与研究文档——**只由 bo s s 手动维护，Agent 不得自动编辑**。
 - `setup_ffmpeg.py`：从 imageio-ffmpeg 复制二进制为项目根 `ffmpeg`（macOS/Linux）或 `ffmpeg.exe`（Windows）。
 - `verify_model.py`：校验 `llama_cpp` 兜底后端所需的本地 GGUF 模型（仅在使用 `llama_cpp` / `auto` backend 且本地有 GGUF 时需要）。
-- `docs/memory/`：记忆子系统文档集合——`schema.md`（JSON 数据契约，v1.0.0 锁定）、`runbook.md`（运维/排障）、`privacy.md`（隐私细则）、`README.md`（用户指南）。记忆数据文件默认在用户目录 `~/.jac/memory/`（见 `runbook.md` §3.3），不进仓库。
+- **记忆子系统文档（已归口 `CHANGELOG.md`，原 `docs/memory/` 目录已删除）**：契约 `附 B`、测试计划与实现真值 `附 C`（含锁定的判定正则 / `kind` 枚举 / `reason` 受控词表 / 归档常量）、用户指南 `附 D`、隐私说明 `附 E`、运维 Runbook `附 F`。记忆数据文件默认在用户目录 `~/.jac/memory/`，不进仓库；**⚠️ 已知代码缺口（附 C §C9）：范围级清除 `clear(source=...)` / `clear(pii=...)` / `secure` 擦除未落地，`consent.json` 同意机制未实现**。
 - `new_computer_download/`：到新机器的一键环境搭建脚本与详细安装指南（`READMEfirst.md` 为双语安装首页）。
 
 通常不参与编辑的大体积/二进制产物：
@@ -235,9 +234,10 @@ python main.py
 - 新增控制台文本输入实时对话（绕过唤醒词）。
 - TTS 后端从 Genie-TTS 全面切换为 **Voicebox（克隆 J.A.C. 声纹）+ Qwen3-TTS 仅 NVIDIA 兜底**。
 
-`codingLOG.md` 列出的与最终目标的差距中，**以下仍为未实现 / 待做项**：MCP / OpenClaw 集成、实时联网工具（天气/日程）、token 级流式 TTS（omni 全双工已落地 LLM 流式输出 + M7b 句子级 Voicebox 桥接近似实时，但非 token 级）、OCR / 人脸识别 / 深度等视觉理解。注意 `codingLOG.md` 部分内容早于 `main.py`，应作为架构差距笔记而非精确实现状态。
+`CHANGELOG.md` 附 A 列出的与最终目标的差距中，**以下仍为未实现 / 待做项**：MCP / OpenClaw 集成、实时联网工具（天气/日程）、token 级流式 TTS（omni 全双工已落地 LLM 流式输出 + M7b 句子级 Voicebox 桥接近似实时，但非 token 级）、OCR / 人脸识别 / 深度等视觉理解。注意附 A 部分内容早于 `main.py`，应作为架构差距笔记而非精确实现状态。
 
-> **已落地（曾列于未实现项，现已实现并集成）**：持久记忆（JSON 长期记忆 + 轻量本地向量检索，见 `src/memory/` 与 `docs/memory/`）。`codingLOG.md` 中「记忆功能待验证」指端到端未在真机跑过，并非代码空缺。
+> **已落地（曾列于未实现项，现已实现并集成）**：持久记忆（JSON 长期记忆 + 轻量本地向量检索，见 `src/memory/` 与 `CHANGELOG.md` 附 B/附 C）。附 A 中「记忆功能待验证」指端到端未在真机跑过，并非代码空缺。
+> **记忆子系统已知代码缺口（2026-10-01 核对，详见 `CHANGELOG.md` 附 C §C9）**：①范围级清除 API（`clear(source=...)` / `clear(pii=...)` / `secure` 擦除）未落地 → 「一键清空 inferred 保留 explicit」与清除权暂不可兑现；②`consent.json` 可见同意机制未实现；③归档常量与契约不一致（代码 `MAX_ARCHIVE_FILES=12` / `ARCHIVE_RETENTION_DAYS=365`）。
 
 ## 预期未来架构
 

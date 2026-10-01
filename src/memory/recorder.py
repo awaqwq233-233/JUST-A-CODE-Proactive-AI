@@ -11,7 +11,7 @@ J.A.C. 持久记忆子系统 —— 记录判定逻辑（Phase 2）
   - pii 双层门控：检测到的具体人物身份默认不记；仅 capture_person_id=True 且
     source=explicit 才落库并标 pii=true。
 
-严格对齐 docs/memory/schema.md 与 docs/memory_test_plan.md §2/§3.4 锁定的
+严格对齐 CHANGELOG.md 附 B（记忆契约）与附 C §C2/§C3.4（测试真值）锁定的
 正则、判定顺序、kind 枚举、reason 受控词表。
 """
 
@@ -27,7 +27,7 @@ from .models import MemoryFact, MemoryKind, MemorySource
 
 
 # ---------------------------------------------------------------------------
-# 锁定的常量与正则（oracle：docs/memory_test_plan.md §2）
+# 锁定的常量与正则（oracle：CHANGELOG.md 附 C §C2）
 # ---------------------------------------------------------------------------
 
 RECURRENCE_THRESHOLD = 3          # 同 topic_key 累计出现次数达到即晋升

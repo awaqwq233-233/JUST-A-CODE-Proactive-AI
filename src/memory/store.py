@@ -1,7 +1,7 @@
 """
 J.A.C. 持久记忆子系统 —— 存储层 MemoryStore（Phase 1，v1.0.0）
 
-职责（见 docs/memory/schema.md + 设计文档「存储格式」「可运维性」章节）：
+职责（见 CHANGELOG.md 附 B 记忆契约 + 附 F 运维手册）：
   - 目录解析（显式 base_dir → 环境变量 JAC_MEMORY_DIR → 用户目录）
   - 启动时一次性加载进内存 dict（内存为权威副本）
   - 检索只读内存（亚毫秒），落盘全部交给后台持久化线程（防抖批量写）

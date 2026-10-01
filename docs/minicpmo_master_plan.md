@@ -115,7 +115,7 @@
 15. `main.py` — 新增 MiniCPM-o 全双工启动路径（与旧 headless/cv2 路径互斥）；关闭旧 `judge.py` 主动判断 + 取代 Whisper 唤醒词路径。
 16. `src/judgment/judge.py` — 全双工开启时停用（MiniCPM-o 即常驻感知+主动）。
 17. `requirements.txt` + `new_computer_download/`（仅新增**编译 llama.cpp-omni 的一键脚本/指南**，非 Python 依赖）。
-18. 文档同步：`README.md` / `AGENTS.md` / `CHANGELOG.md` / `codingLOG.md`。
+18. 文档同步：`README.md` / `AGENTS.md` / `CHANGELOG.md`（`codingLOG.md` 已于 2026-10-01 全量并入 `CHANGELOG.md` 附 A）。
 
 ---
 

@@ -2,7 +2,7 @@
 J.A.C. 持久记忆子系统（v1.0.0）
 
 包导出。Phase 1-3：数据模型（models）、存储层（store）、记录判定（recorder）、
-编排门面（manager）。严格对齐 docs/memory/schema.md（v1.0.0 锁定契约）。
+编排门面（manager）。严格对齐 CHANGELOG.md 附 B（记忆 JSON 契约 v1.0.0）。
 """
 
 from .models import (
