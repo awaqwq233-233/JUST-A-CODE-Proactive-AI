@@ -56,7 +56,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - 本地大脑推理：`src/brain/llm.py`（`LocalBrain`，多后端：lm_studio / ollama / llama_cpp / auto）。
 - 语音合成：统一走 `build_speaker` 工厂——**Voicebox（开源克隆引擎，macOS 主力）→ Qwen3-TTS（仅 NVIDIA）→ 系统 TTS 兜底**。克隆参考音固定为 `voices/silverwalf_voice.wav`（唯一音色）。
 - **主动判断引擎**：`src/judgment/judge.py`（`JudgmentEngine`，连 LM Studio 的 `/v1/chat/completions`，每 4s 拿「截图 + 转录文本」问一次要不要介入，**默认开启** `JUDGMENT_ENGINE_ENABLED=True`；模型未加载则自动进入被动模式，不报错也不主动）。
-  - ⚠️ **模型名口径（2026-10-01 补正）**：代码默认值是 **`minicpm-v-4_5`（V 版 9B VLM，不是 MiniCPM-o）**，标识符来自 `config.judgment_model_name` / `JUDGMENT_MODEL_NAME`（规范化匹配 LM Studio 实际加载 ID，匹配到别的名字会回填并打日志）。**走标准 chat API 时 o 版的「听原始音频 + 1Hz 主动决策」用不上**，换上 mini-cpm-o 也只会退化成与 V 版重叠的 9B VLM、收益≈0；要真正用上 o 版必须按「持续喂音视频流 + 订阅主动发言事件」重构（见 `codingLOG.md` §1）。
+  - ⚠️ **模型名口径（2026-10-01 补正）**：代码默认值是 **`minicpm-v-4_5`（V 版 9B VLM，不是 MiniCPM-o）**，标识符来自 `config.judgment_model_name` / `JUDGMENT_MODEL_NAME`（规范化匹配 LM Studio 实际加载 ID，匹配到别的名字会回填并打日志）。**走标准 chat API 时 o 版的「听原始音频 + 1Hz 主动决策」用不上**，换上 mini-cpm-o 也只会退化成与 V 版重叠的 9B VLM、收益≈0；要真正用上 o 版必须按「持续喂音视频流 + 订阅主动发言事件」重构（见 `CHANGELOG.md` 附 A §A1）。
 
 ### 运行流程（`main.py`）
 
