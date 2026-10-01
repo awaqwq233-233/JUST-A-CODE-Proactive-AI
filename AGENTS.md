@@ -32,6 +32,19 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - `codinglog_by_awaqwq233/` 文件夹**只由 bo s s 手动维护**，Agent 不得自动编辑或同步其内容。
 - **开发平台**：当前以 macOS 为主开发机，保持跨平台兼容代码；Windows 开发机已不再使用（旧 `build.py` / `fix_install.py` 等 Windows 专用脚本已删除）。**macOS 27 适配良好**——此前 GUI 渲染崩溃根因为渲染代码 bug（已在 gui.py 修复）、TTS 异常为本机代理导致 Voicebox 连不上 HuggingFace（已通过改用本地 Voicebox 解决），后续文档不再归咎系统版本。
 
+## 当前开发状态（2026-10-01 补正，此前未记录）
+
+> 结论先行：**项目自 2026-09-28 起暂停开发，boss 正在重新审视技术实现路径**，本文档同步冻结在此状态。
+
+- **代码基线**：全量回归 `134 passed`；最近一次代码改动为 2026-09-28 的 omni `prompts.py` 治理（删 5 条具体示例改抽象规则，`py_compile` 过、omni 回归 62 passed）。
+- **已定性的 MiniCPM-o 能力天花板**（非代码 bug，属模型 / llama.cpp-omni 固有限制）：
+  1. **视觉分辨率仅 grid 1x1 / 64 视觉 token**（服务端日志铁证 `image encoded ... grid: 1x1`），细节视觉问答不可行（真机曾把 boss 本人误判成"电脑桌面"）。
+  2. **音频理解（ASR）质量差**：内建麦离嘴远、人声 RMS 仅 0.03~0.065，模型听不清寒暄，会从 prompt 示例里"捡"输出（"查电池"即被复读的示例）。
+  3. **"说/听切换"不稳**：`listen_prob_scale` 1.0 偏沉默、0.8 偏抢话，无稳定工作点；它是**开口意愿**旋钮（`listen_bias=(scale-1.0)*2.0`），**不是 VAD、不影响听清**。
+- **待 boss 拍板的三条路线**（挂起未动）：①继续 MiniCPM-o 全双工（接受天花板 + 视觉问题升级给 qwen）；②改 turn_based / half-duplex；③重构为「qwen 主 + MiniCPM-o 仅做 VAD」。
+- **已定位但未修的 bug**：①qwen `enable_thinking=false` 未生效 → `tool_calls` 空、**升级通道实际空转**（2026-09-28 LM Studio developer logs）；②「真提问被自己拦截」——护栏判据（峰值阈值 0.06 偏低、门控与护栏排除项耦合）失准（P2）；③无 WebRTC AEC（方案见 `docs/webrtc_aec_plan.md`，关键障碍是发声全走 `afplay` 子进程、Python 侧拿不到 far-end 参考 PCM，须先改播放链路）。
+- ⚠️ **文档口径提醒**：`codingLOG.md` 中 2026-09-17 那条「视觉 token 吃爆 KV → 每 30s 清空上下文 → 复读示例」的假设，**已被 2026-09-28 的 A1 实验（全程 `--no-video` 零视频帧，幻觉依旧）证伪**，勿再据此修 bug。
+
 ## 当前实现
 
 可运行入口是 `main.py`。它把以下模块串联起来：
@@ -43,7 +56,8 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - Whisper 语音识别：`src/audio/stt.py`（默认 `model_size="tiny"`，**非流式**；强制 `language="zh"` 简体中文，并内置繁→简兜底归一化，根治自动检测漂移导致的繁体/乱码）。
 - 本地大脑推理：`src/brain/llm.py`（`LocalBrain`，多后端：lm_studio / ollama / llama_cpp / auto）。
 - 语音合成：统一走 `build_speaker` 工厂——**Voicebox（开源克隆引擎，macOS 主力）→ Qwen3-TTS（仅 NVIDIA）→ 系统 TTS 兜底**。克隆参考音固定为 `voices/silverwalf_voice.wav`（唯一音色）。
-- **主动判断引擎**：`src/judgment/judge.py`（`JudgmentEngine`，连接 LM Studio 上的 MiniCPM-o，持续判断是否需要主动介入，**默认开启** `JUDGMENT_ENGINE_ENABLED=True`；若 LM Studio 未加载 MiniCPM-o 则自动进入被动模式，不报错也不主动）。
+- **主动判断引擎**：`src/judgment/judge.py`（`JudgmentEngine`，连 LM Studio 的 `/v1/chat/completions`，每 4s 拿「截图 + 转录文本」问一次要不要介入，**默认开启** `JUDGMENT_ENGINE_ENABLED=True`；模型未加载则自动进入被动模式，不报错也不主动）。
+  - ⚠️ **模型名口径（2026-10-01 补正）**：代码默认值是 **`minicpm-v-4_5`（V 版 9B VLM，不是 MiniCPM-o）**，标识符来自 `config.judgment_model_name` / `JUDGMENT_MODEL_NAME`（规范化匹配 LM Studio 实际加载 ID，匹配到别的名字会回填并打日志）。**走标准 chat API 时 o 版的「听原始音频 + 1Hz 主动决策」用不上**，换上 mini-cpm-o 也只会退化成与 V 版重叠的 9B VLM、收益≈0；要真正用上 o 版必须按「持续喂音视频流 + 订阅主动发言事件」重构（见 `codingLOG.md` §1）。
 
 ### 运行流程（`main.py`）
 
@@ -105,7 +119,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
   - **配套改进**：把散在 5 处的 `os.environ.get("OMNI_DEBUG") == "1"` 统一收敛为 `self._debug`，并新增 GUI「上行调试日志（OMNI_DEBUG）」复选框（此前 GUI 启动的进程改不了环境变量，逐块 RMS/块长日志只能从命令行拿，而量化「块长抖动」正需要它）。`OmniClient` 参数为 `None` 时读环境变量，显式传参优先。
   - 回归见 `tests/test_omni_video_switch.py`（配置层 / 单元层 / **WS 级抓包断言「关掉后 9 段上行零 `video_frames` 且每帧仍带音频」**）。
 
-> 注意：OMNI 模式默认只跑 omni 全双工 + 升级路由（qwen+tools 回灌），**不包含** main.py 的摄像头 YOLO 检测 / 唤醒词 / judge 主动判断；两者架构互斥，分别用于「全双工实时对话」与「传统被动多模态桌面原型」。ASR 误识别（如"电量"→"天气"）属 MiniCPM-o 模型识别质量限制，代码无法根治，仅做可观测性缓解（增益框 + 实时回复区）。
+> 注意：OMNI 模式默认只跑 omni 全双工 + 升级路由（qwen+tools 回灌），**不包含** main.py 的摄像头 YOLO 检测 / 唤醒词 / judge 主动判断；两者架构互斥，分别用于「全双工实时对话」与「传统被动多模态桌面原型」。所谓"识别成查电池"**不是 ASR 结果**（full_duplex 下行不回传用户转写），是 MiniCPM-o 音频理解质量限制 + prompt 具体示例造成的复读/幻觉（2026-09-28 A1 实验已排除「视觉 token 吃爆 KV」这一旧假设），属模型侧限制、代码无法根治，仅做可观测性缓解（增益框 + 实时回复区 + `prompts.py` 已删具体示例改纯规则）。
 
 ## 重要文件与目录
 
@@ -121,7 +135,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 - `src/audio/qwen_tts.py`：Qwen3-TTS 语音合成（开源本地 TTS，支持情绪/语气控制与声音克隆，仅 NVIDIA 平台启用），带系统 TTS 兜底降级。
 - `src/brain/llm.py`：`LocalBrain`，llama.cpp / LM Studio / Ollama / auto 多后端，含 `think_with_image` 与 Function Calling 的 `think_with_tools` / `run_agentic`。
 - `src/tools/`：**Function Calling 工具层（装手）**——`registry.py`（工具注册表 + OpenAI schema）、`executor.py`（安全分发执行）、`open_actions.py` / `search_files.py` / `system_info.py` / `shell.py`（四个白名单工具）。
-- `src/judgment/judge.py`：主动判断引擎（MiniCPM-o via LM Studio）。
+- `src/judgment/judge.py`：主动判断引擎（`minicpm-v-4_5` via LM Studio 标准 chat API；与 omni 链路常驻的 MiniCPM-o-4_5 是两份不同实例，详见「当前开发状态」）。
 - `src/utils/context.py`：线程安全的共享上下文（视觉摘要、状态标志、转录缓冲、帧缓存、介入标志）。
 - `src/omni/`：**全双工 omni 接管模块**——`client.py`（OmniClient WebSocket 收发 + 令牌路由 + 推流背压）、`tokens.py`（升级令牌识别的唯一事实来源：容忍空白的变体匹配 / holdback 判定 / 硬安全网）、`voicebox_bridge.py`（M7b 句子级 Voicebox 桥接）、`backfeed.py`（M7a 回灌）、`router.py`（升级路由 EscalationRouter）、`server_launcher.py`（拉起 llama.cpp-omni）、`prompts.py`、`__main__.py`（CLI 入口 `python -m src.omni`）。
 - `voices/`：TTS 声音克隆参考音。`silverwalf_voice.wav` 为唯一克隆音色参考（体积小、有意保留进版本库，见 `.gitignore` 注释）。
@@ -147,7 +161,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 所有**推理模型均不存放在项目内**，由外部 AI 软件管理：
 
 - **大脑模型** `qwen/qwen3.6-35b-a3b`：在 **LM Studio** 中加载（默认 `backend="lm_studio"`，`127.0.0.1:12345`），原生多模态、`enable_thinking=False` 禁用思考。代码按模型标识符精确匹配，不依赖任何本地 GGUF 文件。
-- **主动判断引擎模型** MiniCPM-o：同样在 LM Studio 中另行加载，由 `src/judgment/judge.py` 使用；未加载时自动进入被动模式（不报错也不主动）。
+- **主动判断引擎模型** `minicpm-v-4_5`（代码默认 `config.judgment_model_name`，`src/judgment/judge.py` 用标准 chat API 调 LM Studio 的 `/v1/chat/completions`，**不是 MiniCPM-o**；OMNI 全双工链路里常驻的那份是 `MiniCPM-o-4_5` GGUF Q8_0，跑在 llama.cpp-omni `:9060`，两者是不同实例、不同用法）。判断引擎未加载该模型时自动进入被动模式（不报错也不主动）。
 - **TTS 声纹**：由 **Voicebox** App 托管，克隆 `voices/silverwalf_voice.wav` 得到名为 **JAC** 的声纹。项目内不再存放 TTS 权重。
 - **物体检测** `yolov8n.pt`：首次运行由 `ultralytics` 自动下载到缓存，不进仓库。
 
@@ -189,7 +203,7 @@ python main.py
 
 ### 运行前置条件
 
-- **默认 `backend="lm_studio"`**，因此运行前需启动 **LM Studio** 并在 `127.0.0.1:12345` 加载 `qwen/qwen3.6-35b-a3b`（如需主动判断，另加载 `MiniCPM-o`）。否则所有思考请求会连接失败。
+- **默认 `backend="lm_studio"`**，因此运行前需启动 **LM Studio** 并在 `127.0.0.1:12345` 加载 `qwen/qwen3.6-35b-a3b`（如需主动判断，另加载 **`minicpm-v-4_5`**）。否则所有思考请求会连接失败。
 - 若想纯本地 GGUF 推理，需把 `main.py` 中 `LocalBrain(..., backend="lm_studio")` 改为 `"llama_cpp"` 或 `"auto"`（`auto` 会探测可用后端），并确保对应 GGUF 由外部放置（项目不再内置）。
 - Ollama 用法：用附带的 `Modelfile` 构建 `jac-qwen3.5`，再把 backend 改为 `"ollama"`。
 
@@ -215,7 +229,7 @@ python main.py
 **代码中已落地的进展（相对旧文档）：**
 
 - 大脑从 Qwen1.5-1.8B 升级为 `qwen/qwen3.6-35b-a3b`（经 LM Studio 加载），并抽象出多后端 `LocalBrain`。
-- 新增 `src/judgment` 主动判断引擎雏形（MiniCPM-o via LM Studio，每 4s 判断是否主动介入）——对应愿景里的「核心判断 / 持续感知」。
+- 新增 `src/judgment` 主动判断引擎雏形（`minicpm-v-4_5` via LM Studio 标准 chat API，每 4s 判断是否主动介入）——对应愿景里的「核心判断 / 持续感知」。
 - 新增多模态图像问答 `think_with_image()`（视觉问题时发送真实摄像头帧）。
 - 新增 `SLEEP`/`AWAKE` 状态机 + 20s 超时自动休眠。
 - 新增控制台文本输入实时对话（绕过唤醒词）。
@@ -265,7 +279,7 @@ python main.py
 ## 已知限制
 
 - **运行强依赖 LM Studio**：`main.py` 默认 `backend="lm_studio"`，必须本地 12345 端口加载 `qwen/qwen3.6-35b-a3b`；否则思考全部失败。纯本地 GGUF 需改 backend。
-- **双模型资源**：开启主动判断需 LM Studio 同时加载 `qwen/qwen3.6-35b-a3b` + `MiniCPM-o`；当前 M5 Pro 48G 统一内存已验证可同时承载（2026-08-11）。默认 `JUDGMENT_ENGINE_ENABLED=True`，未检测到 MiniCPM-o 时自动进入被动模式（不报错也不主动）。
+- **双模型资源**：开启主动判断需 LM Studio 同时加载 `qwen/qwen3.6-35b-a3b` + `minicpm-v-4_5`；当前 M5 Pro 48G 统一内存已验证可同时承载（2026-08-11）。默认 `JUDGMENT_ENGINE_ENABLED=True`，未检测到该模型时自动进入被动模式（不报错也不主动）。**OMNI 全双工模式则另需 llama.cpp-omni 的 MiniCPM-o-4_5（Q8_0）起在 `:9060`**，与 LM Studio 那份判断模型无关（OMNI 模式下判断引擎根本不启动）。
 - VAD 录音仍可能阻塞在「等待说话」，影响关闭响应（旧限制仍在）。
 - **延迟**：STT 仍为非流式的 Whisper tiny（整段说完才识别）；但 LLM 经 omni 全双工已**流式输出**文本、TTS 经 M7b **句子级 Voicebox 桥接**近似实时 + JAC 克隆声纹（omni 自带 TTS 音频在桥接启用时丢弃），端到端感知延迟已显著下降（全双工边听边说）。token 级流式 TTS 仍待做。
 - 无 MCP/OpenClaw 集成（目标未实现）；Function Calling（装手）+ agent 执行框架、持久记忆（JSON 长期记忆 + 轻量向量检索）已实现，见 `src/tools/`、`src/brain/llm.py`、`src/memory/`。

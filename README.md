@@ -18,8 +18,8 @@ The current codebase is a **macOS-first Python desktop prototype** (Windows/Linu
 
 - **Multimodal perception** — OpenCV camera + YOLOv8 detection, PyAudio + WebRTC VAD microphone capture, OpenAI Whisper STT.
 - **Local brain** — `qwen/qwen3.6-35b-a3b` loaded in **LM Studio** (native multimodal, thinking disabled), via a multi-backend `LocalBrain` (lm_studio / ollama / llama_cpp / auto).
-- **Emotion-aware TTS** — Voicebox (open-source cloning engine, macOS primary) cloning the J.A.C. voice from `voices/silverwalf_voice.wav`, with Qwen3-TTS (NVIDIA-only) and system-TTS fallbacks.
-- **Proactive judgment engine** — `src/judgment/judge.py` (MiniCPM-o via LM Studio) continuously decides whether to intervene; **on by default** (`JUDGMENT_ENGINE_ENABLED=True`); auto passive mode if MiniCPM-o not loaded.
+- **Cloned-voice TTS (neutral, no emotion tags)** — Voicebox (open-source cloning engine, macOS primary) cloning the J.A.C. voice from `voices/silverwalf_voice.wav`, with Qwen3-TTS (NVIDIA-only) and system-TTS fallbacks. Since 2026-08-09 the brain emits plain text only, so J.A.C. always reads neutrally (the emotion interfaces remain available but unused).
+- **Proactive judgment engine** — `src/judgment/judge.py` (`minicpm-v-4_5` via LM Studio standard chat API) polls every 4s with a screenshot + transcript to decide whether to intervene; **on by default** (`JUDGMENT_ENGINE_ENABLED=True`); auto passive mode if the model is not loaded. Note: the omni full-duplex path uses a **different** model instance — `MiniCPM-o-4_5` (GGUF Q8_0) in llama.cpp-omni `:9060`.
 - **Multimodal Q&A** — sends the real camera frame to the brain for vision questions.
 - **Wake-word + console input** — wake words (`jac` / `杰克` / `你好` …) or just type in the console to talk.
 - **Persistent memory** — JSON long-term memory + lightweight local vector retrieval (`src/memory/`).
@@ -67,7 +67,7 @@ python main.py
 ### Models
 
 - **Brain**: `qwen/qwen3.6-35b-a3b` in **LM Studio** (default `backend="lm_studio"`, `127.0.0.1:12345`). Identifier must match exactly.
-- **Judgment**: MiniCPM-o in LM Studio (optional, enables proactive mode).
+- **Judgment**: `minicpm-v-4_5` in LM Studio (optional, enables proactive mode). The omni full-duplex mode instead uses `MiniCPM-o-4_5` (GGUF Q8_0) via llama.cpp-omni on `:9060`.
 - **TTS**: Voicebox App clones `voices/silverwalf_voice.wav` → **JAC** voiceprofile. No in-project TTS weights.
 - **Detection**: `yolov8n.pt` auto-downloaded by `ultralytics` on first run.
 
@@ -100,8 +100,8 @@ J.A.C. 是一个**本地优先的多模态 AI 管家**原型，灵感来自 JARV
 
 - **多模态感知** —— OpenCV 摄像头 + YOLOv8 检测、PyAudio + WebRTC VAD 麦克风采集、OpenAI Whisper 语音识别。
 - **本地大脑** —— 在 **LM Studio** 中加载 `qwen/qwen3.6-35b-a3b`（原生多模态、禁用思考），走多后端 `LocalBrain`（lm_studio / ollama / llama_cpp / auto）。
-- **带情绪 TTS** —— Voicebox（开源克隆引擎，macOS 主力）克隆 `voices/silverwalf_voice.wav` 得到 J.A.C. 音色，Qwen3-TTS（仅 NVIDIA）与系统 TTS 兜底。
-- **主动判断引擎** —— `src/judgment/judge.py`（LM Studio 上的 MiniCPM-o）持续判断是否介入，**默认开启**（`JUDGMENT_ENGINE_ENABLED=True`）；未加载 MiniCPM-o 时自动进入被动模式。
+- **克隆音色 TTS（纯文本中性朗读）** —— Voicebox（开源克隆引擎，macOS 主力）克隆 `voices/silverwalf_voice.wav` 得到 J.A.C. 音色，Qwen3-TTS（仅 NVIDIA）与系统 TTS 兜底；2026-08-09 起 brain 只输出纯文本，J.A.C. 一律中性朗读（情绪接口保留但未调用）。
+- **主动判断引擎** —— `src/judgment/judge.py`（LM Studio 标准 chat API 上的 `minicpm-v-4_5`，每 4s 拿截图＋转录文本问一次要不要介入），**默认开启**（`JUDGMENT_ENGINE_ENABLED=True`）；未加载该模型时自动进入被动模式。注意：OMNI 全双工链路用的是**另一个实例** `MiniCPM-o-4_5`（GGUF Q8_0，跑在 llama.cpp-omni `:9060`）。
 - **多模态问答** —— 视觉问题时把真实摄像头帧发给大脑。
 - **唤醒词 + 控制台输入** —— 唤醒词（`jac` / `杰克` / `你好` …）或直接控制台输入对话。
 - **持久记忆** —— JSON 长期记忆 + 轻量本地向量检索（`src/memory/`）。
@@ -149,7 +149,7 @@ python main.py
 ### 模型
 
 - **大脑**：LM Studio 中的 `qwen/qwen3.6-35b-a3b`（默认 `backend="lm_studio"`，`127.0.0.1:12345`），标识符须精确匹配。
-- **判断**：LM Studio 中的 MiniCPM-o（可选，开启主动模式）。
+- **判断**：LM Studio 中的 `minicpm-v-4_5`（可选，开启主动模式）；OMNI 全双工模式则使用 llama.cpp-omni `:9060` 上的 `MiniCPM-o-4_5`（GGUF Q8_0）。
 - **TTS**：Voicebox App 克隆 `voices/silverwalf_voice.wav` → **JAC** 声纹，项目内无 TTS 权重。
 - **检测**：`yolov8n.pt` 首次运行由 `ultralytics` 自动下载。
 

@@ -1,8 +1,24 @@
 # 修改日志 (Changelog)
 
-记录 J.A.C. 项目对代码 / 脚本 / 配置的实际改动。最新改动在最上方。
+记录 J.A.C. 项目对代码 / 脚本 / 配置的**实际改动**。最新改动在最上方。
+（纯文档文字校正也在此登记，但会明确标注「未改代码」。）
 
 ---
+
+## 2026-10-01 — 文档口径补正（judge 模型名 / 去情绪 TTS 措辞 / 补齐「项目暂停」状态）
+
+> **本次只改文档，未改任何一行代码。** 起因：盘点项目状态时交叉核对文档与代码，发现三处文档与实现不符，逐条补正。
+
+| # | 位置 | 原文问题 | 补正后 |
+|---|---|---|---|
+| 1 | `AGENTS.md` 当前实现「主动判断引擎」/`AGENTS.md` 模型与资产；`README.md` 英文 Features 与 Models / 中文说明与模型段；`codingLOG.md` §1 | 统一写成「judge 用 **MiniCPM-o**」 | 全部改为代码真值 **`minicpm-v-4_5`**（`src/judgment/judge.py:58`、`src/utils/config.py:18`），并显式区分「judge 走 LM Studio 标准 chat API」与「OMNI 全双工里常驻的 `MiniCPM-o-4_5` GGUF Q8_0 @ `:9060` 是**另一份实例、另一种用法**」 |
+| 2 | `README.md` 英文 Features / 中文说明；`new_computer_download/READMEfirst.md` §6 | 仍写 **Emotion-aware TTS**（带情绪 TTS）；安装指南第 3 步写「load MiniCPM-o in LM Studio」 | README 改为「克隆音色 + **纯文本中性朗读**」并注明 2026-08-09 起 brain 只输出纯文本、情绪接口保留但未调用；安装指南改为 load **`minicpm-v-4_5`**，并注明判断引擎走标准 `chat/completions`、与 `:9060` 上 llama.cpp-omni 的 MiniCPM-o 是两回事 |
+| 3 | `codingLOG.md` §4「上下文寿命短板」与 §1 | 保留了 2026-09-17「视觉 token 吃爆 KV → 复读示例」的假设，读者会据此修错 bug | 在该段标题前加 ⚠️ 标注「因果链已于 2026-09-28 被 A1 实验（`--no-video` 零图仍幻觉）证伪」，并保留原有 KV / 降频量化数据（降频收益本身有效），另在 §1 补「代码真值」条目 |
+| 4 | `AGENTS.md` | 全文**没有**记录「项目已暂停」这一状态 | 新增 **「当前开发状态（2026-10-01 补正）」** 小节：暂停时间（2026-09-28）、代码基线（`134 passed`）、MiniCPM-o 三条已定性能力天花板、待 boss 拍板的三条路线、三个未修 bug、以及「codingLOG 旧假设勿再采信」的提醒 |
+
+- **未触碰**：`codinglog_by_awaqwq233/`（只由 bo s s 手动维护，Agent 禁止编辑）。
+- **验证方式**：本次无代码改动，故不跑 `py_compile` / 测试套件；改后用 grep 逐条复查三处关键词（MiniCPM-o / minicpm-v-4_5 / Emotion-aware）确认无残留旧措辞。
+- **状态**：文档四件套（`AGENTS.md` / `README.md` / `CHANGELOG.md` / `codingLOG.md`）已同步。
 
 ## 2026-09-28 — A1 对照实验：机制②（视觉 token 吃爆 KV）被证伪，重定位「查电池」幻觉根因
 

@@ -63,7 +63,8 @@ If download fails, memory automatically falls back to keyword retrieval — the 
    - The identifier **must match exactly** (code matches it precisely; a different id won't be picked up).
    - It is **natively multimodal** and **thinking is disabled** (`enable_thinking=False`).
 2. Start the local server on **`127.0.0.1:12345`** (Developer tab → Start Server).
-3. (Optional, for proactive mode) Also load **MiniCPM-o** in LM Studio. J.A.C. enables the judgment engine by default (`JUDGMENT_ENGINE_ENABLED=True`); if MiniCPM-o is not loaded, it auto-enters passive mode.
+3. (Optional, for proactive mode) Also load **`minicpm-v-4_5`** in LM Studio. J.A.C. enables the judgment engine by default (`JUDGMENT_ENGINE_ENABLED=True`); if that model is not loaded, it auto-enters passive mode.
+   - Note: the judgment engine talks to LM Studio through the standard `chat/completions` API (image + text only). The **MiniCPM-o** full-duplex model is unrelated to it — it is served by llama.cpp-omni on `:9060` and is only used by the omni mode.
 
 ### 7. Set up the TTS voice in Voicebox
 
