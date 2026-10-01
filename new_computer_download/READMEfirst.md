@@ -1,7 +1,7 @@
 # READMEfirst — J.A.C. 安装与运行指南 / Setup & Run Guide
 
-> 这是 J.A.C. 的**第一份安装文档**。项目所有模型（大脑 / 判断 / TTS）均由**外部 AI 软件**（LM Studio / Voicebox）管理，**项目内不下载任何本地 GGUF 或 TTS 权重**。
-> This is the **first setup doc** for J.A.C. All models (brain / judgment / TTS) are managed by **external AI software** (LM Studio / Voicebox) — the project downloads **no local GGUF or TTS weights**.
+> 这是 J.A.C. 的**第一份安装文档**，已按 **2026-10-01 新架构**改写。三层模型：**MiniCPM-o-4_5（本地 llama.cpp 全双工 + 语音）→ qwen/qwen3.6-35b-a3b（LM Studio 大脑）→ 云端 OpenClaw（DeepSeek，可选）**。模型权重全部**在项目之外**（外部仓库 / 外部 AI 软件），项目内不下载任何本地 GGUF / TTS 权重。
+> This is the **first setup doc** for J.A.C., rewritten for the **new architecture (2026-10-01)**. Three tiers: **MiniCPM-o-4_5 (local llama.cpp full-duplex + voice) → qwen/qwen3.6-35b-a3b (LM Studio brain) → cloud OpenClaw (DeepSeek, optional)**. All model weights live **outside the project** (external repos / external AI software).
 
 [中文安装指南（含国内镜像方法）](#中文安装指南国内网络推荐)
 
@@ -11,31 +11,33 @@
 
 ### 1. Prerequisites
 
-- **OS**: macOS (primary dev platform). Windows/Linux code is kept but untested on a Windows dev machine.
-- **Python**: 3.10 or 3.11 (recommended for best compatibility).
-- **Homebrew** (macOS): for `portaudio` + `ffmpeg`.
+- **OS**: macOS (primary dev platform, Apple Silicon). Windows/Linux code is kept but untested on a Windows dev machine.
+- **Python**: **3.11** (locked by the new architecture).
+- **Xcode Command Line Tools + Homebrew** (macOS): for `portaudio`, `ffmpeg`, and the Metal toolchain.
   ```bash
+  xcode-select --install
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  brew install ffmpeg portaudio
   ```
 - **LM Studio**: download from https://lmstudio.ai — hosts the brain model.
-- **Voicebox** (macOS primary TTS): the open-source cloning TTS app, REST API at `http://127.0.0.1:17493`.
 - A usable **camera** and **microphone** (with OS permission granted).
+- **One-time, on a machine with an NVIDIA GPU** (or Colab / AutoDL): extract the speaker embedding for voice cloning (see §7).
 
-### 2. Clone & create a virtual environment
+### 2. Clone & create a virtual environment (Python 3.11)
 
 ```bash
 git clone <your-repo-url> JAC && cd JAC
-python3 -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip
 ```
 
 ### 3. Install Python dependencies
 
 ```bash
-pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-> Note: `qwen-tts` is installed as a dependency (used only as the NVIDIA fallback TTS). No local TTS weights are downloaded — Voicebox is the macOS default.
+> Note: the memory subsystem now uses **ChromaDB** + **BGE-Small-ZH-v1.5 (ONNX INT8)**; `chromadb` and `onnxruntime` are project dependencies. No local TTS weights are downloaded — voice is produced by MiniCPM-o's built-in voice cloning.
 
 ### 4. Ensure FFmpeg is available
 
@@ -43,34 +45,57 @@ pip install -r requirements.txt
 python setup_ffmpeg.py      # copies an ffmpeg binary into the project root if missing
 ```
 
-Or install via Homebrew: `brew install ffmpeg`.
+Or `brew install ffmpeg`.
 
-### 5. (Optional) Pre-download the memory embedding model
+### 5. Build & launch the MiniCPM-o-4_5 full-duplex backend
 
-The memory subsystem uses `fastembed` with the default model
-`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`. It can auto-download on
-first run, but you may pre-fetch it:
+The perception / proactive-judgment tier is served by the OpenBMB full-duplex llama.cpp fork (`llama-cpm`), built with Metal:
 
 ```bash
-python new_computer_download/setup_new_computer.py --only embed
+# 1) Clone the OpenBMB full-duplex fork
+git clone https://github.com/OpenBMB/llama.cpp.git llama-cpm
+cd llama-cpm
+# 2) Build with Metal (M5 Pro has 18 CPU cores)
+make GGML_METAL=1 -j18
+# 3) Download the INT4 GGUF (~5.5 GB)
+huggingface-cli download openbmb/MiniCPM-o-4_5-gguf minicpm-o-4_5-q4_k_m.gguf --local-dir ./models
+# 4) Launch the full-duplex server (with your custom voice, see §7)
+./llama-server \
+  -m ./models/minicpm-o-4_5-q4_k_m.gguf \
+  --host 127.0.0.1 --port 8080 \
+  -ngl 999 -c 4096 -t 8 \
+  --mlock --no-mmap --flash-attn \
+  --tts-speaker-emb ./my_custom_voice.pt
 ```
 
-If download fails, memory automatically falls back to keyword retrieval — the main app still works.
+- **Metal (GPU), not MPS.** PyTorch MPS is buggy / OOM-prone for full-duplex streaming; GGML's Metal backend is the only stable, fast path on Apple Silicon. Do **not** load HF weights in PyTorch for full duplex.
+- Full-duplex uses a **WebSocket long connection** at `ws://127.0.0.1:8080/duplex` — **not** the standard OpenAI Chat API.
 
 ### 6. Load the brain model in LM Studio
 
-1. Open LM Studio → Search / load the model with identifier **`qwen/qwen3.6-35b-a3b`**.
-   - The identifier **must match exactly** (code matches it precisely; a different id won't be picked up).
-   - It is **natively multimodal** and **thinking is disabled** (`enable_thinking=False`).
+1. Open LM Studio → load the model with identifier **`qwen/qwen3.6-35b-a3b`** (identifier must match exactly; natively multimodal; thinking disabled).
 2. Start the local server on **`127.0.0.1:12345`** (Developer tab → Start Server).
-3. (Optional, for proactive mode) Also load **`minicpm-v-4_5`** in LM Studio. J.A.C. enables the judgment engine by default (`JUDGMENT_ENGINE_ENABLED=True`); if that model is not loaded, it auto-enters passive mode.
-   - Note: the judgment engine talks to LM Studio through the standard `chat/completions` API (image + text only). The **MiniCPM-o** full-duplex model is unrelated to it — it is served by llama.cpp-omni on `:9060` and is only used by the omni mode.
+3. (Optional) For long-running tasks, run the **cloud OpenClaw** (DeepSeek API, public address). Local runs work without it.
 
-### 7. Set up the TTS voice in Voicebox
+### 7. Set up the voice (one-time, needs an NVIDIA GPU)
 
-1. Install and launch **Voicebox**.
-2. Import `voices/silverwalf_voice.wav` and create a cloned voiceprofile named **`JAC`**.
-3. Voicebox auto-reuses the **JAC** profile; if the service is down, J.A.C. falls back to system `say -v Tingting`.
+Voice output is done by MiniCPM-o's built-in voice cloning. Extract a **speaker embedding** once on an NVIDIA machine:
+
+```python
+from transformers import AutoModel, AutoTokenizer
+import torch, torchaudio
+
+model = AutoModel.from_pretrained('openbmb/MiniCPM-o-4_5', trust_remote_code=True, torch_dtype=torch.float16).cuda()
+tokenizer = AutoTokenizer.from_pretrained('openbmb/MiniCPM-o-4_5', trust_remote_code=True)
+wav, sr = torchaudio.load("my_voice_sample.wav")   # 5–10 s clean voice, no background noise
+if sr != 16000:
+    wav = torchaudio.functional.resample(wav, sr, 16000)
+with torch.no_grad():
+    spk_emb = model.get_speaker_embedding(wav.cuda(), sr=16000)
+torch.save(spk_emb.cpu(), "my_custom_voice.pt")
+```
+
+Copy `my_custom_voice.pt` to your Mac, pass `--tts-speaker-emb ./my_custom_voice.pt` to `llama-server`, and the client `init` message activates it (`voice_id: "custom"`). ⚠️ The API parameter names can vary between `llama-cpm` versions — check `examples/duplex/README.md` in the branch you compiled.
 
 ### 8. Run
 
@@ -87,15 +112,16 @@ python new_computer_download/setup_new_computer.py          # all steps (auto ve
 python new_computer_download/setup_new_computer.py --dry-run   # preview only
 ```
 
+> ⚠️ The one-click helper currently provisions the **previous-architecture** dependencies (e.g. `fastembed`); it is **not yet updated** for ChromaDB / BGE-Small-ZH. Use the manual steps above until it is migrated.
+
 ### Troubleshooting (EN)
 
-- **Brain connection fails / all thinking errors**: LM Studio must be running with `qwen/qwen3.6-35b-a3b` loaded and the local server started at `127.0.0.1:12345`. The default `backend="lm_studio"`.
-- **TTS silent / Voicebox errors**: ensure the Voicebox app is running and reachable at `127.0.0.1:17493`. A wrong proxy can break Voicebox's HuggingFace access — disable problematic proxies for localhost.
-- **torch version**: the script installs the correct wheel per platform (macOS = MPS default; Linux/Windows = CPU unless `--torch cuda`). Do **not** mix CUDA/CPU wheels manually.
-- **PySide6 install 403 on mirror**: the Tsinghua mirror may return 403 for large packages; the helper auto-retries from official `pypi.org`. You can also run `pip install PySide6 -i https://pypi.org/simple`.
-- **fastembed pin**: pin `fastembed==0.5.1`. Newer versions have file mappings that don't match the HF mirror and cause 404s.
-- **Microphone / camera permission denied (macOS)**: grant access in System Settings → Privacy & Security → Microphone / Camera for the Terminal / app running the script.
-- **Embedding model download fails**: set `HF_ENDPOINT=https://huggingface.co` or use `--insecure` only on a trusted LAN (MITM risk). Memory degrades to keyword search.
+- **Backend won't start / no full-duplex**: build `llama-cpm` with `GGML_METAL=1`; verify `llama-server` listens on `127.0.0.1:8080`. Do **not** run via PyTorch/MPS.
+- **Brain connection fails / all thinking errors**: LM Studio must have `qwen/qwen3.6-35b-a3b` loaded and the server started at `127.0.0.1:12345`.
+- **No voice**: `--tts-speaker-emb ./my_custom_voice.pt` must point at a valid `.pt`, and the client `init` must set `voice_id`.
+- **ChromaDB memory growth**: batch-write summaries (cache ~5, one `collection.add()`); retrieve only at WS-init and after VAD end-of-sentence.
+- **Microphone / camera permission denied (macOS)**: grant access in System Settings → Privacy & Security → Microphone / Camera.
+- **Model downloads blocked (CN)**: use `HF_ENDPOINT=https://hf-mirror.com` for the GGUF / HF models.
 
 ---
 
@@ -103,29 +129,29 @@ python new_computer_download/setup_new_computer.py --dry-run   # preview only
 
 ### 前置条件
 
-- **系统**：macOS（主开发平台）。Windows/Linux 兼容代码保留，但不再保证 Windows 开发机跑通。
-- **Python**：3.10 或 3.11（兼容性最佳）。
-- **Homebrew**（macOS）：用于装 `portaudio` 与 `ffmpeg`。
+- **系统**：macOS（主开发平台，Apple Silicon）。Windows/Linux 兼容代码保留，但不再保证 Windows 开发机跑通。
+- **Python**：**3.11**（新架构锁定版本）。
+- **Xcode 命令行工具 + Homebrew**（macOS）：用于 `portaudio`、`ffmpeg` 与 Metal 编译链。
   ```bash
+  xcode-select --install
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  brew install ffmpeg portaudio
   ```
 - **LM Studio**：从 https://lmstudio.ai 下载，承载大脑模型。
-- **Voicebox**（macOS 主力 TTS）：开源克隆 TTS App，REST API 在 `http://127.0.0.1:17493`。
 - 可用的**摄像头**与**麦克风**（已在系统设置里授权）。
+- **一次性、需在有 NVIDIA GPU 的机器上**（或 Colab / AutoDL）：提取音色克隆的 speaker embedding（见「配置音色」）。
 
 ### 方法一：海外网络 / 官方源（最简单）
 
 ```bash
 git clone <你的仓库地址> JAC && cd JAC
-python3 -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 python setup_ffmpeg.py
-# 可选：预下载记忆 embedding 模型
-python new_computer_download/setup_new_computer.py --only embed
 ```
 
-然后按下方「加载模型」三步（LM Studio + Voicebox）操作后运行：
+然后按下方「① 编译后端 → ② 加载大脑 → ③ 配置音色」三步操作后运行：
 
 ```bash
 python main.py
@@ -133,11 +159,11 @@ python main.py
 
 ### 方法二：国内网络 / 镜像加速（推荐国内用户）
 
-国内访问 pypi.org / HuggingFace 常被墙或极慢，请用镜像。
+国内访问 pypi.org / HuggingFace / GitHub 常被墙或极慢，请用镜像。
 
 ```bash
 git clone <你的仓库地址> JAC && cd JAC
-python3 -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv && source .venv/bin/activate
 pip install --upgrade pip
 
 # 用清华镜像装依赖（大包如 PySide6 若镜像返回 403，脚本会自动回退官方源）
@@ -145,30 +171,63 @@ pip install -r requirements.txt \
   -i https://pypi.tuna.tsinghua.edu.cn/simple \
   --trusted-host pypi.tuna.tsinghua.edu.cn
 
-# ffmpeg 二进制（同样可走镜像）
+# ffmpeg 二进制
 python setup_ffmpeg.py
 
-# 可选：预下载记忆 embedding 模型（国内自动走 HF 镜像 hf-mirror.com）
-python new_computer_download/setup_new_computer.py --only embed
+# MiniCPM-o-4_5 GGUF 下载（国内走 HF 镜像 hf-mirror.com）
+HF_ENDPOINT=https://hf-mirror.com huggingface-cli download \
+  openbmb/MiniCPM-o-4_5-gguf minicpm-o-4_5-q4_k_m.gguf --local-dir ./models
 ```
 
-> **关于模型权重**：本项目**不在项目内下载任何本地 GGUF 或 TTS 权重**。大脑走 LM Studio、TTS 走 Voicebox，详见下方「加载模型」。
+> **关于模型权重**：本项目**不在项目内下载任何本地 GGUF / TTS 权重**。MiniCPM-o-4_5 的 GGUF 下载到 `llama-cpm/models/`（仓库外），大脑走 LM Studio，详见下方。
 
-### 加载模型（两种方法通用）
+### ① 编译并启动 MiniCPM-o-4_5 全双工后端
 
-**① 在 LM Studio 加载大脑**
+```bash
+# 1) 克隆面壁官方全双工分支
+git clone https://github.com/OpenBMB/llama.cpp.git llama-cpm
+cd llama-cpm
+# 2) 开 Metal 编译（M5 Pro 18 核 CPU 用满）
+make GGML_METAL=1 -j18
+# 3) 下载 INT4 量化 GGUF（约 5.5GB，国内加 HF_ENDPOINT=https://hf-mirror.com）
+huggingface-cli download openbmb/MiniCPM-o-4_5-gguf minicpm-o-4_5-q4_k_m.gguf --local-dir ./models
+# 4) 启动全双工 Server（带上你的自定义音色，见 ③）
+./llama-server \
+  -m ./models/minicpm-o-4_5-q4_k_m.gguf \
+  --host 127.0.0.1 --port 8080 \
+  -ngl 999 -c 4096 -t 8 \
+  --mlock --no-mmap --flash-attn \
+  --tts-speaker-emb ./my_custom_voice.pt
+```
 
-1. 打开 LM Studio → 搜索并加载标识符为 **`qwen/qwen3.6-35b-a3b`** 的模型。
-   - **标识符必须精确匹配**（代码按此 id 精确匹配；填错不会被识别）。
-   - 该模型**原生多模态**、且**禁用思考模式**（`enable_thinking=False`）。
+- **强制 Metal（GPU）而非 MPS**：PyTorch MPS 全双工流式有 Bug、易 OOM；GGML 的 Metal 后端是 Apple Silicon 上唯一稳定且极速的路径。**不要用 PyTorch 加载 HF 权重跑全双工。**
+- 全双工用 **WebSocket 长连接**（`ws://127.0.0.1:8080/duplex`），**不是**标准 OpenAI Chat API。
+
+### ② 在 LM Studio 加载大脑
+
+1. 打开 LM Studio → 加载标识符为 **`qwen/qwen3.6-35b-a3b`** 的模型（标识符必须精确匹配；原生多模态、禁用思考）。
 2. 在 Developer 页签启动本地服务器，地址 **`127.0.0.1:12345`**。
-3. （可选，开启主动模式）在 LM Studio 额外加载 **MiniCPM-o**；J.A.C. 默认开启判断引擎（`JUDGMENT_ENGINE_ENABLED=True`），不加载则自动进入被动模式。
+3. （可选）长时间任务：运行**云端 OpenClaw**（DeepSeek API，公网地址）。本地运行不依赖它。
 
-**② 在 Voicebox 配置 TTS 声纹**
+### ③ 配置音色（一次性，需 NVIDIA GPU）
 
-1. 安装并启动 **Voicebox**。
-2. 导入 `voices/silverwalf_voice.wav`，建立名为 **`JAC`** 的克隆声纹。
-3. Voicebox 会自动复用 **JAC** 声纹；服务未启动时自动回退系统 `say -v Tingting`。
+语音输出由 MiniCPM-o 自带音色克隆完成。在 NVIDIA 机器上一次性提取 **speaker embedding**：
+
+```python
+from transformers import AutoModel, AutoTokenizer
+import torch, torchaudio
+
+model = AutoModel.from_pretrained('openbmb/MiniCPM-o-4_5', trust_remote_code=True, torch_dtype=torch.float16).cuda()
+tokenizer = AutoTokenizer.from_pretrained('openbmb/MiniCPM-o-4_5', trust_remote_code=True)
+wav, sr = torchaudio.load("my_voice_sample.wav")   # 5~10 秒清晰人声、无背景噪音
+if sr != 16000:
+    wav = torchaudio.functional.resample(wav, sr, 16000)
+with torch.no_grad():
+    spk_emb = model.get_speaker_embedding(wav.cuda(), sr=16000)
+torch.save(spk_emb.cpu(), "my_custom_voice.pt")
+```
+
+把 `my_custom_voice.pt` 拷回 Mac，`llama-server` 加 `--tts-speaker-emb ./my_custom_voice.pt`，客户端 `init` 消息以 `voice_id: "custom"` 激活。⚠️ 不同版本 `llama-cpm` 的参数名可能略有差异，请查阅所编译分支 `examples/duplex/README.md`。
 
 ### 运行
 
@@ -185,22 +244,21 @@ python new_computer_download/setup_new_computer.py            # 全部步骤（�
 python new_computer_download/setup_new_computer.py --dry-run  # 仅预览，不改任何东西
 ```
 
-脚本默认走清华镜像；embedding 模型国内自动走 `HF_ENDPOINT=hf-mirror.com`。若仍报证书/吊销错误，可在可信内网用 `--insecure` 关闭 SSL 校验（有中间人风险，仅限可信局域网）。
+> ⚠️ 一键脚本目前仍按**旧架构依赖**（如 `fastembed`）安装，**尚未更新**为 ChromaDB / BGE-Small-ZH；脚本迁移前请用上方手动步骤。
 
 ### 排错（中文）
 
-- **大脑连不上 / 思考全部报错**：确认 LM Studio 已加载 `qwen/qwen3.6-35b-a3b` 并已在 `127.0.0.1:12345` 启动本地服务器（默认 `backend="lm_studio"`）。
-- **TTS 没声音 / Voicebox 报错**：确认 Voicebox App 已运行且能访问 `127.0.0.1:17493`。**本机代理**可能导致 Voicebox 连不上 HuggingFace——请对 localhost 关闭有问题的代理。
-- **torch 版本**：脚本按平台装对应 wheel（macOS = 默认 MPS；Linux/Windows = CPU，除非 `--torch cuda`）。不要手动混装 CUDA/CPU wheel。
-- **PySide6 在清华镜像 403**：大包可能在镜像返回 403，辅助脚本会自动回退官方源 `pypi.org` 重试；也可手动 `pip install PySide6 -i https://pypi.org/simple`。
-- **fastembed 版本**：钉死 **`fastembed==0.5.1`**。新版文件映射与 HF 镜像不匹配会导致 404。
+- **后端起不来 / 无全双工**：确认用 `GGML_METAL=1` 编译 `llama-cpm`，`llama-server` 监听 `127.0.0.1:8080`。不要走 PyTorch/MPS。
+- **大脑连不上 / 思考全部报错**：确认 LM Studio 已加载 `qwen/qwen3.6-35b-a3b` 并已在 `127.0.0.1:12345` 启动本地服务器。
+- **没声音**：`--tts-speaker-emb` 必须指向合法 `.pt`，且客户端 `init` 里 `voice_id` 已设置。
+- **ChromaDB 内存上涨**：批量写库（缓存约 5 条再一次 `collection.add()`）；检索只在 WS 建立发 init 前、VAD 判定说完一句后触发。
 - **麦克风 / 摄像头权限被拒（macOS）**：在「系统设置 → 隐私与安全性 → 麦克风 / 摄像头」给运行脚本的终端/App 授权。
-- **embedding 模型下载失败**：可设 `HF_ENDPOINT=https://huggingface.co`，或在可信局域网用 `--insecure`（有中间人风险）。记忆会自动降级为关键词检索，主功能不受影响。
+- **国内模型下载失败**：GGUF / HF 模型加 `HF_ENDPOINT=https://hf-mirror.com`。
 
 ---
 
 ## 一键脚本与本项目的关系 / How the one-click script fits
 
-`new_computer_download/setup_new_computer.py` 只负责**环境依赖**（Python 包、系统库、ffmpeg、可选 embedding 模型、外部软件加载指引）。**模型权重永远不在项目内下载**——大脑在 LM Studio、TTS 在 Voicebox、检测 `yolov8n.pt` 首次运行由 `ultralytics` 自动下载。
+`new_computer_download/setup_new_computer.py` 只负责**环境依赖**（Python 包、系统库、ffmpeg）。**模型权重永远不在项目内下载**——MiniCPM-o-4_5 的 GGUF 在 `llama-cpm/models/`（仓库外）、大脑在 LM Studio、检测 `yolov8n.pt` 首次运行由 `ultralytics` 自动下载。⚠️ 脚本尚未随新架构更新（仍装旧依赖 `fastembed`），迁移后改为装 `chromadb` / `onnxruntime` + BGE-Small-ZH。
 
-The `setup_new_computer.py` helper only provisions **environment dependencies** (Python packages, system libs, ffmpeg, optional embedding model, external-software guidance). **Model weights are never downloaded inside the project** — the brain lives in LM Studio, TTS in Voicebox, and `yolov8n.pt` auto-downloads via `ultralytics` on first run.
+The `setup_new_computer.py` helper only provisions **environment dependencies** (Python packages, system libs, ffmpeg). **Model weights are never downloaded inside the project** — the MiniCPM-o-4_5 GGUF lives in `llama-cpm/models/` (outside the repo), the brain lives in LM Studio, and `yolov8n.pt` auto-downloads via `ultralytics` on first run. ⚠️ The helper is **not yet updated** for the new architecture (still installs `fastembed`); after migration it installs `chromadb` / `onnxruntime` + BGE-Small-ZH.

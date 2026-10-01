@@ -5,6 +5,42 @@
 
 ---
 
+## 2026-10-01 — 新架构定案，全文档按新架构改写（未改代码）
+
+> **本次只改文档（`AGENTS.md` / `README.md` / `CHANGELOG.md` / `new_computer_download/READMEfirst.md`），未改任何一行代码。** bo s s 以 `brainstorming_projectPLAN/10月1日新架构.docx` 定案新架构，此后所有开发严格以此为准。
+
+### 一、新架构要点（权威基准，详见 `AGENTS.md`「新架构」节）
+
+三层模型：**MiniCPM-o-4_5（感知/主动判断 + 语音输出）→ qwen/qwen3.6-35b-a3b（大脑 + Tool Use/Agentic Coding + 文件输出）→ 云端 OpenClaw（DeepSeek API，长任务 + 文件输出）**。升级链：o-4_5 解决不了 → 调 qwen → 仍不够 → 交云端 OpenClaw。
+
+| 维度 | 新架构（目标） | 旧架构（当前代码，待迁移） |
+|---|---|---|
+| omni 后端 | OpenBMB `llama-cpm` 分支（Metal），GGUF **Q4_K_M**，`:8080`，`/duplex`，`-c 4096 -t 8 --flash-attn` | llama.cpp-omni master，GGUF **Q8_0**，`:9060`，`/backend`（OpenAI Realtime 风格），`-c 8192` |
+| 语音输出 | MiniCPM-o 原生音色克隆（speaker embedding `.pt` + `--tts-speaker-emb`） | Voicebox App（`:17493`）+ Qwen3-TTS + 系统 TTS |
+| 记忆 | **ChromaDB** + BGE-Small-ZH-v1.5（ONNX INT8）+ JSON | fastembed + paraphrase-multilingual-MiniLM + 自研 MemoryStore |
+| 模型层 | 三层（o-4_5 + qwen + 云端 OpenClaw） | 两层（o-4_5 + qwen，无 OpenClaw） |
+| 音频输入 | SoundDevice 实时重采样 16k/16bit/Mono | PyAudio + WebRTC VAD + Whisper 转写 |
+| 视频输入 | 独立后台线程 + 640×480 + 5~10fps + Queue | 主循环 1280×720 / omni 1 帧/秒 |
+| 判断引擎 | MiniCPM-o-4_5 全双工承担（不再单独轮询） | `src/judgment/judge.py` 用 `minicpm-v-4_5` 每 4s 轮询 |
+| 环境 | python3.11 | python3.10/3.11 |
+
+记忆两条性能铁律（新架构明确）：①ChromaDB 频繁 `add` 后内存不释放 → 客户端缓存 5 条摘要、满 5 条或会话结束批量 `collection.add()`；②`retrieve_memories` 严禁放音频回调 → 只在「WS 建立发 init 前」与「VAD 判定说完一句后」两处检索。
+
+### 二、本次文档改动
+
+- `AGENTS.md`：新增「新架构」权威定义节 + 「代码迁移状态」对照表，重写模型 / 记忆 / 输入 / 设置 / 已知限制等全部小节。
+- `README.md`：英文 + 中文双语全部按新架构改写（三层模型表、SoundDevice/640×480 输入、ChromaDB 记忆、llama-cpm 部署、DLC）。
+- `CHANGELOG.md`：本条记录 + 附 A 顶部加「新架构锚定」说明 + 附 C/D/E/F 加「旧记忆子系统（将被 ChromaDB 替代）」标注。
+- `new_computer_download/READMEfirst.md`：安装步骤按新架构（llama-cpm 编译、MiniCPM-o-4_5 GGUF、ChromaDB/BGE-Small-ZH、python3.11）改写。
+
+### 三、未改动
+
+- 未改任何 `.py` / 配置 / 依赖；`requirements.txt`、`src/`、`tests/` 均未动。
+- `brainstorming_projectPLAN/`、`codinglog_by_awaqwq233/` 未触碰（bo s s 手动维护）。
+- `deliverables/` 下 2026-07-22 两份历史工程交付物（code-review / design-memory）未改——属一次性历史存档，改写会破坏其时间快照意义。
+
+---
+
 ## 2026-10-01（晚）— 文档合并：差距笔记 + 记忆四份专项文档全量并入 CHANGELOG，并删除源文件
 
 > **本次只改文档，未改任何一行代码。** bo s s 原要求把 `codingLOG.md`、`docs/memory/schema.md`、`docs/memory_test_plan.md` 与 `docs/memory/` 下的子文档**全量并入**（不是折叠/摘要）并入 `AGENTS.md`，但核算体量后（合计约 1151 行 / 102KB，AGENTS.md 全量平铺会变成 ~1440 行）**改判为并入 `CHANGELOG.md`**；`docs/memory_test_plan.md` 需**先清理过时表述再并入**（「⚠️ 待架构师确认」的提议接口、§9.1 漂移矩阵结论均为 2026-07-22 的历史快照，照搬会让文档自相矛盾）。
@@ -63,6 +99,14 @@
 > 本附录承接原 `codingLOG.md` 全部内容。文件已删除，日后修订**直接改本附录**。
 > 注：本附录是"差距笔记"，不是精确实现状态。已落地的进展（主动判断引擎、多模态图像问答、多后端大脑）以 `AGENTS.md` 为准。
 
+> ⚠️ **新架构锚定（2026-10-01）**：bo s s 已定案新架构（`brainstorming_projectPLAN/10月1日新架构.docx`），本附录作为历史差距笔记保留，但以下条目的结论已被新架构**覆盖 / 改写**，勿再按旧口径执行：
+> - **A1 判断模型**：旧结论「judge 用 `minicpm-v-4_5` 标准 chat API 轮询」已作废——新架构由 MiniCPM-o-4_5 **全双工**承担主动判断（`llama-cpm` 分支 + `/duplex`），`src/judgment/judge.py` 的轮询式 judge **待移除**。
+> - **A3 记忆**：旧结论「fastembed + JSON 长期记忆」已作废——新架构改 **ChromaDB + BGE-Small-ZH-v1.5（ONNX INT8）+ JSON**，`src/memory/`（自研 MemoryStore）**待重写**；附 B/C/D/E/F 为旧记忆子系统契约，仅作历史存档。
+> - **A5 云端 / OpenClaw**：旧结论「无 MCP / OpenClaw 集成」已作废——新架构**新增云端 OpenClaw 层**（DeepSeek API），属待实现项。
+> - **A4 语音 / TTS**：旧结论「Voicebox + Qwen3-TTS 兜底」已作废——新架构语音输出由 MiniCPM-o **自带音色克隆**（speaker embedding）承担，Voicebox 依赖待移除。
+> - **A4 后端参数**：旧结论「llama.cpp-omni `:9060` Q8_0 `-c 8192`」已作废——新架构为 OpenBMB `llama-cpm` `:8080` Q4_K_M `-c 4096 --flash-attn`。
+> 其余历史坑位记录（令牌碎片、背压、回声门控等）作为工程经验保留，但在新架构后端 / 协议下需**重新验证**。
+
 #### A1. 交互方式：从被动到主动（部分解决）
 
 - **目标**：唤醒词 + VAD，能自动判断你什么时候说完话，无需物理按键；最终实现持续主动感知与闭环介入。
@@ -116,6 +160,8 @@
 ---
 
 ### 附 C · 记忆子系统测试计划与实现真值（原 `docs/memory_test_plan.md`，**已清理过时表述后并入**）
+
+> ⚠️ **旧记忆子系统（2026-10-01 标注）**：本附录描述的是旧记忆实现（fastembed + 自研 `MemoryStore`）。新架构已定案改用 **ChromaDB + BGE-Small-ZH-v1.5（ONNX INT8）+ JSON**，`src/memory/` 将重写，本附录仅作历史存档，勿据此开发新记忆功能。
 
 > 原作者：泰莎 (Tessa)，测试专家。原文件写于「设计阶段」，§2 是**提议的约定接口**、§9.1 是 2026-07-22 的**实现漂移快照**。本次并入前已按 `src/memory/` 代码真值全部改写（见本文件「二、清理了什么」表），下文所有「真值」均指 2026-10-01 核对结果。
 
@@ -291,6 +337,8 @@ class MemoryManager:                          # src/memory/manager.py
 
 ### 附 D · 记忆功能用户指南（原 `docs/memory/README.md`，已并入）
 
+> ⚠️ **旧记忆子系统（2026-10-01 标注）**：本附录描述旧记忆实现（fastembed + `MemoryStore`）。新架构已改 **ChromaDB + BGE-Small-ZH-v1.5 + JSON**，本附录仅作历史存档。
+
 > J.A.C. 会**记住**关于你的一些关键事实，让以后的对话更懂你。记忆全部存在**你自己的电脑上**，不上传任何服务器。
 
 **记忆的 5 类（`kind`）**
@@ -325,6 +373,8 @@ class MemoryManager:                          # src/memory/manager.py
 ---
 
 ### 附 E · 记忆功能隐私说明（原 `docs/memory/privacy.md`，已并入）
+
+> ⚠️ **旧记忆子系统（2026-10-01 标注）**：本附录描述旧记忆实现（fastembed + `MemoryStore`）。新架构已改 **ChromaDB + BGE-Small-ZH-v1.5 + JSON**，本附录仅作历史存档。
 
 #### E1. 核心隐私承诺
 
@@ -383,6 +433,8 @@ class MemoryManager:                          # src/memory/manager.py
 ---
 
 ### 附 F · 记忆功能 Runbook（原 `docs/memory/runbook.md`，已并入）
+
+> ⚠️ **旧记忆子系统（2026-10-01 标注）**：本附录描述旧记忆实现（fastembed + `MemoryStore`）。新架构已改 **ChromaDB + BGE-Small-ZH-v1.5 + JSON**，本附录仅作历史存档。
 
 #### F1. 何时用本 Runbook
 
