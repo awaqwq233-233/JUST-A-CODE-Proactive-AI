@@ -36,6 +36,13 @@ class Config:
     # OMNI 模式下跳过传统 Voicebox TTS / Whisper STT / MiniCPM-v 判断引擎，
     # 由 omni 直接做「看 + 听 + 说」。默认关闭，验证前传统模式完全可用。
     omni_enabled: bool = False
+    omni_backend: str = "gateway"                     # gateway（方案 B）| legacy（旧实现）
+    gateway_url: str = "ws://127.0.0.1:8006"
+    gateway_session_seconds: int = 240
+    gateway_consent_devices: bool = False
+    gateway_input_device: int | None = None
+    gateway_output_device: int | None = None
+    gateway_camera: int = 0
     omni_server_url: str = "ws://127.0.0.1:9060/backend"   # WS 地址（master 分支 /backend）
     omni_server_bin: str = ""                              # 二进制路径（留空自动探测）
     omni_model_dir: str = ""                              # 含 MiniCPM-o-4_5-<quant>.gguf 及其子模型目录
@@ -117,6 +124,13 @@ class Config:
             tools_enabled=truthy("TOOLS_ENABLED", True),
             stt_language=os.environ.get("STT_LANGUAGE", "zh"),
             omni_enabled=truthy("OMNI_ENABLED", False),
+            omni_backend=os.environ.get("OMNI_BACKEND", "gateway"),
+            gateway_url=os.environ.get("JAC_GATEWAY_URL", "ws://127.0.0.1:8006"),
+            gateway_session_seconds=int(os.environ.get("JAC_GATEWAY_SESSION_SECONDS", "240")),
+            gateway_consent_devices=truthy("JAC_CONSENT_DEVICES", False),
+            gateway_input_device=int(os.environ["JAC_INPUT_DEVICE"]) if os.environ.get("JAC_INPUT_DEVICE") else None,
+            gateway_output_device=int(os.environ["JAC_OUTPUT_DEVICE"]) if os.environ.get("JAC_OUTPUT_DEVICE") else None,
+            gateway_camera=int(os.environ.get("JAC_CAMERA", "0")),
             omni_server_url=os.environ.get("OMNI_SERVER_URL", "ws://127.0.0.1:9060/backend"),
             omni_server_bin=os.environ.get("LLAMA_OMNI_SERVER_BIN", ""),
             omni_model_dir=os.environ.get("OMNI_MODEL_DIR", ""),

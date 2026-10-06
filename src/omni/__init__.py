@@ -12,12 +12,25 @@
 设计要点：omni 是「耳朵 + 眼睛 + 嘴巴」，qwen+tools 是「大脑 + 手」，
 二者职责分离（详见项目根 AGENTS.md / 升级计划）。
 """
-from .client import OmniClient, OmniCallbacks
-from .server_launcher import OmniServerLauncher
-from .prompts import SYSTEM_PROMPT, build_omni_system_prompt, TOOL_SYSTEM_PROMPT
-from .router import EscalationRouter, parse_call_qwen
+from importlib import import_module
+
+
+def __getattr__(name):
+    """按需导入新旧后端，Gateway 路径无需加载 PyAudio、Voicebox 或大脑。"""
+    modules = {"OmniClient": ".client", "OmniCallbacks": ".client",
+               "OmniServerLauncher": ".server_launcher", "SYSTEM_PROMPT": ".prompts",
+               "TOOL_SYSTEM_PROMPT": ".prompts", "build_omni_system_prompt": ".prompts",
+               "EscalationRouter": ".router", "parse_call_qwen": ".router",
+               "GatewayClient": ".gateway_client", "GatewayCallbacks": ".gateway_client"}
+    if name not in modules:
+        raise AttributeError(name)
+    value = getattr(import_module(modules[name], __name__), name)
+    globals()[name] = value
+    return value
 
 __all__ = [
+    "GatewayClient",
+    "GatewayCallbacks",
     "OmniClient",
     "OmniCallbacks",
     "OmniServerLauncher",

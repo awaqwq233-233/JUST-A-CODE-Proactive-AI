@@ -1,5 +1,11 @@
-import cv2
 import sys
+
+# 新入口在旧架构重量级导入前分流，可直接使用独立 Python 3.11 环境。
+if __name__ == "__main__" and "--gateway" in sys.argv:
+    from src.omni.gateway_cli import main as gateway_main
+    raise SystemExit(gateway_main([arg for arg in sys.argv[1:] if arg != "--gateway"]))
+
+import cv2
 import time
 import threading
 import queue

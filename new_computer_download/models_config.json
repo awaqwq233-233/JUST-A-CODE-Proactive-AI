@@ -5,7 +5,7 @@
     "感知与主动判断": "MiniCPM-o-4_5 Q4_K_M，固定 Gateway / Worker / C++ Metal，ws://127.0.0.1:8006/v1/realtime?mode=video",
     "音色": "voices/silverwalf_voice.wav，经 session.init.payload.voice 发送 16k float32 PCM Base64",
     "记忆": "JSON 真源 + ChromaDB 索引 + BGE-Small-ZH-v1.5 ONNX INT8，主程序尚待迁移",
-    "安装入口": "setup_new_computer.py --only m0 创建独立 .cache/m0/venv；以下旧指引仅对应尚未迁移的生产入口"
+    "安装入口": "setup_new_computer.py --only gateway（兼容 --only m0）创建独立 Python 3.11 .cache/m0/venv，安装 M0/M1 后端控制与 Qt GUI 依赖并自检；随后 main.py --gateway --gui。以下旧指引仅对应 legacy 模式"
   },
   "说明": "J.A.C. 不再在项目中下载/存放任何本地大模型权重。大脑模型由用户在 LM Studio 中加载并运行，TTS 由用户在 Voicebox App 中加载（JAC 声纹 + silverwalf_voice.wav），YOLOv8 检测模型在首次运行时由 ultralytics 自动下载到项目根目录。本配置文件仅作说明用途，setup_new_computer.py 不再执行任何模型下载步骤。",
   "模型来源": {

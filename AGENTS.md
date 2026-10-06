@@ -18,7 +18,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 
 ## 新架构（2026-10-01 定案，2026-10-06 方案 B 修订）
 
-> bo s s 已确认方案 B：保留三层模型架构，第一层改用固定版本的官方 MiniCPM-o-Demo Gateway / Worker 与 `tc-mb/llama.cpp-omni` Metal 引擎。权威 DOCX 为 `brainstorming_projectPLAN/10月1日新架构.docx`，精确版本、模型 SHA256 和协议参数记录在 `backend.lock.json`。**主程序仍是旧实现，当前处于 M0 验证阶段。**
+> bo s s 已确认方案 B：保留三层模型架构，第一层使用固定版本官方 MiniCPM-o-Demo Gateway / Worker 与 `tc-mb/llama.cpp-omni` Metal。权威 DOCX 为 `brainstorming_projectPLAN/10月1日新架构.docx`，精确版本、模型 SHA256 和协议参数记录在 `backend.lock.json`。**M0 经用户确认通过并免做 30 分钟长测，当前进入 M1，新增生产 Gateway 听看说入口；其余模块仍待迁移。**
 
 ### 一、三层模型架构
 
@@ -92,21 +92,21 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 ---
 
-## 代码迁移状态（旧架构 → 新架构，待改造）
+## 代码迁移状态（旧架构 → 新架构，M1）
 
-> 本小节如实记录「当前代码」与「新架构」的对应关系。**代码尚未迁移**，以下每一项均为待办改造点；详细差距见 `CHANGELOG.md` 附 A（已按新架构口径改写）。
+> M1 已接入独立 Gateway 生产路径；传统与 legacy omni 保留兼容入口，其余改造点按下表推进。详细差距见 `CHANGELOG.md` 附 A。
 
 | 维度 | 新架构（目标） | 当前代码（旧实现） | 迁移动作 |
 |---|---|---|---|
-| omni 后端 | 固定版本 Gateway / Worker / C++ Metal，Q4_K_M，`:8006/v1/realtime?mode=video` | 旧 llama.cpp-omni Q8_0，`:9060/backend` | M0 后端与探针独立验证后接线 |
+| omni 后端 | 固定版本 Gateway / Worker / C++ Metal，Q4_K_M，`:8006/v1/realtime?mode=video` | 新 `GatewayClient` 已接入 `main.py --gateway` 和轻量 GUI；旧入口保留 | 继续验证生产设备与升级接线 |
 | 上下文/参数 | 起始 `-c 4096 -t 8 -ngl 99` | `-c 8192` | 真机确认资源与实时性 |
-| 语音输出 | 参考 WAV Base64 + 原生 24k float32 PCM | Voicebox App（REST `:17493`）+ Qwen3-TTS + 系统 TTS | 原生闭环通过后移除旧 TTS |
+| 语音输出 | 参考 WAV Base64 + 原生 24k float32 PCM | Gateway 使用原生参考音与 SoundDevice 播放；旧模式仍用旧 TTS | 旧模式退役时清理依赖 |
 | 记忆 | **ChromaDB** + BGE-Small-ZH-v1.5（ONNX INT8） + JSON | fastembed + paraphrase-multilingual-MiniLM + 自研 MemoryStore | 重写 `src/memory/` |
 | 模型层数 | 三层（o-4_5 + qwen + 云端 OpenClaw） | 两层（o-4_5 + qwen，无 OpenClaw） | 新增云端 OpenClaw 通道 |
-| 音频输入 | SoundDevice + 16k float32 mono + 固定 1 秒块 | PyAudio + WebRTC VAD | 改采集层，保留并行转写 |
-| 视频输入 | 独立线程 640×480、采集 5~10fps、默认每秒上行最新 1 帧 | 1280×720，omni 1 帧/秒 | 采集与 GUI/上行解耦 |
-| 运行环境 | Python 3.11 | 现有 `.venv` 为 3.13；M0 独立 `.cache/m0/venv` 为 3.11 | 新环境通过后再切换 |
-| 判断引擎 | 由 MiniCPM-o-4_5 全双工承担（不再单独轮询） | `src/judgment/judge.py` 用 `minicpm-v-4_5` 标准 chat API 每 4s 轮询 | 移除 judge 轮询，并入 o 版全双工 |
+| 音频输入 | SoundDevice + 16k float32 mono + 固定 1 秒块 | Gateway 已接入；旧路径仍用 PyAudio | 并行 VAD/Whisper 转写待接入 |
+| 视频输入 | 独立线程 640×480、采集 5~10fps、默认每秒上行最新 1 帧 | Gateway 使用线程采集与独立 GUI 帧缓冲；旧路径仍为 1280×720 | 后续设备验收与旧路径退役 |
+| 运行环境 | Python 3.11 | Gateway CLI/GUI 已使用 `.cache/m0/venv` 3.11；旧 `.venv` 3.13 保留 | 旧模式退役时再清理环境 |
+| 判断引擎 | 由 MiniCPM-o-4_5 全双工承担（不再单独轮询） | Gateway 不启动 judge 轮询；传统路径保留 | 旧模式退役时删除 judge |
 
 ## 文档同步硬性规定（Agent 必读）
 
@@ -123,18 +123,20 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 - 检查 `.gitignore` 是否需要新增忽略（如新增大体积/二进制产物）。
 - 推送包含用户明确允许的模板 `voices/silverwalf_voice.wav`，不含模型、`brainstorming_projectPLAN/` 或测试录音录像。忽略规则不影响已跟踪文件，需停止跟踪但保留本地文件；尚未推送的提交也必须检查，避免排除文件随历史上传。已发布历史的清理须另行授权，不自动强推。
-- 检查 `requirements.txt` 是否新增依赖；若有，同步更新 `new_computer_download/` 下的一键安装脚本与 `new_computer_download/READMEfirst.md`。
+- 每次代码/配置修改后检查依赖与运行方式变化，同步检查 `requirements.txt`、独立依赖清单、`new_computer_download/` 一键安装脚本和 `READMEfirst.md`，确保其他机器可按文档安装。新增或改变依赖时必须更新对应安装阶段与安装后自检，不只修改当前机器环境；没有相关变化时在日志说明已检查、无需调整。
 - `codinglog_by_awaqwq233/` 仍只由 bo s s 手动维护，Agent 不得自动编辑；`brainstorming_projectPLAN/` 已获准由 Agent 按 bo s s 确认的架构决策编辑和同步。
 - **开发平台**：当前以 macOS（Apple Silicon）为主开发机，保持跨平台兼容代码；Windows 开发机已不再使用。
 
 ## 当前开发状态（2026-10-06 更新）
 
-> 结论先行：**新架构已定案（`10月1日新架构.docx`），项目由「暂停审视」转入「按新架构重新实施」阶段**。**代码尚未迁移**，当前代码基线仍为旧架构（全量回归 134 passed），文档已先行为新架构打底。
+> **M0 已由 bo s s 确认通过，30 分钟长测明确免测；当前执行 M1 生产接入。** 新旧入口并存，工具升级、云端和记忆尚未迁移。
 
-- **方案 B 已确认**：三层模型不变；第一层使用固定版本官方 Gateway / Worker + llama.cpp-omni Metal，Q4_K_M、`:8006/v1/realtime?mode=video`、原生参考音频克隆。当前独立执行 M0，生产入口尚未切换。
+- **M1 Gateway 入口**：`main.py --gateway`（终端）、`main.py --gateway --gui`（GUI），使用 Python 3.11 独立环境；后端须先由固定版本启动器启动，客户端不接管现有后端进程。GUI 懒加载新旧运行时，Gateway 不依赖旧 torch/PyAudio/Voicebox/YOLO。默认 `omni_backend=gateway`，旧模式可选择 `legacy`。
 - **M0 文件**：`backend.lock.json`、`verify_duplex.py`、`new_computer_download/start_m0_backend.py`、`new_computer_download/requirements-m0.txt`。后端源码、模型和测试运行产物不提交到 Git。
-- **M0 已验证**：文件音频/视频协议、原生音频返回、40 秒真机采集播放与清理、10 次设备/WS 快速启停；真机处理 P95 679ms、播放 31 秒、音频队列最高 1 块。bo s s 确认可听且内容相关。33 项独立离线测试通过。30 分钟长测按用户要求后续进行，主程序保持旧架构。
-- **短时设备探针**：`verify_live_duplex.py` 必须显式 `--consent-devices` 且戴耳机。macOS 首次摄像头权限在启动主线程申请；帧读取/编码仍在独立线程。探针不保存原始媒体，使用后释放设备。
+- **M0 已通过（用户验收）**：文件协议、40 秒真机、10 次启停和后续两段各 225 秒通过；累计上行 450 秒、P95 679/891ms、原生音频收播合计 176.2 秒，异常为零。bo s s 明确认可短测效果并免做 30 分钟长测，不再以该项阻塞迁移；原始报告保留 `soak_30min_verified=false`，不伪造未执行的测量。
+- **M1 会话重建**：默认每 240 秒上行后受控关闭、释放设备和重连；重新注入参考音、已确认上下文、有界助手历史。段间采集暂停并显示状态；未转写的用户语音不能完整恢复，不声称无缝或无限单会话。启动保护通过 `force_listen` 保留真实音频，不把用户输入换成静音。
+- **M1 验证**：Python 3.11 专项现为 49 项通过（含新增 5 项离屏启停回归），GUI 渲染/控件与安装自检通过；新生产入口两次真实后端文件会话共 40 块、原生音频 5.64 秒、P95 977ms。bo s s 随后确认真机听看说正常，仅停止重启后 GUI 预览黑屏；已修复帧定时器恢复与 Qt 主线程状态通知，真实画面修复待用户重开 GUI 复验。
+- **设备探针**：`verify_live_duplex.py`（短测）和 `verify_soak_duplex.py`（长测）必须显式 `--consent-devices` 且戴耳机。macOS 首次摄像头权限在启动主线程申请；帧读取/编码仍在独立线程。探针不保存原始媒体，使用后释放设备。长测保持同一组后端常驻，8 段累计 1800 秒上行，每段 225 秒，段间重开设备；不代表单会话无限运行或上下文恢复已完成。
 - **旧架构已定性的 MiniCPM-o 能力天花板**（历史结论，仍有效，作为新架构「为何换后端分支/参数」的动机留存）：
   1. **视觉分辨率仅 grid 1x1 / 64 视觉 token**（服务端日志 `image encoded ... grid: 1x1`），细节视觉问答不可行（真机曾把 boss 本人误判成"电脑桌面"）。
   2. **音频理解（ASR）质量差**：内建麦离嘴远、人声 RMS 仅 0.03~0.065，模型听不清寒暄，会从 prompt 示例里"捡"输出。
@@ -144,7 +146,7 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 ## 重要文件与目录
 
-- `main.py`：多模态运行主入口（旧架构，待按新架构改造）。
+- `main.py`：主入口；`--gateway` 在旧重依赖导入前分流到方案 B CLI/GUI，其余传统入口保留。
 - `src/capture/camera.py`：摄像头封装（旧：主循环 1280×720；新架构改独立线程 640×480）。
 - `src/analysis/detector.py`：YOLOv8 检测器封装。
 - `src/audio/recorder.py`：VAD 麦克风录音（旧：PyAudio + WebRTC VAD；新架构改 SoundDevice）。
@@ -154,11 +156,12 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 - `src/tools/`：Function Calling 工具层（装手）——新架构中归属大脑层 `qwen/qwen3.6-35b-a3b` 的 Tool Use / Agentic Coding。
 - `src/judgment/judge.py`：旧架构的独立主动判断引擎（`minicpm-v-4_5` 每 4s 轮询）——**新架构中该职责由 MiniCPM-o-4_5 全双工承担，此模块待移除**。
 - `src/memory/`：旧架构记忆子系统（fastembed + 自研 MemoryStore）——**新架构改 ChromaDB + BGE-Small-ZH-v1.5，此目录待重写**。
-- `src/omni/`：旧架构全双工模块；目标为固定版本 Gateway Realtime 协议和原生 TTS，待 M0 通过后拆分重写。
+- `src/omni/`：新 Gateway 客户端/协议/设备/桌面运行时，与旧全双工实现并存；懒导入避免新入口加载旧重依赖。
 - `voices/silverwalf_voice.wav`：方案 B 原生音色参考 WAV，启动会话时编码发送给本机 Gateway。
 - `backend.lock.json`：后端与模型精确版本、SHA256、端口及协议配置。
 - `verify_duplex.py`：独立 M0 协议/媒体文件探针，不调用生产运行时，也不打开麦克风或摄像头。
 - `verify_live_duplex.py`：明确授权后使用本机设备的短时 M0 探针，不改生产入口、不保存原始媒体。
+- `verify_soak_duplex.py`：明确授权后的 M0 分会话长测，记录健康/RSS 与逐段统计，失败也保存报告。
 - `new_computer_download/start_m0_backend.py`：固定版本校验、模型预检、启动本机三进程与回收。
 - `temp/`：运行时临时音频文件。
 - `requirements.txt` / `requirements_fixed.txt`：依赖快照。
@@ -188,7 +191,7 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 ## 设置与运行
 
-完整步骤见 **`new_computer_download/READMEfirst.md`**。M0 用 `python3.11 -m venv .cache/m0/venv` 和独立 `requirements-m0.txt`，保留现有 `.venv`。按 lock 编译外部引擎，再用 `start_m0_backend.py` 启动、`verify_duplex.py` 验证。**`python main.py` 仍运行旧架构，不能作为方案 B 验收。**
+完整步骤见 **`new_computer_download/READMEfirst.md`**。安装器 `--only gateway`（兼容 `--only m0`）建立 `.cache/m0/venv` Python 3.11，安装 `requirements-m0.txt`（已含 Qt GUI）并执行导入自检，保留现有 `.venv`。先用 `start_m0_backend.py` 启动后端，再运行 `main.py --gateway --gui` 或经设备同意的终端入口。不带 `--gateway` 的终端模式仍为传统实现。
 
 ### 运行前置条件
 
@@ -212,9 +215,9 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 ## 已知限制（当前代码，待新架构落地后重新评估）
 
-- 当前代码仍为**旧架构**：omni 走 llama.cpp-omni `:9060`（Q8_0）、语音走 Voicebox、记忆走 fastembed + MemoryStore、判断引擎走 `minicpm-v-4_5` 轮询——**与已定案新架构不一致，属待迁移项**，勿据此误判新架构。
+- 新 Gateway 入口已迁移听看说与 GUI，但旧模式仍保留 `:9060`、Voicebox、旧记忆和 judge。M1 Gateway 尚未接入 Qwen 工具升级、并行转写、ChromaDB 或 OpenClaw。
 - 运行依赖外部软件（LM Studio / 固定版本 Gateway、Worker、llama-omni-server / 可选云端 OpenClaw）。
-- 方案 B M0 的文件探针不能证明实时麦克风、摄像头、播放听感、10 次启停或 30 分钟稳定性；这些仍需要后续真机验证。
+- M0 基于已有真机验证与 bo s s 明确验收通过；30 分钟稳定性免测，不作为阻塞项。M1 文件回放不等于新增生产 GUI/设备的真机听感验收。
 - 旧架构 STT 仍为 Whisper tiny 非流式；旧架构 TTS 为句子级桥接而非 token 级（新架构语音输出改 o 版自带 TTS 后此限制重新评估）。
 - 无 WebRTC AEC（新架构以戴耳机规避回声，AEC 需求待重新评估）。
 - 无云端 OpenClaw 集成（新架构新增项，代码未落地）。

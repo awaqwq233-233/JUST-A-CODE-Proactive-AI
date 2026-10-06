@@ -88,6 +88,20 @@ class _OmniRuntimeCallbacks(OmniCallbacks):
         print(f"[OMNI] 错误: {err}")
 
 
+class _GatewayRuntimeCallbacks(_OmniRuntimeCallbacks):
+    """兼容现有 GUI 状态/文本显示，并在错误时解除运行状态。"""
+
+    def on_state(self, state, info=None):
+        """重连明确暂停显示，终止错误同步到 GUI 按钮状态。"""
+        super().on_state(state, info)
+        if state in ("connecting", "reconnecting"):
+            self.context.is_listening = self.context.is_speaking = False
+        if state == "error":
+            self.runtime.running = main.running = False
+            self.runtime.omni_mode = False
+            self.runtime._notify(False)
+
+
 class JACRuntime:
     def __init__(self, context=None, on_state_change=None):
         # 使用 main 模块级全局 context（process_response / 音频线程都读它），
@@ -116,6 +130,7 @@ class JACRuntime:
 
     # ---------------------------------------------------------------- 生命周期
     def start(self, config: Config):
+        """按配置启动传统或全双工流水线，并将启动结果通知 GUI。"""
         if self.running:
             return
         main.running = True
@@ -140,7 +155,14 @@ class JACRuntime:
         #    omni 自己完成「看 + 听 + 说」，qwen+tools 仅作为升级后端（M2 接入）。
         #    M7b/M7a 起主对话与回灌改用本地 Voicebox 克隆声纹（替代 omni 自带无克隆 TTS）。
         if config.omni_enabled:
-            self._start_omni(config)
+            if config.omni_backend == "gateway":
+                self._start_gateway(config)
+            elif config.omni_backend == "legacy":
+                self._start_omni(config)
+            else:
+                self.running = main.running = False
+                self._notify(False)
+                raise ValueError("未知 OMNI 后端，请选择 gateway 或 legacy")
             return
 
         # 1) 摄像头（采集分辨率固定，绝不被 GUI 缩放影响）
@@ -217,6 +239,44 @@ class JACRuntime:
         self._notify(True)
 
     # ---------------------------------------------------------------- OMNI 全双工模式
+    def _start_gateway(self, config: Config):
+        """接入方案 B 音视频/原生播放，后端由固定版本启动器独立管理。"""
+        from src.omni.gateway_client import GatewayClient
+
+        if not config.gateway_consent_devices:
+            self.running = main.running = False
+            self._notify(False)
+            print("[Gateway] 请先勾选设备同意并戴好耳机。")
+            return
+        root = os.path.dirname(os.path.abspath(main.__file__))
+        ref = config.omni_ref_audio
+        if not os.path.isabs(ref):
+            ref = os.path.join(root, ref)
+        self.omni_mode = True
+        main.JUDGMENT_ACTIVATED = False
+        self.speaker = None
+        self.omni_client = GatewayClient(
+            url=config.gateway_url, ref_audio_path=ref,
+            callbacks=_GatewayRuntimeCallbacks(self), consent_devices=True,
+            input_device=config.gateway_input_device, output_device=config.gateway_output_device,
+            camera=config.gateway_camera,
+            video_fps=config.omni_fps, video_enabled=config.omni_video_enabled,
+            mic_gain=config.omni_mic_gain, session_seconds=config.gateway_session_seconds,
+            context_provider=self._gateway_context,
+        )
+        print("[Gateway] 连接方案 B 后端；此阶段提供听、看和原生语音，工具升级待后续接入。")
+        if not self.omni_client.start(timeout=180):
+            self.omni_client.stop()
+            self.omni_client = None
+            self.running = main.running = self.omni_mode = False
+            self._notify(False)
+            return
+        self._notify(True)
+
+    def _gateway_context(self) -> str:
+        """只提供已有、已确认的转写文本；不把模型回复误作用户输入。"""
+        return self.context.get_recent_transcriptions(window=300)
+
     def _start_omni(self, config: Config):
         """OMNI 模式启动：起服务（按需）→ 建 OmniClient → 全双工闭环。
 
@@ -515,6 +575,9 @@ class JACRuntime:
         # 带 messages（ws_handler.cpp:1075），故手动文字无法注入。升级仅由 omni 语音流
         # 里的 <<CALL_QWEN>> 令牌触发（M2 已接入），经 qwen+tools 处理后回灌播报。
         if self.omni_mode and self.omni_client is not None:
+            if self.config.omni_backend == "gateway":
+                print("[Gateway] 当前 M1 请使用语音交流；文字任务与 Qwen 工具升级尚未接入。")
+                return
             print("[OMNI] 全双工模式请用语音与 J.A.C. 交流；"
                   "手动文字指令不支持（full_duplex 禁文本注入），"
                   "如需升级能力请直接对 J.A.C. 说话触发 <<CALL_QWEN>>。")
