@@ -18,3 +18,4 @@ Pygments==2.19.2
 pytest==8.4.2
 pytest-cov==7.0.0
 pytest-timeout==2.4.0
+PySide6==6.11.2  # 已验证的 M1 Gateway GUI；生产 requirements.txt 已包含同一桌面依赖

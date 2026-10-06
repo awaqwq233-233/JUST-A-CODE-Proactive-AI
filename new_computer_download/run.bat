@@ -1,7 +1,8 @@
 @echo off
+chcp 65001 >nul
 REM J.A.C. 新电脑一键依赖补全 —— Windows 启动器
 REM 用法：双击本文件，或在 CMD/PowerShell 中运行  run.bat
-REM 可附带参数原样传给 setup_new_computer.py，例如：run.bat --skip-models
+REM 可附带参数原样传给 setup_new_computer.py，例如：run.bat --only gateway
 
 cd /d "%~dp0"
 

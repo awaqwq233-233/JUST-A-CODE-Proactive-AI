@@ -29,7 +29,8 @@ J.A.C. 新电脑「一键依赖补全」工具
 ----------------
   python setup_new_computer.py                 # 默认：全部补全（自动建 venv）
   python setup_new_computer.py --only pip      # 只装 Python 包
-  python setup_new_computer.py --only m0       # 方案 B：独立 Python 3.11 环境与 M0 依赖
+  python setup_new_computer.py --only gateway  # 方案 B：独立 Python 3.11 环境、后端控制与 GUI
+  python setup_new_computer.py --only m0       # gateway 的兼容别名
   python setup_new_computer.py --only external # 只打印外部 AI 软件（LM Studio / Voicebox）加载指引
   python setup_new_computer.py --only embed    # 只预下载记忆 embedding 模型
   python setup_new_computer.py --skip-embed    # 跳过 embedding 模型（首次运行 main.py 时自动联网下）
@@ -558,8 +559,8 @@ def step_verify(args):
 # 主流程
 # ----------------------------------------------------------------------------
 def step_m0(args):
-    """建立独立 3.11 M0 环境，保留生产 .venv，并支持无副作用预览。"""
-    hr("方案 B M0 独立环境")
+    """建立独立 3.11 M0/M1 环境（含 Gateway GUI），保留生产 .venv。"""
+    hr("方案 B M0/M1 独立环境")
     interpreter = sys.executable if sys.version_info[:2] == (3, 11) else shutil.which("python3.11")
     if not interpreter:
         log("M0 需要 Python 3.11，请先安装 python3.11。")
@@ -586,7 +587,23 @@ def step_m0(args):
     if result.returncode and index != OFFICIAL_PIP_INDEX:
         log("M0 镜像安装失败，回退官方源。")
         result = run_cmd(command[:-1] + [OFFICIAL_PIP_INDEX], check=False)
-    return result.returncode == 0
+    if result.returncode:
+        return False
+    verification = run_cmd(
+        [m0_python, "-c", "import sys; from src.omni import GatewayClient; "
+         "from PySide6.QtWidgets import QApplication; import httpx, fastapi, uvicorn; "
+         "assert 'torch' not in sys.modules and 'pyaudio' not in sys.modules; "
+         "print('Gateway client, GUI and backend dependencies verified')"],
+        capture=True, check=False, cwd=PROJECT_ROOT,
+    )
+    if verification.returncode:
+        log("[自检失败] Gateway 或 GUI 依赖未就绪，请检查安装输出。")
+        log(verification.stderr or verification.stdout)
+        return False
+    log("[自检通过] Gateway 客户端、GUI 与后端控制依赖已就绪；未打开设备。")
+    log(f"GUI 启动：{m0_python} {os.path.join(PROJECT_ROOT, 'main.py')} --gateway --gui")
+    log("仍须按 READMEfirst.md 配置仓库外模型并启动固定版本后端。")
+    return True
 
 
 def parse_args():
@@ -595,7 +612,7 @@ def parse_args():
         description="J.A.C. 新电脑一键依赖补全工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "external", "embed", "verify", "m0"],
+    p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "external", "embed", "verify", "m0", "gateway"],
                    default="all", help="只运行指定阶段（默认 all）")
     p.add_argument("--skip-embed", action="store_true", help="跳过记忆 embedding 模型预下载（首次运行 main.py 时自动联网下）")
     p.add_argument("--torch", choices=["auto", "cpu", "cuda"], default="auto",
@@ -611,7 +628,7 @@ def parse_args():
 def main():
     """主"""
     args = parse_args()
-    if args.only == "m0":
+    if args.only in {"m0", "gateway"}:
         raise SystemExit(0 if step_m0(args) else 1)
     # torch auto 映射到 cpu/cuda 语义
     if args.torch == "auto":

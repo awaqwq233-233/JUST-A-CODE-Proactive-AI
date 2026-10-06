@@ -189,6 +189,22 @@ def test_installer_mirror_failure_falls_back_without_disabling_tls(tmp_path, mon
 
     monkeypatch.setattr(installer, "run_cmd", command)
     assert installer.step_m0(SimpleNamespace(mirror=None, no_mirror=False, dry_run=False)) is True
-    assert calls[-1][-1] == installer.OFFICIAL_PIP_INDEX
+    assert calls[-2][-1] == installer.OFFICIAL_PIP_INDEX
+    assert "PySide6" in calls[-1][-1] and "GatewayClient" in calls[-1][-1]
     assert all("--trusted-host" not in call for call in calls)
     assert all(str(tmp_path / ".venv") not in argument for call in calls for argument in call)
+
+
+def test_installer_rejects_dependency_import_failure(tmp_path, monkeypatch):
+    """pip 成功但 GUI/客户端无法导入时，安装结果必须失败。"""
+    monkeypatch.setattr(installer, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(installer.os.path, "exists", lambda path: True)
+    calls = []
+
+    def command(arguments, **kwargs):
+        """模拟版本正确、安装成功，但导入自检失败。"""
+        calls.append(arguments)
+        return SimpleNamespace(stdout="3.11\n", stderr="missing dependency", returncode=1 if len(calls) == 3 else 0)
+
+    monkeypatch.setattr(installer, "run_cmd", command)
+    assert installer.step_m0(SimpleNamespace(mirror=None, no_mirror=False, dry_run=False)) is False

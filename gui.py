@@ -14,7 +14,6 @@ import logging
 import threading
 
 import numpy as np
-import main  # 复用 main.context 作为唯一共享上下文
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
@@ -22,13 +21,14 @@ from PySide6.QtWidgets import (
     QToolButton, QComboBox, QSlider, QSizePolicy, QCheckBox,
     QProgressBar, QDoubleSpinBox, QScrollArea,
 )
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QImage, QPixmap, QFont, QPainter, QPainterPath, QTextCursor,
 )
 
 from src.utils.config import Config
-from src.runtime import JACRuntime
+from src.omni.desktop_runtime import DesktopRuntime
+from src.utils.context import SharedContext
 
 
 # ----------------------------- 暗色圆角主题 -----------------------------
@@ -217,12 +217,19 @@ class _QtLogHandler(logging.Handler):
 
 # ----------------------------- 主窗口 -----------------------------
 class MainWindow(QMainWindow):
+    _runtime_state_changed = Signal(bool)
+    _stop_runtime_requested = Signal()
+    _startup_failed = Signal(str)
+
     def __init__(self, config: Config):
         """初始化实例"""
         super().__init__()
         self.config = config
-        self.context = main.context
-        self.runtime = JACRuntime(
+        self.context = SharedContext()
+        self._runtime_state_changed.connect(self._apply_runtime_state, Qt.QueuedConnection)
+        self._stop_runtime_requested.connect(self._safe_stop_runtime, Qt.QueuedConnection)
+        self._startup_failed.connect(self._handle_startup_failure, Qt.QueuedConnection)
+        self.runtime = DesktopRuntime(
             context=self.context,
             on_state_change=self._on_state_change,
         )
@@ -234,6 +241,7 @@ class MainWindow(QMainWindow):
         self.resize(1280, 720)
 
         self._build_ui()
+        self._set_options_enabled(True)
         self._setup_timers()
         self._redirect_logging()
 
@@ -381,6 +389,21 @@ class MainWindow(QMainWindow):
         # OMNI 模式下传统 judge/TTS/tools 与 omni 架构互斥，勾选 OMNI 时灰掉它们并提示
         self.omni_chk.toggled.connect(self._on_omni_toggled)
 
+        self.omni_backend_combo = QComboBox()
+        self.omni_backend_combo.addItem("方案 B Gateway（M1 听看说）", "gateway")
+        self.omni_backend_combo.addItem("旧架构（兼容入口）", "legacy")
+        self.omni_backend_combo.setCurrentIndex(0 if self.config.omni_backend == "gateway" else 1)
+        self.omni_backend_combo.setToolTip("Gateway 后端须先由固定版本启动器启动；M1 工具升级尚未接入。")
+        op.addWidget(self.omni_backend_combo)
+        self.gateway_consent_chk = QCheckBox("同意开启设备，已戴好耳机")
+        self.gateway_consent_chk.setToolTip("启动将开启摄像头、麦克风和原生音频播放；不保存原始媒体。")
+        self.gateway_consent_chk.setChecked(self.config.gateway_consent_devices)
+        op.addWidget(self.gateway_consent_chk)
+        self.omni_backend_combo.currentIndexChanged.connect(
+            lambda: self._set_options_enabled(not self.runtime.running))
+        self.omni_chk.toggled.connect(
+            lambda: self._set_options_enabled(not self.runtime.running))
+
         # 麦克风增益（OMNI 全双工：内建麦离嘴远、能量不足时调高，便于触发服务端 VAD）
         gain_row = QHBoxLayout()
         gain_row.addWidget(QLabel("麦克风增益 (OMNI)"))
@@ -401,20 +424,15 @@ class MainWindow(QMainWindow):
         lps_row.addWidget(self.listen_prob_scale_spin)
         op.addLayout(lps_row)
 
-        # 图像上行总开关（OMNI，P0 变量分离实验）：取消勾选 = 一个视频帧都不发，纯音频全双工。
-        # 真实用途：坐实「视觉 token 吃爆 KV → 上下文每约 30s 被滑动清空 → 模型照 prompts.py
-        # 里的示例复读「查一下这台电脑的电池电量百分比」」这条机制（关掉后模型完全看不见画面）。
+        # 图像上行开关控制是否采集并发送画面，音频固定节拍不受影响。
         self.video_enabled_chk = QCheckBox("图像上行（OMNI 视觉）")
         self.video_enabled_chk.setChecked(bool(getattr(self.config, "omni_video_enabled", True)))
         self.video_enabled_chk.setToolTip(
-            "勾选（默认）：omni 能看见摄像头画面。取消勾选：完全不上图，纯音频全双工——"
-            "服务端不再做 VPM 编码、也不往 KV 写视觉 token。用于隔离验证「视觉 token 吃爆 KV "
-            "导致上下文每约 30 秒被清空、模型照 prompt 示例复读」这条机制。")
+            "勾选：采集并发送画面；Gateway 默认每秒最新一帧。取消：仅使用音频。")
         op.addWidget(self.video_enabled_chk)
 
         # 图像上行间隔（OMNI，P1 图像降频）：音频每段都上，图像默认 1 秒 1 帧。
-        # 带图的那一轮服务端要多做一次 VPM 编码（实测 p50≈196ms）并写 64 个视觉 token 进 KV，
-        # 是上下文被快速填满、每约 30 秒滑动一次的元凶；0 表示退回「每段都带图」。
+        # 此间隔只供旧后端调试；Gateway 固定每秒一帧，不使用旧调度参数。
         vi_row = QHBoxLayout()
         vi_row.addWidget(QLabel("图像上行间隔s (OMNI)"))
         self.video_interval_spin = QDoubleSpinBox()
@@ -428,7 +446,8 @@ class MainWindow(QMainWindow):
         op.addLayout(vi_row)
         # 总开关关闭时「间隔」无意义，直接灰掉避免误配（与启动/停止的禁用状态叠加）
         self.video_enabled_chk.toggled.connect(
-            lambda on: self.video_interval_spin.setEnabled(on))
+            lambda on: self.video_interval_spin.setEnabled(
+                on and self.omni_backend_combo.currentData() != "gateway"))
         self.video_interval_spin.setEnabled(self.video_enabled_chk.isChecked())
 
         # 逐块上行诊断日志（OMNI，P0 实验第 2 项）：等价 OMNI_DEBUG=1。
@@ -656,9 +675,21 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------- 启动/停止
     def _toggle_run(self):
+        """在启动主线程申请首次摄像头权限，其余设备与模型工作交后台。"""
         if not self.runtime.running:
             self._stop_requested = False  # 开始新启动，清除上一次的「停止」意图
             cfg = self._collect_config()
+            if cfg.omni_enabled and cfg.omni_backend == "gateway":
+                if not cfg.gateway_consent_devices:
+                    self.console.appendPlainText("[Gateway] 请勾选设备同意并戴好耳机后启动。")
+                    return
+                if cfg.omni_video_enabled:
+                    from src.omni.media import request_camera_permission
+                    try:
+                        request_camera_permission(cfg.gateway_camera)
+                    except RuntimeError as error:
+                        self.console.appendPlainText(f"[Gateway] {error}")
+                        return
             # 把重活放到后台线程：摄像头/YOLO/Whisper/Qwen3-TTS/记忆加载
             # 全在主线程同步执行会长时间阻塞事件循环，macOS 会判为「未响应」，
             # 并在阻塞期间任何绘制请求下放大 Metal 崩溃概率。后台跑可保 GUI 流畅。
@@ -666,31 +697,26 @@ class MainWindow(QMainWindow):
             self.start_btn.setText("启动中…")
 
             def _do_start():
+                """后台启动流水线，随后处理启动期间的停止请求。"""
                 try:
                     self.runtime.start(cfg)
                 except Exception:
                     # 打印完整 traceback（而非仅异常消息），便于真机验收时直接定位
                     # 缺失依赖 / 导入错误等根因，避免反复来回。
                     import traceback as _tb
-                    self.console.appendPlainText(
-                        "[GUI] 启动失败:\n" + "".join(_tb.format_exception(*sys.exc_info()))
-                    )
+                    failure = "[GUI] 启动失败:\n" + "".join(_tb.format_exception(*sys.exc_info()))
+                    self._stop_runtime_requested.emit()
+                    self._startup_failed.emit(failure)
+                    return
                 # 边界：若用户在启动过程中点了「停止」，立即停掉刚拉起的运行时
                 if self._stop_requested and self.runtime.running:
-                    self._safe_stop_runtime()
+                    self._stop_runtime_requested.emit()
                     return
                 # 成功时 _on_state_change 已把按钮置为「停止」；
                 # 失败时需在此恢复按钮可交互，否则会卡在「启动中…」。
                 if not self.runtime.running:
-                    self.console.appendPlainText(
-                        "[GUI] 启动未完成（摄像头/模型未就绪），请检查设备与 LM Studio。"
-                    )
-                    # 跨线程回主线程恢复 UI
-                    QTimer.singleShot(0, lambda: (
-                        self.start_btn.setEnabled(True),
-                        self.start_btn.setText("启动"),
-                        self._set_options_enabled(True),
-                    ))
+                    self._startup_failed.emit(
+                        "[GUI] 启动未完成，请检查设备、后端和当前模式的依赖。")
 
             threading.Thread(target=_do_start, daemon=True, name="gui-start").start()
         else:
@@ -698,6 +724,7 @@ class MainWindow(QMainWindow):
             self._stop_requested = True
             self._safe_stop_runtime()
 
+    @Slot()
     def _safe_stop_runtime(self):
         """安全地停止 J.A.C. 运行时，但**不关闭 GUI 窗口**。
 
@@ -706,6 +733,7 @@ class MainWindow(QMainWindow):
         macOS Metal 断言崩溃（abort/闪退）。停止后 GUI 保持打开，控制台日志完整
         保留，便于调试（debug）。
         """
+        self._stop_requested = True
         if not self.runtime.running:
             return
         try:
@@ -717,27 +745,51 @@ class MainWindow(QMainWindow):
         # 状态回调 _on_state_change(False) 已把按钮恢复为「启动」并解锁选项
 
     def _on_state_change(self, running):
-        """当状态变化
+        """将任意工作线程的状态通知排队交给 Qt 主线程，不直接修改控件。"""
+        self._runtime_state_changed.emit(bool(running))
 
-        关键修复：启动时 _toggle_run 会把按钮 setEnabled(False) 防重复点击，
-        启动成功后必须在此重新 setEnabled(True)，否则按钮虽显示「停止」却仍是
-        禁用态（灰色），用户点不动、无法停止程序。
-        """
+    @Slot(bool)
+    def _apply_runtime_state(self, running):
+        """在 Qt 主线程更新状态，并在每次成功启动后恢复持续预览刷新。"""
+        # 上一轮停止通知可能晚于下一轮启动到达，避免旧通知停掉新预览。
+        if bool(running) != bool(self.runtime.running):
+            return
+        if running:
+            if self._stop_requested:
+                return
+            self.frame_timer.start(33)
+            self._pull_frame()
+        else:
+            self.frame_timer.stop()
+            self.video_label.clear()
         self.start_btn.setText("停止" if running else "启动")
         self.start_btn.setEnabled(True)  # 运行/停止两种状态都必须可点击
         self._set_options_enabled(not running)
+
+    @Slot(str)
+    def _handle_startup_failure(self, message):
+        """在 Qt 主线程显示失败原因并恢复按钮，兼容工作线程没有 Qt 事件循环。"""
+        self.console.appendPlainText(message)
+        self._apply_runtime_state(False)
 
     def _set_options_enabled(self, en):
         """设置选项已启用"""
         for w in (self.judge_chk, self.tts_chk, self.tools_chk, self.omni_chk,
                   self.interval_slider, self.timeout_slider,
-                  self.video_enabled_chk, self.debug_log_chk):
+                  self.video_enabled_chk, self.debug_log_chk,
+                  self.omni_backend_combo, self.gateway_consent_chk):
             w.setEnabled(en)
         # 图像间隔输入框：除运行状态外还要看「图像上行」总开关——关掉图像时间隔无意义
         self.video_interval_spin.setEnabled(en and self.video_enabled_chk.isChecked())
         # OMNI 模式下传统 judge/TTS/tools 与 omni 架构互斥，仍保持灰掉状态
         if en and self.omni_chk.isChecked():
             self._on_omni_toggled(True)
+        gateway = self.omni_chk.isChecked() and self.omni_backend_combo.currentData() == "gateway"
+        for control in (self.listen_prob_scale_spin, self.video_interval_spin,
+                        self.echo_gate_combo, self.debug_log_chk):
+            control.setEnabled(en and not gateway)
+        if not gateway:
+            self.video_interval_spin.setEnabled(en and self.video_enabled_chk.isChecked())
 
     def _on_omni_toggled(self, checked):
         """OMNI 与传统 judge/TTS/tools 架构互斥：勾选 OMNI 时灰掉三者并提示。
@@ -761,6 +813,13 @@ class MainWindow(QMainWindow):
             use_qwen_tts=self.tts_chk.isChecked(),
             tools_enabled=self.tools_chk.isChecked(),
             omni_enabled=self.omni_chk.isChecked(),
+            omni_backend=self.omni_backend_combo.currentData(),
+            gateway_url=self.config.gateway_url,
+            gateway_session_seconds=self.config.gateway_session_seconds,
+            gateway_consent_devices=self.gateway_consent_chk.isChecked(),
+            gateway_input_device=self.config.gateway_input_device,
+            gateway_output_device=self.config.gateway_output_device,
+            gateway_camera=self.config.gateway_camera,
             omni_server_url=self.config.omni_server_url,
             omni_server_bin=self.config.omni_server_bin,
             omni_model_dir=self.config.omni_model_dir,

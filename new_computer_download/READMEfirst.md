@@ -4,7 +4,7 @@
 
 ## English
 
-Option B was approved on 2026-10-06. This guide provisions the isolated M0 backend and probe. `setup_new_computer.py --only m0` installs its isolated environment; the other stages and production `requirements.txt` still serve the legacy application.
+Option B was approved on 2026-10-06. M0 has been accepted by the user with the 30-minute soak explicitly waived. This guide provisions the isolated M0/M1 backend, probes and production Gateway CLI/GUI. `setup_new_computer.py --only gateway` (compatible alias: `--only m0`) installs Python 3.11 dependencies including PySide6 and verifies client/GUI imports without opening devices. Other stages retain legacy dependencies.
 
 M0 requires Python 3.11, CMake, Xcode Command Line Tools, an external GGUF model directory and the two repositories pinned in [backend.lock.json](../backend.lock.json). It uses C++ Metal for inference and a Python Gateway / Worker for orchestration. No NVIDIA machine or speaker-embedding extraction is needed.
 
@@ -14,9 +14,13 @@ Create `.cache/m0/venv` and install `requirements-m0.txt`. Use `start_m0_backend
 
 The Gateway URL is `ws://127.0.0.1:8006/v1/realtime?mode=video`. Inputs are 16 kHz mono float32 PCM Base64; outputs are 24 kHz mono float32 PCM Base64. The probe sends fixed one-second chunks and reference-WAV voice fields. `--require-audio` fails if no native audio is returned.
 
-The file probe proves protocol and native-audio transport only. It does not validate microphone/camera capture, playback quality, 10 start/stop cycles or a 30-minute soak. The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds; production migration must implement controlled reconnection.
+The file probe proves protocol and native-audio transport only. The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds. The M1 production client now rotates video sessions after 240 input seconds, with visible capture pauses and re-injection of the reference voice, supplied confirmed context and bounded assistant history. Untranscribed user speech is not reconstructed.
 
-`verify_live_duplex.py --consent-devices` performs a short live test only after consent and with headphones. It captures on background threads and plays native PCM without recording media. The 2026-10-06 40-second live run passed (P95 679 ms, 31 seconds of native playback); the user confirmed audible, relevant responses. The 30-minute soak remains pending at the user's request.
+The 40-second live run, ten rapid lifecycle cycles and two 225-second live sessions passed. The user confirmed satisfactory interaction and accepted M0 without the remaining soak. Original reports retain `soak_30min_verified=false` because that duration was not measured; it no longer blocks migration.
+
+After starting the pinned backend, run `main.py --gateway --gui` in the Python 3.11 environment. Explicit device consent and headphones are required before capture starts. `main.py --gateway --consent-devices` runs the console client. The Gateway GUI imports no legacy torch/PyAudio/Whisper/YOLO; legacy modes require their existing dependencies.
+
+`verify_soak_duplex.py --consent-devices` measures 1,800 input seconds across eight 225-second video sessions while keeping the same backend running. It samples local health endpoints and process RSS, and saves aggregate/per-session counts even on failure. Devices restart between sessions; cross-session context restoration is not tested.
 
 Publishing policy: the template `voices/silverwalf_voice.wav` is authorized for GitHub. Model binaries, runtime recordings and the local `brainstorming_projectPLAN/` architecture directory are excluded; cloning the repository does not include that directory.
 
@@ -24,7 +28,7 @@ Publishing policy: the template `voices/silverwalf_voice.wav` is authorized for 
 
 发布边界：模板 `voices/silverwalf_voice.wav` 已获准推送；模型、实际测试录音录像和本机 `brainstorming_projectPLAN/` 架构目录不提交、不推送。架构目录只在本机维护，克隆 GitHub 仓库不会取得该目录。
 
-方案 B 已于 2026-10-06 确认。本阶段先准备独立 M0 环境和后端探针。现有主程序与 `requirements.txt` 仍服务旧实现；安装器新增 `--only m0` 入口，其他阶段保留旧逻辑。
+方案 B 已于 2026-10-06 确认。M0 已由 bo s s 接受并免做 30 分钟长测，当前进入 M1。独立 Python 3.11 环境已支持后端、探针及生产 Gateway CLI/GUI；`requirements-m0.txt` 新增已验证的 PySide6 6.11.2，安装器推荐 `--only gateway`（兼容 `--only m0`），安装后自检客户端、GUI 与后端控制依赖，不打开设备。现有 `.venv`、生产依赖和其他安装阶段保留旧模式兼容。
 
 ### 1 安装 Python 3.11
 
@@ -36,11 +40,19 @@ brew install python@3.11 cmake
 
 ### 2 建立独立环境
 
-可以用以下命令一键建立独立 M0 环境并安装依赖；加 --dry-run 可预览且不产生修改。
+可以用以下命令一键建立独立 M0/M1 环境并安装依赖；加 --dry-run 可预览且不产生修改。
 
 ```bash
-python3.11 new_computer_download/setup_new_computer.py --only m0
+python3.11 new_computer_download/setup_new_computer.py --only gateway
 ```
+
+macOS/Linux 也可从项目根目录使用包装脚本；它会原样转发安装参数：
+
+```bash
+bash new_computer_download/run.sh --only gateway
+```
+
+Windows 可使用 `new_computer_download\run.bat --only gateway`，先确保 Python 3.11 可用；脚本采用 UTF-8 控制台编码。当前 Metal 后端仍以 macOS Apple Silicon 为开发和验收平台，Windows 后端运行未验收。
 
 以下是同等的手动步骤。
 
@@ -50,7 +62,7 @@ python3.11 new_computer_download/setup_new_computer.py --only m0
 python3.11 -m venv .cache/m0/venv
 ```
 
-安装固定 M0 依赖，包含 Gateway、Worker、媒体文件探针和测试插件。
+安装固定 M0/M1 依赖，包含 Gateway、Worker、生产媒体客户端、Qt GUI 和测试插件。Qt 包体积较大，安装器优先使用国内镜像，失败再回退官方源。
 
 ```bash
 .cache/m0/venv/bin/python -m pip install -r new_computer_download/requirements-m0.txt
@@ -164,24 +176,55 @@ hf download openbmb/MiniCPM-o-4_5-gguf --revision db25077c33951fe163b42986fba013
 
 可以用 `--input-device`、`--output-device` 指定本机 SoundDevice 编号。macOS 首次摄像头授权在启动主线程完成，后台线程只负责读取与编码；若系统弹窗出现，请先确认授权。报告保存在 `output/m0/live-probe.json`。
 
+已明确同意 30 分钟设备长测并戴好耳机后，运行：
+
+```bash
+.cache/m0/venv/bin/python verify_soak_duplex.py --consent-devices
+```
+
+长测保持同一组后端常驻，8 段各上行 225 秒，累计 1800 秒；初始化、尾部播放与段间设备释放重开使总墙钟时间略长于 30 分钟。每段有 4 秒启动保护静音，不恢复上段对话上下文，因此该测试不等同于无缝常开客户端验收。`--monitor-pid` 可重复指定后端 PID，报告含每 30 秒健康/RSS 样本；默认保存至已忽略的 `output/m0/soak-probe.json`，不含原始媒体或对话文本。验收检查逐段 P95 < 1000ms、原生音频收播一致、设备状态异常为零、全部清理与后端健康；安静段不要求模型强制发言，但全程必须收到原生音频。
+
+只需两段验证时，可使用 `--seconds 450`：自动均分为两段各 225 秒；两段通过不会设置 `soak_30min_verified=true`。
+
 离线测试：
 
 ```bash
-.cache/m0/venv/bin/python -m pytest tests/test_m0_duplex_probe.py tests/test_m0_backend_launcher.py tests/test_m0_live_probe.py -q -o addopts=
+.cache/m0/venv/bin/python -m pytest tests/test_m0_duplex_probe.py tests/test_m0_backend_launcher.py tests/test_m0_live_probe.py tests/test_m0_soak_probe.py tests/test_gateway_client.py tests/test_gateway_desktop_runtime.py tests/test_gateway_gui_restart.py -q -o addopts=
 ```
 
 ### 8 验收与后续迁移
 
-M0 必须验证真实模型原生音频、听说节拍和性能。报告中的 `processing_p95_ms=null` 表示服务端没有提供足够耗时指标，不能视为实时性能通过。文件探针不能代替实时麦克风、摄像头、扬声器和 30 分钟运行验收。
+M0 已根据真实模型/设备验证与 bo s s 明确确认标记通过，30 分钟长测免测。报告中的 `processing_p95_ms=null` 仍不能视为实时性能通过；已执行的数据和用户验收决策分别记录。
 
-2026-10-06 已完成 40 秒真机测试：640×480、194 帧、原生语音收播各 31 秒、P95 679ms，音频队列最高 1 块，输入/输出流状态错误均为 0，设备和线程清理通过。另完成 10 次设备与 WS 快速启停，逐次清理通过。bo s s 已确认听感和回答相关性；本轮明确暂不进行 30 分钟长测，因此 M0 尚未完整验收。
+2026-10-06 已完成 40 秒真机测试、10 次启停与两段各 225 秒验证；bo s s 已确认效果良好并接受 M0。两段累计上行 450 秒、P95 678.662/891.148ms、原生音频收播各合计 176.2 秒；音频队列峰值 1、播放队列峰值 3、设备异常均 0，16 次健康采样通过。原始报告保持实测范围，30 分钟未测但已由用户豁免，不再作为进入 M1 的前置阻塞项。
 
 固定 Gateway 视频会话 300 秒、音频会话 600 秒。后续客户端必须实现受控重连、重新注入记忆和上下文；旧 /ws/duplex 页面不作为当前客户端协议依据。
 
-M0 通过后才进入采集层、原生播放、GUI、Qwen 工具调用、OpenClaw、ChromaDB 迁移。Qwen 继续使用 LM Studio 127.0.0.1:12345；本阶段不需加载 Qwen 或启动云端。
+M1 已接入采集层、原生播放与 GUI；Qwen 工具升级、OpenClaw、ChromaDB 和并行转写随后迁移。Qwen 继续使用 LM Studio 127.0.0.1:12345；M1 听看说验证无需加载 Qwen 或启动云端。
+
+### 9 M1 生产入口
+
+固定版本后端启动后，在独立 Python 3.11 环境打开轻量 Gateway GUI：
+
+```bash
+.cache/m0/venv/bin/python main.py --gateway --gui
+```
+
+选择「方案 B Gateway」，勾选设备同意并戴好耳机后点击启动。新入口复用原界面的画面预览、音量条、参数和实时文本；旧 Listen/回声门控/图像间隔参数在 Gateway 下禁用，图像固定每秒最新一帧。不带 `--gateway` 的终端入口仍运行传统实现；在新 GUI 选择旧模式时，需要完整旧依赖。
+
+如果仅需终端中的语音交流：
+
+```bash
+.cache/m0/venv/bin/python main.py --gateway --consent-devices
+```
+
+可加 `--input-device` / `--output-device` 绑定内建麦克风与耳机。默认每 240 秒上行后暂停设备、重建会话并重注入参考音和有限上下文，Ctrl+C 清理设备；后端由独立启动器管理。统计报告在已忽略的 `output/m1/`，不保存媒体或对话文本。
+
+无需设备的文件回放可使用 `--input-file`、可选 `--image-file`、`--session-seconds` 和 `--sessions`；每个会话回放同一测试文件，先补 4 秒启动静音，不将接收到的原生音频播放出来。文件验证不能替代新生产 GUI 的真机听感验收。
 
 ### 故障排查
 
+- 停止再启动后预览黑屏，但模型仍能描述当前画面：旧 GUI 的刷新定时器没有恢复，2026-10-06 已修复并通过离屏启停回归。保持后端终端运行，完全关闭旧 GUI 后按第 9 节重新打开；只点击停止/启动不会加载修改后的 Python 代码，无需重装依赖或模型。
 - 模型 SHA256 不符：保留原文件，检查是否有匹配的备份或重新下载固定 revision。禁止仅改文件名绕过校验。
 - queue_done 超时：检查 Worker 已注册、三个健康接口正常，以及 output/m0 下的日志。
 - 无 audio 增量：原生 TTS 验收尚未通过，检查全部 Token2Wav / TTS 模块和参考音。
