@@ -164,7 +164,7 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 1. `README.md` — GitHub 首页文档（双语：英文在前、中文在后）。每次改动后确保其描述与项目真实状态一致。
 2. `AGENTS.md` — 本文件，开发者契约。架构/运行方式/依赖/文件路径变化必须同步。
 3. `CHANGELOG.md` — 变更日志。**同时是「文档归口中心」**：原 `codingLOG.md`（差距笔记）与原 `docs/memory/` 四份记忆子文档已于 2026-10-01 全量并入本文件（附 A 差距笔记 / 附 B 记忆契约 / 附 C 记忆测试计划与实现真值 / 附 D 用户指南 / 附 E 隐私说明 / 附 F 运维 Runbook），源文件已删除。每次变更追加一条用户可读的改动说明；涉及差距或记忆子系统的修订，**直接改 `CHANGELOG.md` 对应附录**，不再新建 `docs/` 专项。
-4. `brainstorming_projectPLAN/10月1日新架构.docx` — **新架构权威基准（2026-10-01 定案）**，只由 bo s s 维护；Agent 不得改动它，只能据此同步其他文档。
+4. `brainstorming_projectPLAN/10月1日新架构.docx` — **新架构权威基准（2026-10-01 定案）**。自 2026-10-06 起，Agent 获准编辑和同步 `brainstorming_projectPLAN/`；涉及目标架构的实质性变更时，必须先取得 bo s s 明确确认，并在修改后同步 `AGENTS.md`、`README.md`、`CHANGELOG.md` 与安装文档。
 
 **查看改动时的强制动作**：每当 Agent 需要了解「最近改了什么 / 当前实现状态」，必须优先读取 `CHANGELOG.md` 与 `AGENTS.md`；需要「当前代码与新架构的差距」时读 `CHANGELOG.md` 附 A（已按新架构口径改写）。
 
@@ -172,7 +172,7 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 
 - 检查 `.gitignore` 是否需要新增忽略（如新增大体积/二进制产物）。
 - 检查 `requirements.txt` 是否新增依赖；若有，同步更新 `new_computer_download/` 下的一键安装脚本与 `new_computer_download/READMEfirst.md`。
-- `codinglog_by_awaqwq233/` 与 `brainstorming_projectPLAN/` 文件夹**只由 bo s s 手动维护**，Agent 不得自动编辑或同步其内容。
+- `codinglog_by_awaqwq233/` 仍只由 bo s s 手动维护，Agent 不得自动编辑；`brainstorming_projectPLAN/` 已获准由 Agent 按 bo s s 确认的架构决策编辑和同步。
 - **开发平台**：当前以 macOS（Apple Silicon）为主开发机，保持跨平台兼容代码；Windows 开发机已不再使用。
 
 ## 当前开发状态（2026-10-01 更新）
@@ -207,7 +207,8 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 - `new_computer_download/READMEfirst.md`：新机器一键环境搭建与安装指南（已按新架构改写）。
 - `setup_ffmpeg.py`：从 imageio-ffmpeg 复制二进制为项目根 `ffmpeg`。
 - `verify_model.py` / `verify_toolcall.py`：模型/工具调用校验脚本。
-- `codinglog_by_awaqwq233/`、`brainstorming_projectPLAN/`：bo s s 的个人记录与架构文档，**只由 bo s s 手动维护，Agent 禁止编辑**。
+- `codinglog_by_awaqwq233/`：bo s s 的个人记录，仍禁止 Agent 编辑。
+- `brainstorming_projectPLAN/`：架构规划目录；自 2026-10-06 起允许 Agent 在 bo s s 确认架构决策后编辑和同步。
 
 通常不参与编辑的大体积/二进制产物：
 
