@@ -1,264 +1,189 @@
-# READMEfirst — J.A.C. 安装与运行指南 / Setup & Run Guide
+# J.A.C. Setup Guide
 
-> 这是 J.A.C. 的**第一份安装文档**，已按 **2026-10-01 新架构**改写。三层模型：**MiniCPM-o-4_5（本地 llama.cpp 全双工 + 语音）→ qwen/qwen3.6-35b-a3b（LM Studio 大脑）→ 云端 OpenClaw（DeepSeek，可选）**。模型权重全部**在项目之外**（外部仓库 / 外部 AI 软件），项目内不下载任何本地 GGUF / TTS 权重。
-> This is the **first setup doc** for J.A.C., rewritten for the **new architecture (2026-10-01)**. Three tiers: **MiniCPM-o-4_5 (local llama.cpp full-duplex + voice) → qwen/qwen3.6-35b-a3b (LM Studio brain) → cloud OpenClaw (DeepSeek, optional)**. All model weights live **outside the project** (external repos / external AI software).
+[中文安装指南](#中文安装指南)
 
-[中文安装指南（含国内镜像方法）](#中文安装指南国内网络推荐)
+## English
 
----
+Option B was approved on 2026-10-06. This guide provisions the isolated M0 backend and probe. `setup_new_computer.py --only m0` installs its isolated environment; the other stages and production `requirements.txt` still serve the legacy application.
 
-## English — Official / Foreign-Network Method
+M0 requires Python 3.11, CMake, Xcode Command Line Tools, an external GGUF model directory and the two repositories pinned in [backend.lock.json](../backend.lock.json). It uses C++ Metal for inference and a Python Gateway / Worker for orchestration. No NVIDIA machine or speaker-embedding extraction is needed.
 
-### 1. Prerequisites
+The Chinese section below contains the same commands, one per block. Run environment commands from the J.A.C. root. Clone both backend repositories outside J.A.C.; replace placeholder paths with absolute paths.
 
-- **OS**: macOS (primary dev platform, Apple Silicon). Windows/Linux code is kept but untested on a Windows dev machine.
-- **Python**: **3.11** (locked by the new architecture).
-- **Xcode Command Line Tools + Homebrew** (macOS): for `portaudio`, `ffmpeg`, and the Metal toolchain.
-  ```bash
-  xcode-select --install
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  brew install ffmpeg portaudio
-  ```
-- **LM Studio**: download from https://lmstudio.ai — hosts the brain model.
-- A usable **camera** and **microphone** (with OS permission granted).
-- **One-time, on a machine with an NVIDIA GPU** (or Colab / AutoDL): extract the speaker embedding for voice cloning (see §7).
+Create `.cache/m0/venv` and install `requirements-m0.txt`. Use `start_m0_backend.py --preflight --verify-sha` before launching. The launcher binds all ports to loopback, disables upstream session recording, rejects occupied ports and terminates only its own children on Ctrl+C.
 
-### 2. Clone & create a virtual environment (Python 3.11)
+The Gateway URL is `ws://127.0.0.1:8006/v1/realtime?mode=video`. Inputs are 16 kHz mono float32 PCM Base64; outputs are 24 kHz mono float32 PCM Base64. The probe sends fixed one-second chunks and reference-WAV voice fields. `--require-audio` fails if no native audio is returned.
 
-```bash
-git clone <your-repo-url> JAC && cd JAC
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip
-```
+The file probe proves protocol and native-audio transport only. It does not validate microphone/camera capture, playback quality, 10 start/stop cycles or a 30-minute soak. The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds; production migration must implement controlled reconnection.
 
-### 3. Install Python dependencies
+`verify_live_duplex.py --consent-devices` performs a short live test only after consent and with headphones. It captures on background threads and plays native PCM without recording media. The 2026-10-06 40-second live run passed (P95 679 ms, 31 seconds of native playback); the user confirmed audible, relevant responses. The 30-minute soak remains pending at the user's request.
+
+Publishing policy: the template `voices/silverwalf_voice.wav` is authorized for GitHub. Model binaries, runtime recordings and the local `brainstorming_projectPLAN/` architecture directory are excluded; cloning the repository does not include that directory.
+
+## 中文安装指南
+
+发布边界：模板 `voices/silverwalf_voice.wav` 已获准推送；模型、实际测试录音录像和本机 `brainstorming_projectPLAN/` 架构目录不提交、不推送。架构目录只在本机维护，克隆 GitHub 仓库不会取得该目录。
+
+方案 B 已于 2026-10-06 确认。本阶段先准备独立 M0 环境和后端探针。现有主程序与 `requirements.txt` 仍服务旧实现；安装器新增 `--only m0` 入口，其他阶段保留旧逻辑。
+
+### 1 安装 Python 3.11
+
+macOS 需要 Xcode 命令行工具和 Homebrew。本机已安装 Python 3.11；新机器可执行：
 
 ```bash
-pip install -r requirements.txt
+brew install python@3.11 cmake
 ```
 
-> Note: the memory subsystem now uses **ChromaDB** + **BGE-Small-ZH-v1.5 (ONNX INT8)**; `chromadb` and `onnxruntime` are project dependencies. No local TTS weights are downloaded — voice is produced by MiniCPM-o's built-in voice cloning.
+### 2 建立独立环境
 
-### 4. Ensure FFmpeg is available
+可以用以下命令一键建立独立 M0 环境并安装依赖；加 --dry-run 可预览且不产生修改。
 
 ```bash
-python setup_ffmpeg.py      # copies an ffmpeg binary into the project root if missing
+python3.11 new_computer_download/setup_new_computer.py --only m0
 ```
 
-Or `brew install ffmpeg`.
+以下是同等的手动步骤。
 
-### 5. Build & launch the MiniCPM-o-4_5 full-duplex backend
-
-The perception / proactive-judgment tier is served by the OpenBMB full-duplex llama.cpp fork (`llama-cpm`), built with Metal:
+以下命令在 J.A.C. 根目录运行。现有 `.venv` 保留，M0 环境位于已忽略的 `.cache/`。
 
 ```bash
-# 1) Clone the OpenBMB full-duplex fork
-git clone https://github.com/OpenBMB/llama.cpp.git llama-cpm
-cd llama-cpm
-# 2) Build with Metal (M5 Pro has 18 CPU cores)
-make GGML_METAL=1 -j18
-# 3) Download the INT4 GGUF (~5.5 GB)
-huggingface-cli download openbmb/MiniCPM-o-4_5-gguf minicpm-o-4_5-q4_k_m.gguf --local-dir ./models
-# 4) Launch the full-duplex server (with your custom voice, see §7)
-./llama-server \
-  -m ./models/minicpm-o-4_5-q4_k_m.gguf \
-  --host 127.0.0.1 --port 8080 \
-  -ngl 999 -c 4096 -t 8 \
-  --mlock --no-mmap --flash-attn \
-  --tts-speaker-emb ./my_custom_voice.pt
+python3.11 -m venv .cache/m0/venv
 ```
 
-- **Metal (GPU), not MPS.** PyTorch MPS is buggy / OOM-prone for full-duplex streaming; GGML's Metal backend is the only stable, fast path on Apple Silicon. Do **not** load HF weights in PyTorch for full duplex.
-- Full-duplex uses a **WebSocket long connection** at `ws://127.0.0.1:8080/duplex` — **not** the standard OpenAI Chat API.
-
-### 6. Load the brain model in LM Studio
-
-1. Open LM Studio → load the model with identifier **`qwen/qwen3.6-35b-a3b`** (identifier must match exactly; natively multimodal; thinking disabled).
-2. Start the local server on **`127.0.0.1:12345`** (Developer tab → Start Server).
-3. (Optional) For long-running tasks, run the **cloud OpenClaw** (DeepSeek API, public address). Local runs work without it.
-
-### 7. Set up the voice (one-time, needs an NVIDIA GPU)
-
-Voice output is done by MiniCPM-o's built-in voice cloning. Extract a **speaker embedding** once on an NVIDIA machine:
-
-```python
-from transformers import AutoModel, AutoTokenizer
-import torch, torchaudio
-
-model = AutoModel.from_pretrained('openbmb/MiniCPM-o-4_5', trust_remote_code=True, torch_dtype=torch.float16).cuda()
-tokenizer = AutoTokenizer.from_pretrained('openbmb/MiniCPM-o-4_5', trust_remote_code=True)
-wav, sr = torchaudio.load("my_voice_sample.wav")   # 5–10 s clean voice, no background noise
-if sr != 16000:
-    wav = torchaudio.functional.resample(wav, sr, 16000)
-with torch.no_grad():
-    spk_emb = model.get_speaker_embedding(wav.cuda(), sr=16000)
-torch.save(spk_emb.cpu(), "my_custom_voice.pt")
-```
-
-Copy `my_custom_voice.pt` to your Mac, pass `--tts-speaker-emb ./my_custom_voice.pt` to `llama-server`, and the client `init` message activates it (`voice_id: "custom"`). ⚠️ The API parameter names can vary between `llama-cpm` versions — check `examples/duplex/README.md` in the branch you compiled.
-
-### 8. Run
+安装固定 M0 依赖，包含 Gateway、Worker、媒体文件探针和测试插件。
 
 ```bash
-python main.py
+.cache/m0/venv/bin/python -m pip install -r new_computer_download/requirements-m0.txt
 ```
 
-- `q` quit · `SPACE` manual wake · console text input talks directly (bypasses wake word).
-
-### One-click helper
+国内可使用清华镜像；失败时保留日志并回退官方源，不关闭证书校验。
 
 ```bash
-python new_computer_download/setup_new_computer.py          # all steps (auto venv)
-python new_computer_download/setup_new_computer.py --dry-run   # preview only
+.cache/m0/venv/bin/python -m pip install -r new_computer_download/requirements-m0.txt --index-url https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-> ⚠️ The one-click helper currently provisions the **previous-architecture** dependencies (e.g. `fastembed`); it is **not yet updated** for ChromaDB / BGE-Small-ZH. Use the manual steps above until it is migrated.
+### 3 锁定并编译引擎
 
-### Troubleshooting (EN)
-
-- **Backend won't start / no full-duplex**: build `llama-cpm` with `GGML_METAL=1`; verify `llama-server` listens on `127.0.0.1:8080`. Do **not** run via PyTorch/MPS.
-- **Brain connection fails / all thinking errors**: LM Studio must have `qwen/qwen3.6-35b-a3b` loaded and the server started at `127.0.0.1:12345`.
-- **No voice**: `--tts-speaker-emb ./my_custom_voice.pt` must point at a valid `.pt`, and the client `init` must set `voice_id`.
-- **ChromaDB memory growth**: batch-write summaries (cache ~5, one `collection.add()`); retrieve only at WS-init and after VAD end-of-sentence.
-- **Microphone / camera permission denied (macOS)**: grant access in System Settings → Privacy & Security → Microphone / Camera.
-- **Model downloads blocked (CN)**: use `HF_ENDPOINT=https://hf-mirror.com` for the GGUF / HF models.
-
----
-
-## 中文安装指南（国内网络推荐）
-
-### 前置条件
-
-- **系统**：macOS（主开发平台，Apple Silicon）。Windows/Linux 兼容代码保留，但不再保证 Windows 开发机跑通。
-- **Python**：**3.11**（新架构锁定版本）。
-- **Xcode 命令行工具 + Homebrew**（macOS）：用于 `portaudio`、`ffmpeg` 与 Metal 编译链。
-  ```bash
-  xcode-select --install
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-  brew install ffmpeg portaudio
-  ```
-- **LM Studio**：从 https://lmstudio.ai 下载，承载大脑模型。
-- 可用的**摄像头**与**麦克风**（已在系统设置里授权）。
-- **一次性、需在有 NVIDIA GPU 的机器上**（或 Colab / AutoDL）：提取音色克隆的 speaker embedding（见「配置音色」）。
-
-### 方法一：海外网络 / 官方源（最简单）
+在项目外的专用后端目录执行。不要覆盖已有用户后端。将路径替换为实际绝对路径。
 
 ```bash
-git clone <你的仓库地址> JAC && cd JAC
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-python setup_ffmpeg.py
+git clone https://github.com/tc-mb/llama.cpp-omni.git /absolute/backend/llama.cpp-omni
 ```
-
-然后按下方「① 编译后端 → ② 加载大脑 → ③ 配置音色」三步操作后运行：
 
 ```bash
-python main.py
+git -C /absolute/backend/llama.cpp-omni checkout 873056743b74e1a4ce5dcf7290e2298428e214db
 ```
-
-### 方法二：国内网络 / 镜像加速（推荐国内用户）
-
-国内访问 pypi.org / HuggingFace / GitHub 常被墙或极慢，请用镜像。
 
 ```bash
-git clone <你的仓库地址> JAC && cd JAC
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip
-
-# 用清华镜像装依赖（大包如 PySide6 若镜像返回 403，脚本会自动回退官方源）
-pip install -r requirements.txt \
-  -i https://pypi.tuna.tsinghua.edu.cn/simple \
-  --trusted-host pypi.tuna.tsinghua.edu.cn
-
-# ffmpeg 二进制
-python setup_ffmpeg.py
-
-# MiniCPM-o-4_5 GGUF 下载（国内走 HF 镜像 hf-mirror.com）
-HF_ENDPOINT=https://hf-mirror.com huggingface-cli download \
-  openbmb/MiniCPM-o-4_5-gguf minicpm-o-4_5-q4_k_m.gguf --local-dir ./models
+git -C /absolute/backend/llama.cpp-omni apply /absolute/JAC/new_computer_download/patches/engine-loopback.patch
 ```
 
-> **关于模型权重**：本项目**不在项目内下载任何本地 GGUF / TTS 权重**。MiniCPM-o-4_5 的 GGUF 下载到 `llama-cpm/models/`（仓库外），大脑走 LM Studio，详见下方。
-
-### ① 编译并启动 MiniCPM-o-4_5 全双工后端
+该补丁只让内部引擎遵守 --host。固定版本自动启用 OpenSSL 时会构造需要证书的 SSLServer；本机内部链路使用 HTTP，因此显式关闭 LLAMA_OPENSSL。
 
 ```bash
-# 1) 克隆面壁官方全双工分支
-git clone https://github.com/OpenBMB/llama.cpp.git llama-cpm
-cd llama-cpm
-# 2) 开 Metal 编译（M5 Pro 18 核 CPU 用满）
-make GGML_METAL=1 -j18
-# 3) 下载 INT4 量化 GGUF（约 5.5GB，国内加 HF_ENDPOINT=https://hf-mirror.com）
-huggingface-cli download openbmb/MiniCPM-o-4_5-gguf minicpm-o-4_5-q4_k_m.gguf --local-dir ./models
-# 4) 启动全双工 Server（带上你的自定义音色，见 ③）
-./llama-server \
-  -m ./models/minicpm-o-4_5-q4_k_m.gguf \
-  --host 127.0.0.1 --port 8080 \
-  -ngl 999 -c 4096 -t 8 \
-  --mlock --no-mmap --flash-attn \
-  --tts-speaker-emb ./my_custom_voice.pt
+cmake -S /absolute/backend/llama.cpp-omni -B /absolute/backend/llama.cpp-omni/build -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON -DLLAMA_OPENSSL=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF
 ```
-
-- **强制 Metal（GPU）而非 MPS**：PyTorch MPS 全双工流式有 Bug、易 OOM；GGML 的 Metal 后端是 Apple Silicon 上唯一稳定且极速的路径。**不要用 PyTorch 加载 HF 权重跑全双工。**
-- 全双工用 **WebSocket 长连接**（`ws://127.0.0.1:8080/duplex`），**不是**标准 OpenAI Chat API。
-
-### ② 在 LM Studio 加载大脑
-
-1. 打开 LM Studio → 加载标识符为 **`qwen/qwen3.6-35b-a3b`** 的模型（标识符必须精确匹配；原生多模态、禁用思考）。
-2. 在 Developer 页签启动本地服务器，地址 **`127.0.0.1:12345`**。
-3. （可选）长时间任务：运行**云端 OpenClaw**（DeepSeek API，公网地址）。本地运行不依赖它。
-
-### ③ 配置音色（一次性，需 NVIDIA GPU）
-
-语音输出由 MiniCPM-o 自带音色克隆完成。在 NVIDIA 机器上一次性提取 **speaker embedding**：
-
-```python
-from transformers import AutoModel, AutoTokenizer
-import torch, torchaudio
-
-model = AutoModel.from_pretrained('openbmb/MiniCPM-o-4_5', trust_remote_code=True, torch_dtype=torch.float16).cuda()
-tokenizer = AutoTokenizer.from_pretrained('openbmb/MiniCPM-o-4_5', trust_remote_code=True)
-wav, sr = torchaudio.load("my_voice_sample.wav")   # 5~10 秒清晰人声、无背景噪音
-if sr != 16000:
-    wav = torchaudio.functional.resample(wav, sr, 16000)
-with torch.no_grad():
-    spk_emb = model.get_speaker_embedding(wav.cuda(), sr=16000)
-torch.save(spk_emb.cpu(), "my_custom_voice.pt")
-```
-
-把 `my_custom_voice.pt` 拷回 Mac，`llama-server` 加 `--tts-speaker-emb ./my_custom_voice.pt`，客户端 `init` 消息以 `voice_id: "custom"` 激活。⚠️ 不同版本 `llama-cpm` 的参数名可能略有差异，请查阅所编译分支 `examples/duplex/README.md`。
-
-### 运行
 
 ```bash
-python main.py
+cmake --build /absolute/backend/llama.cpp-omni/build --target llama-omni-server --target llama-omni-cli -j18
 ```
 
-- `q` 退出 · `空格` 手动唤醒 · 控制台输入文字直接对话（绕过唤醒词）。
-
-### 一键辅助脚本
+### 4 锁定 Gateway 和 Worker
 
 ```bash
-python new_computer_download/setup_new_computer.py            # 全部步骤（自动建 venv）
-python new_computer_download/setup_new_computer.py --dry-run  # 仅预览，不改任何东西
+git clone https://github.com/OpenBMB/MiniCPM-o-Demo.git /absolute/backend/MiniCPM-o-Demo
 ```
 
-> ⚠️ 一键脚本目前仍按**旧架构依赖**（如 `fastembed`）安装，**尚未更新**为 ChromaDB / BGE-Small-ZH；脚本迁移前请用上方手动步骤。
+```bash
+git -C /absolute/backend/MiniCPM-o-Demo checkout 47709a9210dfd71afa76c058e017fc8c4db5c8d2
+```
 
-### 排错（中文）
+本阶段不安装上游完整 torch 依赖，也不需要构建它的移动端前端；使用 M0 独立环境运行 Gateway / Worker。
 
-- **后端起不来 / 无全双工**：确认用 `GGML_METAL=1` 编译 `llama-cpm`，`llama-server` 监听 `127.0.0.1:8080`。不要走 PyTorch/MPS。
-- **大脑连不上 / 思考全部报错**：确认 LM Studio 已加载 `qwen/qwen3.6-35b-a3b` 并已在 `127.0.0.1:12345` 启动本地服务器。
-- **没声音**：`--tts-speaker-emb` 必须指向合法 `.pt`，且客户端 `init` 里 `voice_id` 已设置。
-- **ChromaDB 内存上涨**：批量写库（缓存约 5 条再一次 `collection.add()`）；检索只在 WS 建立发 init 前、VAD 判定说完一句后触发。
-- **麦克风 / 摄像头权限被拒（macOS）**：在「系统设置 → 隐私与安全性 → 麦克风 / 摄像头」给运行脚本的终端/App 授权。
-- **国内模型下载失败**：GGUF / HF 模型加 `HF_ENDPOINT=https://hf-mirror.com`。
+### 5 模型目录
 
----
+模型仓库为 `openbmb/MiniCPM-o-4_5-gguf`，固定 revision 为 `db25077c33951fe163b42986fba0132e279872a2`。精确文件清单及 SHA256 在 [backend.lock.json](../backend.lock.json)。
 
-## 一键脚本与本项目的关系 / How the one-click script fits
+模型目录必须在 J.A.C. 项目之外，并具有以下结构：
 
-`new_computer_download/setup_new_computer.py` 只负责**环境依赖**（Python 包、系统库、ffmpeg）。**模型权重永远不在项目内下载**——MiniCPM-o-4_5 的 GGUF 在 `llama-cpm/models/`（仓库外）、大脑在 LM Studio、检测 `yolov8n.pt` 首次运行由 `ultralytics` 自动下载。⚠️ 脚本尚未随新架构更新（仍装旧依赖 `fastembed`），迁移后改为装 `chromadb` / `onnxruntime` + BGE-Small-ZH。
+```text
+MiniCPM-o-4_5-gguf/
+  MiniCPM-o-4_5-Q4_K_M.gguf
+  audio/MiniCPM-o-4_5-audio-F16.gguf
+  vision/MiniCPM-o-4_5-vision-F16.gguf
+  tts/MiniCPM-o-4_5-tts-F16.gguf
+  tts/MiniCPM-o-4_5-projector-F16.gguf
+  token2wav-gguf/encoder.gguf
+  token2wav-gguf/flow_matching.gguf
+  token2wav-gguf/flow_extra.gguf
+  token2wav-gguf/hifigan2.gguf
+  token2wav-gguf/prompt_cache.gguf
+```
 
-The `setup_new_computer.py` helper only provisions **environment dependencies** (Python packages, system libs, ffmpeg). **Model weights are never downloaded inside the project** — the MiniCPM-o-4_5 GGUF lives in `llama-cpm/models/` (outside the repo), the brain lives in LM Studio, and `yolov8n.pt` auto-downloads via `ultralytics` on first run. ⚠️ The helper is **not yet updated** for the new architecture (still installs `fastembed`); after migration it installs `chromadb` / `onnxruntime` + BGE-Small-ZH.
+已有文件优先通过 SHA256 复用。若使用 Hugging Face CLI 下载，需先在专用环境安装 `huggingface_hub`；不要因此替换主程序依赖。
+
+```bash
+hf download openbmb/MiniCPM-o-4_5-gguf --revision db25077c33951fe163b42986fba0132e279872a2 --include 'MiniCPM-o-4_5-Q4_K_M.gguf' 'audio/*.gguf' 'vision/*.gguf' 'tts/*.gguf' 'token2wav-gguf/*.gguf' --local-dir /absolute/models/MiniCPM-o-4_5-gguf
+```
+
+国内网络可为同一命令设置 `HF_ENDPOINT=https://hf-mirror.com`，但下载后必须按 lock 的 SHA256 校验，不能仅依赖文件名或镜像元数据。
+
+### 6 预检与启动
+
+回到 J.A.C. 根目录，替换以下三个目录参数。预检验证固定 commit、模型哈希和端口，不启动服务。
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/start_m0_backend.py --demo-dir /absolute/backend/MiniCPM-o-Demo --engine-dir /absolute/backend/llama.cpp-omni --model-dir /absolute/models/MiniCPM-o-4_5-gguf --verify-sha --preflight
+```
+
+使用同样路径启动。新克隆没有 config.json 时，脚本创建禁用会话录制的配置；已有配置不会被覆盖，必须设 `recording.enabled=false`。Ctrl+C 回收脚本启动的进程。
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/start_m0_backend.py --demo-dir /absolute/backend/MiniCPM-o-Demo --engine-dir /absolute/backend/llama.cpp-omni --model-dir /absolute/models/MiniCPM-o-4_5-gguf
+```
+
+端口均只监听 127.0.0.1：Gateway 8006、注册接口 8007、Worker 22400、C++ 引擎 22500。运行日志位于已忽略的 `output/m0/`。
+
+### 7 协议与原生语音探针
+
+在第二个终端、J.A.C. 根目录运行。参考 WAV 通过 voice 字段转换成 16k float32 PCM；不需要 .pt、NVIDIA GPU 或 Voicebox。以下探针只发送仓库已有音频文件，不打开麦克风、摄像头或扬声器。
+
+```bash
+.cache/m0/venv/bin/python verify_duplex.py --mode audio --audio /absolute/中文提问.wav --voice voices/silverwalf_voice.wav --chunks 25 --require-audio --require-realtime
+```
+
+报告保存在 `output/m0/probe.json`，只包含计数和耗时，不保存原始媒体或对话文本。若用视频模式，可加 `--image /absolute/640x480.jpg` 发送测试帧。
+
+输入文件应包含清楚的中文提问。探针默认先发 4 秒静音，覆盖后端启动保护期，再顺序发送输入，剩余时间补静音；总时长不足会明确失败，不会截断语音。`--require-realtime` 在耗时缺失或 P95 不低于 1 秒时失败，不因协议通了就认定性能通过。
+
+经明确同意并戴好耳机后，可进行 40 秒真实设备测试；此命令会开启设备且自动停止，不录制或上传。
+
+```bash
+.cache/m0/venv/bin/python verify_live_duplex.py --consent-devices --seconds 40
+```
+
+可以用 `--input-device`、`--output-device` 指定本机 SoundDevice 编号。macOS 首次摄像头授权在启动主线程完成，后台线程只负责读取与编码；若系统弹窗出现，请先确认授权。报告保存在 `output/m0/live-probe.json`。
+
+离线测试：
+
+```bash
+.cache/m0/venv/bin/python -m pytest tests/test_m0_duplex_probe.py tests/test_m0_backend_launcher.py tests/test_m0_live_probe.py -q -o addopts=
+```
+
+### 8 验收与后续迁移
+
+M0 必须验证真实模型原生音频、听说节拍和性能。报告中的 `processing_p95_ms=null` 表示服务端没有提供足够耗时指标，不能视为实时性能通过。文件探针不能代替实时麦克风、摄像头、扬声器和 30 分钟运行验收。
+
+2026-10-06 已完成 40 秒真机测试：640×480、194 帧、原生语音收播各 31 秒、P95 679ms，音频队列最高 1 块，输入/输出流状态错误均为 0，设备和线程清理通过。另完成 10 次设备与 WS 快速启停，逐次清理通过。bo s s 已确认听感和回答相关性；本轮明确暂不进行 30 分钟长测，因此 M0 尚未完整验收。
+
+固定 Gateway 视频会话 300 秒、音频会话 600 秒。后续客户端必须实现受控重连、重新注入记忆和上下文；旧 /ws/duplex 页面不作为当前客户端协议依据。
+
+M0 通过后才进入采集层、原生播放、GUI、Qwen 工具调用、OpenClaw、ChromaDB 迁移。Qwen 继续使用 LM Studio 127.0.0.1:12345；本阶段不需加载 Qwen 或启动云端。
+
+### 故障排查
+
+- 模型 SHA256 不符：保留原文件，检查是否有匹配的备份或重新下载固定 revision。禁止仅改文件名绕过校验。
+- queue_done 超时：检查 Worker 已注册、三个健康接口正常，以及 output/m0 下的日志。
+- 无 audio 增量：原生 TTS 验收尚未通过，检查全部 Token2Wav / TTS 模块和参考音。
+- 中文字体异常：DOCX 使用显式东亚字体；如 Windows 缺少字体，安装对应字体后再检查页面渲染。Python 和 Markdown 文件统一 UTF-8。
+- 依赖冲突：使用独立 M0 环境，不把 websockets 16 直接装进旧主程序环境。

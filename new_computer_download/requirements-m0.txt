@@ -1,0 +1,20 @@
+# 方案 B 的独立 M0 环境，Python 3.11；不替换旧主程序的 requirements.txt。
+# Gateway / Worker / 探针均不加载 torch 模型。
+numpy==2.2.6
+soundfile==0.13.1
+sounddevice==0.5.5
+opencv-python==5.0.0.93
+soxr==1.0.0
+websockets==16.0
+httpx==0.28.1
+fastapi==0.128.0
+uvicorn==0.40.0
+pydantic==2.12.5
+python-multipart==0.0.22
+PyYAML==6.0.3
+librosa==0.11.0
+markdown==3.10.2
+Pygments==2.19.2
+pytest==8.4.2
+pytest-cov==7.0.0
+pytest-timeout==2.4.0

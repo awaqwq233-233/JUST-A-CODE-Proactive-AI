@@ -16,9 +16,9 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 
 ---
 
-## 新架构（2026-10-01 定案，唯一权威基准）
+## 新架构（2026-10-01 定案，2026-10-06 方案 B 修订）
 
-> **结论先行**：bo s s 于 2026-10-01 以 `brainstorming_projectPLAN/10月1日新架构.docx` 定案一套**新架构**，此后所有开发**严格以此为准**。本节是架构的唯一权威定义；`README.md` / `CHANGELOG.md` / `new_computer_download/READMEfirst.md` 均已按本节口径改写。**⚠️ 当前代码尚未按此改造**（见「代码迁移状态」），文档描述的是**目标架构**。
+> bo s s 已确认方案 B：保留三层模型架构，第一层改用固定版本的官方 MiniCPM-o-Demo Gateway / Worker 与 `tc-mb/llama.cpp-omni` Metal 引擎。权威 DOCX 为 `brainstorming_projectPLAN/10月1日新架构.docx`，精确版本、模型 SHA256 和协议参数记录在 `backend.lock.json`。**主程序仍是旧实现，当前处于 M0 验证阶段。**
 
 ### 一、三层模型架构
 
@@ -26,7 +26,7 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 
 | 层 | 模型 | 运行位置 | 职责 | 输出 |
 |---|---|---|---|---|
-| **感知/主动判断层** | `MiniCPM-o-4_5` | 本地 llama.cpp（Metal）`ws://127.0.0.1:8080/duplex` | 全双工主动判断：持续听/说、主动打招呼、判断是否介入；能力不足时向上发起升级 | **语音**（自带音色克隆 TTS） |
+| **感知/主动判断层** | `MiniCPM-o-4_5` | 本地 Metal，经 Gateway `ws://127.0.0.1:8006/v1/realtime?mode=video` | 全双工持续听/说、主动判断；能力不足时升级 | **语音**（原生 TTS） |
 | **大脑层** | `qwen/qwen3.6-35b-a3b` | LM Studio `127.0.0.1:12345` | 复杂决策：Function Calling / Tool Use / Agentic Coding（控制电脑） | **文件** |
 | **云端层** | 云端 OpenClaw | 服务器（接入 DeepSeek API，有公网地址） | 更复杂、长时间任务 | **文件** |
 
@@ -34,82 +34,31 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 
 ### 二、输入层
 
-- **音频**：用 **SoundDevice** 实时重采样。**MiniCPM-o 要求麦克风输入必须是 `16kHz / 16bit / Mono PCM`**。
-- **视频**：用 **OpenCV** 采集。**不要在主事件循环（asyncio loop / Qt Main Thread）里同步调用 `cv2.read()` 和 JPEG 编码**——应开独立后台线程采集，经线程安全 Queue 以**最高 10fps** 频率发往 WebSocket。超过 10fps 对全双工理解无增益，徒增带宽与 CPU。
+- **音频**：SoundDevice 采集，回调只复制至有界 Queue；后台重采样为 **16kHz / float32 little-endian / Mono PCM**，每 **1000ms** 发送 16000 个样本的 Base64 块。静音也持续发送，不通过丢弃用户语音追赶水位。
+- **视频**：用 **OpenCV** 采集。**不要在主事件循环（asyncio loop / Qt Main Thread）里同步调用 `cv2.read()` 和 JPEG 编码**——独立后台线程采集，经线程安全 Queue 提供给 GUI 和上行采样；默认上行每秒最新 1 帧，不把 5–10fps 的采集帧率误当上行帧率。
   - **强制将摄像头分辨率降为 640×480，帧率限制在 5–10 fps**。
-- **上行通道**：通过 **WebSocket** 将 PCM 音频流与 JPEG 视频帧发送给 `ws://127.0.0.1:8080/duplex`（端点具体契约参考 `llama-cpm` 仓库 `examples/duplex` 文档）。
+- **上行通道**：客户端只连接 Gateway 的 `/v1/realtime?mode=video`。默认每个 1 秒 `input.append` 附最新 1 帧 JPEG；采集/GUI 预览帧率与模型上行帧率分离，多帧上行必须先实测性能。
 - 至此音视频信号传入后端 `MiniCPM-o-4_5`，进行全双工主动判断。
 
-### 三、后端（MiniCPM-o-4_5 全双工）
+### 三、后端（方案 B 固定版本）
 
-- **环境**：后端使用 **python3.11**。
-- **定制版 llama.cpp**：使用**面壁官方适配全双工的 llama.cpp 分支** `llama-cpm`：
+- **环境**：客户端与 Gateway / Worker 使用 **Python 3.11**；推理使用 C++ Metal，不使用 PyTorch MPS 加载全双工模型。
+- **Demo**：`OpenBMB/MiniCPM-o-Demo` main，commit `47709a9210dfd71afa76c058e017fc8c4db5c8d2`。
+- **引擎**：`tc-mb/llama.cpp-omni` master，commit `873056743b74e1a4ce5dcf7290e2298428e214db`。
+- **模型**：`openbmb/MiniCPM-o-4_5-gguf`，revision `db25077c33951fe163b42986fba0132e279872a2`。除 `MiniCPM-o-4_5-Q4_K_M.gguf` 外，必须包含 audio、vision、tts、token2wav-gguf；逐文件 SHA256 见 `backend.lock.json`。
+- **链路**：J.A.C. → Gateway `127.0.0.1:8006` → Worker `127.0.0.1:22400` → `llama-omni-server` `127.0.0.1:22500`。Worker 注册接口为本机 `:8007`。
+- **构建**：CMake Release、`GGML_METAL=ON`、`LLAMA_OPENSSL=OFF`，构建目标 `llama-omni-server` / `llama-omni-cli`。固定 commit 加上已记录的 `new_computer_download/patches/engine-loopback.patch`，使内部后端遵守 `--host`；启动器只接受这份补丁，不接受其他源码漂移。
+- **起始参数**：`-ngl 99 -c 4096 -t 8`。其他参数依据该固定版本的 `--help` 与 M0 结果确定，不照搬旧 `llama-server` 命令。
+- **生命周期**：等待 `session.queue_done` → 发送 `session.init {payload: ...}` → 收到 `session.created` → 固定节拍 `input.append {input: ...}` → 接收 `response.output.delta` → `session.close / session.closed`。
+- **输出**：`kind=listen/text/audio`；音频是 **24kHz mono float32 PCM Base64**，独立于文本流。视频双工不用 `response.done` 作为每轮结束信号。
+- **会话时限**：该 Gateway 视频会话 300 秒、音频会话 600 秒。常开模式必须在迁移时实现受控重连和上下文恢复；不得声称当前上游可无限会话。
+- **协议依据**：固定 commit 中的 `docs/en/realtime-protocol-overview.md` 与 `docs-app/content/docs/en/realtime-api/video.md`；旧 `/ws/duplex/{session_id}` 页面不是本次客户端依据。
 
-  ```bash
-  git clone https://github.com/OpenBMB/llama.cpp.git llama-cpm
-  cd llama-cpm
-  make GGML_METAL=1 -j18   # 必须开 Metal；M5 Pro 18 核 CPU 用满编译
-  ```
+### 四、音色克隆（原生参考音频）
 
-- **GGUF 模型**（INT4 量化，约 5.5GB）：
-
-  ```bash
-  huggingface-cli download openbmb/MiniCPM-o-4_5-gguf minicpm-o-4_5-q4_k_m.gguf --local-dir ./models
-  ```
-
-- **启动全双工 Server**（严格限制内存，最终精确参数）：
-
-  ```bash
-  ./llama-server \
-    -m ./models/minicpm-o-4_5-q4_k_m.gguf \
-    --host 127.0.0.1 --port 8080 \
-    -ngl 999 \          # 全部 offload 到 M5 Pro 20 核 GPU
-    -c 4096 \           # 【关键】上下文限 4K，全双工下足以支撑多轮对话
-    -t 8 \              # 仅 8 个 CPU 线程预处理，剩余 10 核留给其他服务
-    --mlock \           # 锁内存，防 macOS 将模型 Swap 到 SSD 导致卡顿
-    --no-mmap \         # 禁用内存映射，提升 Apple Silicon 读取稳定性
-    --flash-attn        # 开 Flash Attention，大幅降低 KV Cache 内存占用
-  ```
-
-- **⚠️ 强制 Metal（GPU）而非 MPS**：PyTorch 的 MPS 后端对全双工流式生成有 Bug、易 OOM。llama.cpp 底层用 GGML 的 Metal 实现，是 Apple Silicon 上跑大模型唯一稳定且极速的路径。**不要用 PyTorch 加载 HF 权重跑全双工。**
-- **协议**：MiniCPM-o 全双工模式**不使用标准 OpenAI Chat API**，而是基于 **WebSocket 长连接**（端点 `/duplex`）。
-
-### 四、音色克隆（语音输出由 MiniCPM-o 完成）
-
-- **离线提取 Speaker Embedding（只做一次）**：在**有 NVIDIA GPU 的机器**（或 Colab / AutoDL 临时租卡）上用 HF 原版模型从样本音频（建议 5~10 秒清晰人声、无背景噪音）提取音色向量，`torch.save` 成 `.pt` 后拷回 Mac：
-
-  ```python
-  from transformers import AutoModel, AutoTokenizer
-  import torch, torchaudio
-
-  model = AutoModel.from_pretrained('openbmb/MiniCPM-o-4_5', trust_remote_code=True, torch_dtype=torch.float16).cuda()
-  tokenizer = AutoTokenizer.from_pretrained('openbmb/MiniCPM-o-4_5', trust_remote_code=True)
-  wav, sr = torchaudio.load("my_voice_sample.wav")
-  if sr != 16000:
-      wav = torchaudio.functional.resample(wav, sr, 16000)
-  with torch.no_grad():
-      spk_emb = model.get_speaker_embedding(wav.cuda(), sr=16000)
-  torch.save(spk_emb.cpu(), "my_custom_voice.pt")
-  ```
-
-- **启动时加载自定义音色**：
-
-  ```bash
-  ./llama-server ... --tts-speaker-emb ./my_custom_voice.pt
-  ```
-
-- **客户端 init 消息激活该音色**：
-
-  ```json
-  {
-    "type": "init",
-    "system_prompt": "你是我的私人助手，请用我的声音和我对话",
-    "voice_id": "custom",
-    "tts_speaker_emb_path": "./my_custom_voice.pt"
-  }
-  ```
-
-- ⚠️ 不同版本 `llama-cpm` 对自定义音色的 API 参数名可能略有差异，**必须查阅所编译仓库 `examples/duplex/README.md` 的最新文档**，确认 `--tts-speaker-emb` 与 `voice_id` 的确切字段名。
+- 参考音为 `voices/silverwalf_voice.wav`，客户端读取后转成 **16kHz mono float32 PCM Base64**。
+- 在 `session.init.payload.voice.ref_audio_base64` 与 `tts_ref_audio_base64` 发送，不再离线提取 `.pt`，也不使用 `--tts-speaker-emb` 或 `voice_id`。
+- 下行原生 24kHz PCM 直接通过 SoundDevice 输出流播放；运行时不将参考音发送给云端推理服务。bo s s 已明确允许将模板 `voices/silverwalf_voice.wav` 推送到本项目的公开 GitHub 仓库；此授权不包含实际测试录音。
 
 ### 五、输出层
 
@@ -127,7 +76,9 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 两条**性能铁律**（ChromaDB 在 Apple Silicon 上的坑）：
 
 1. **批量写库**：ChromaDB 频繁 `add` 后内存不会立即释放给 OS。**不要每次对话结束都立刻写库**——在客户端内存缓存最近 5 条摘要，满 5 条或会话结束时批量执行一次 `collection.add()`，再清理缓存，内存曲线才平滑。
-2. **限制检索时机**：**不要把 `retrieve_memories` 放进音频流回调**（用户每说一个字就触发一次向量检索，瞬间卡死主线程）。只在两个时刻检索：① WebSocket 连接建立、发 `init` 消息前（用用户开场白检索）；② VAD 检测到用户说完一整句（长静音后）、准备把这句话发给大模型前。
+2. **限制检索时机**：严禁放进音频回调。只在初始化会话和本地 VAD 判定完整句子结束后检索。初始化没有开场白时注入用户档案与近期记忆；本地 Whisper 并行转写完整句子以提供查询文本，不阻塞全双工上行。固定协议未确认支持动态 prompt 更新，检索结果优先提供给 Qwen 并注入下一会话。
+
+JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量写入应支持幂等 `upsert`、崩溃恢复及隐私删除。
 
 ### 七、GUI
 
@@ -147,14 +98,14 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 
 | 维度 | 新架构（目标） | 当前代码（旧实现） | 迁移动作 |
 |---|---|---|---|
-| omni 后端 | OpenBMB `llama-cpm` 分支，GGUF **Q4_K_M**，端口 **8080**，端点 `/duplex` | llama.cpp-omni master 分支，GGUF **Q8_0**，端口 **9060**，OpenAI Realtime 风格 `/backend` | 重编译后端 + 重接 WS 协议 |
-| 上下文/参数 | `-c 4096 -t 8 --flash-attn` | `-c 8192`（无 flash-attn） | 改启动参数 |
-| 语音输出 | MiniCPM-o 原生 speaker embedding（`.pt` + `--tts-speaker-emb`） | Voicebox App（REST `:17493`）+ Qwen3-TTS + 系统 TTS | 移除 Voicebox 依赖，接 o 版自带 TTS |
+| omni 后端 | 固定版本 Gateway / Worker / C++ Metal，Q4_K_M，`:8006/v1/realtime?mode=video` | 旧 llama.cpp-omni Q8_0，`:9060/backend` | M0 后端与探针独立验证后接线 |
+| 上下文/参数 | 起始 `-c 4096 -t 8 -ngl 99` | `-c 8192` | 真机确认资源与实时性 |
+| 语音输出 | 参考 WAV Base64 + 原生 24k float32 PCM | Voicebox App（REST `:17493`）+ Qwen3-TTS + 系统 TTS | 原生闭环通过后移除旧 TTS |
 | 记忆 | **ChromaDB** + BGE-Small-ZH-v1.5（ONNX INT8） + JSON | fastembed + paraphrase-multilingual-MiniLM + 自研 MemoryStore | 重写 `src/memory/` |
 | 模型层数 | 三层（o-4_5 + qwen + 云端 OpenClaw） | 两层（o-4_5 + qwen，无 OpenClaw） | 新增云端 OpenClaw 通道 |
-| 音频输入 | SoundDevice 重采样 16k/16bit/Mono | PyAudio + WebRTC VAD（Whisper 转写） | 改采集层 |
-| 视频输入 | 独立线程 + 640×480 + 5~10fps + Queue | OpenCV 主循环 1280×720，omni 1 帧/秒 | 改采集层 |
-| 运行环境 | python3.11 | python3.10/3.11（推荐） | 锁定 3.11 |
+| 音频输入 | SoundDevice + 16k float32 mono + 固定 1 秒块 | PyAudio + WebRTC VAD | 改采集层，保留并行转写 |
+| 视频输入 | 独立线程 640×480、采集 5~10fps、默认每秒上行最新 1 帧 | 1280×720，omni 1 帧/秒 | 采集与 GUI/上行解耦 |
+| 运行环境 | Python 3.11 | 现有 `.venv` 为 3.13；M0 独立 `.cache/m0/venv` 为 3.11 | 新环境通过后再切换 |
 | 判断引擎 | 由 MiniCPM-o-4_5 全双工承担（不再单独轮询） | `src/judgment/judge.py` 用 `minicpm-v-4_5` 标准 chat API 每 4s 轮询 | 移除 judge 轮询，并入 o 版全双工 |
 
 ## 文档同步硬性规定（Agent 必读）
@@ -164,22 +115,26 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 1. `README.md` — GitHub 首页文档（双语：英文在前、中文在后）。每次改动后确保其描述与项目真实状态一致。
 2. `AGENTS.md` — 本文件，开发者契约。架构/运行方式/依赖/文件路径变化必须同步。
 3. `CHANGELOG.md` — 变更日志。**同时是「文档归口中心」**：原 `codingLOG.md`（差距笔记）与原 `docs/memory/` 四份记忆子文档已于 2026-10-01 全量并入本文件（附 A 差距笔记 / 附 B 记忆契约 / 附 C 记忆测试计划与实现真值 / 附 D 用户指南 / 附 E 隐私说明 / 附 F 运维 Runbook），源文件已删除。每次变更追加一条用户可读的改动说明；涉及差距或记忆子系统的修订，**直接改 `CHANGELOG.md` 对应附录**，不再新建 `docs/` 专项。
-4. `brainstorming_projectPLAN/10月1日新架构.docx` — **新架构权威基准（2026-10-01 定案）**。自 2026-10-06 起，Agent 获准编辑和同步 `brainstorming_projectPLAN/`；涉及目标架构的实质性变更时，必须先取得 bo s s 明确确认，并在修改后同步 `AGENTS.md`、`README.md`、`CHANGELOG.md` 与安装文档。
+4. `brainstorming_projectPLAN/10月1日新架构.docx` — **新架构权威基准（2026-10-01 定案）**。自 2026-10-06 起，Agent 获准编辑和同步该本地目录，但整个 `brainstorming_projectPLAN/` 必须加入 `.gitignore`、停止 Git 跟踪，今后不得提交或推送。涉及目标架构的实质性变更时，必须先取得 bo s s 明确确认，并在修改后同步 `AGENTS.md`、`README.md`、`CHANGELOG.md` 与安装文档。
 
 **查看改动时的强制动作**：每当 Agent 需要了解「最近改了什么 / 当前实现状态」，必须优先读取 `CHANGELOG.md` 与 `AGENTS.md`；需要「当前代码与新架构的差距」时读 `CHANGELOG.md` 附 A（已按新架构口径改写）。
 
 配套检查项（每次提交/对话后）：
 
 - 检查 `.gitignore` 是否需要新增忽略（如新增大体积/二进制产物）。
+- 推送包含用户明确允许的模板 `voices/silverwalf_voice.wav`，不含模型、`brainstorming_projectPLAN/` 或测试录音录像。忽略规则不影响已跟踪文件，需停止跟踪但保留本地文件；尚未推送的提交也必须检查，避免排除文件随历史上传。已发布历史的清理须另行授权，不自动强推。
 - 检查 `requirements.txt` 是否新增依赖；若有，同步更新 `new_computer_download/` 下的一键安装脚本与 `new_computer_download/READMEfirst.md`。
 - `codinglog_by_awaqwq233/` 仍只由 bo s s 手动维护，Agent 不得自动编辑；`brainstorming_projectPLAN/` 已获准由 Agent 按 bo s s 确认的架构决策编辑和同步。
 - **开发平台**：当前以 macOS（Apple Silicon）为主开发机，保持跨平台兼容代码；Windows 开发机已不再使用。
 
-## 当前开发状态（2026-10-01 更新）
+## 当前开发状态（2026-10-06 更新）
 
 > 结论先行：**新架构已定案（`10月1日新架构.docx`），项目由「暂停审视」转入「按新架构重新实施」阶段**。**代码尚未迁移**，当前代码基线仍为旧架构（全量回归 134 passed），文档已先行为新架构打底。
 
-- **已定案的新架构要点**（详见上文）：三层模型（MiniCPM-o-4_5 全双工 + qwen3.6-35b 大脑 + 云端 OpenClaw）；omni 后端换 OpenBMB `llama-cpm` 分支（Q4_K_M、`:8080`、`/duplex`）；语音输出改 o 版原生音色克隆（替换 Voicebox）；记忆改 ChromaDB + BGE-Small-ZH-v1.5；输入改 SoundDevice + 640×480 独立线程采集；环境锁定 python3.11。
+- **方案 B 已确认**：三层模型不变；第一层使用固定版本官方 Gateway / Worker + llama.cpp-omni Metal，Q4_K_M、`:8006/v1/realtime?mode=video`、原生参考音频克隆。当前独立执行 M0，生产入口尚未切换。
+- **M0 文件**：`backend.lock.json`、`verify_duplex.py`、`new_computer_download/start_m0_backend.py`、`new_computer_download/requirements-m0.txt`。后端源码、模型和测试运行产物不提交到 Git。
+- **M0 已验证**：文件音频/视频协议、原生音频返回、40 秒真机采集播放与清理、10 次设备/WS 快速启停；真机处理 P95 679ms、播放 31 秒、音频队列最高 1 块。bo s s 确认可听且内容相关。33 项独立离线测试通过。30 分钟长测按用户要求后续进行，主程序保持旧架构。
+- **短时设备探针**：`verify_live_duplex.py` 必须显式 `--consent-devices` 且戴耳机。macOS 首次摄像头权限在启动主线程申请；帧读取/编码仍在独立线程。探针不保存原始媒体，使用后释放设备。
 - **旧架构已定性的 MiniCPM-o 能力天花板**（历史结论，仍有效，作为新架构「为何换后端分支/参数」的动机留存）：
   1. **视觉分辨率仅 grid 1x1 / 64 视觉 token**（服务端日志 `image encoded ... grid: 1x1`），细节视觉问答不可行（真机曾把 boss 本人误判成"电脑桌面"）。
   2. **音频理解（ASR）质量差**：内建麦离嘴远、人声 RMS 仅 0.03~0.065，模型听不清寒暄，会从 prompt 示例里"捡"输出。
@@ -199,8 +154,12 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 - `src/tools/`：Function Calling 工具层（装手）——新架构中归属大脑层 `qwen/qwen3.6-35b-a3b` 的 Tool Use / Agentic Coding。
 - `src/judgment/judge.py`：旧架构的独立主动判断引擎（`minicpm-v-4_5` 每 4s 轮询）——**新架构中该职责由 MiniCPM-o-4_5 全双工承担，此模块待移除**。
 - `src/memory/`：旧架构记忆子系统（fastembed + 自研 MemoryStore）——**新架构改 ChromaDB + BGE-Small-ZH-v1.5，此目录待重写**。
-- `src/omni/`：旧架构全双工 omni 模块（client.py / tokens.py / voicebox_bridge.py / backfeed.py / router.py / server_launcher.py / prompts.py）——**新架构换 `llama-cpm` 后端 + `/duplex` 协议 + o 版自带 TTS，此目录待重写**。
-- `voices/silverwalf_voice.wav`：旧架构 Voicebox 克隆参考音。新架构改走 o 版 speaker embedding（`.pt`），此 wav 仅作提取 speaker embedding 的原始样本。
+- `src/omni/`：旧架构全双工模块；目标为固定版本 Gateway Realtime 协议和原生 TTS，待 M0 通过后拆分重写。
+- `voices/silverwalf_voice.wav`：方案 B 原生音色参考 WAV，启动会话时编码发送给本机 Gateway。
+- `backend.lock.json`：后端与模型精确版本、SHA256、端口及协议配置。
+- `verify_duplex.py`：独立 M0 协议/媒体文件探针，不调用生产运行时，也不打开麦克风或摄像头。
+- `verify_live_duplex.py`：明确授权后使用本机设备的短时 M0 探针，不改生产入口、不保存原始媒体。
+- `new_computer_download/start_m0_backend.py`：固定版本校验、模型预检、启动本机三进程与回收。
 - `temp/`：运行时临时音频文件。
 - `requirements.txt` / `requirements_fixed.txt`：依赖快照。
 - `Modelfile`：Ollama 构建定义。
@@ -208,7 +167,7 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 - `setup_ffmpeg.py`：从 imageio-ffmpeg 复制二进制为项目根 `ffmpeg`。
 - `verify_model.py` / `verify_toolcall.py`：模型/工具调用校验脚本。
 - `codinglog_by_awaqwq233/`：bo s s 的个人记录，仍禁止 Agent 编辑。
-- `brainstorming_projectPLAN/`：架构规划目录；自 2026-10-06 起允许 Agent 在 bo s s 确认架构决策后编辑和同步。
+- `brainstorming_projectPLAN/`：仅本地的架构规划目录；允许 Agent 按已确认决策编辑和同步，但不提交、不推送。
 
 通常不参与编辑的大体积/二进制产物：
 
@@ -220,43 +179,20 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 
 所有**推理模型均不存放在项目内**，由外部 AI 软件 / 外部仓库管理：
 
-- **感知/主动判断层** `MiniCPM-o-4_5`：GGUF **Q4_K_M**（约 5.5GB），由 OpenBMB `llama-cpm` 分支（Metal 编译）加载，跑在 `ws://127.0.0.1:8080/duplex`。GGUF 由 `huggingface-cli` 从 `openbmb/MiniCPM-o-4_5-gguf` 下载到 `llama-cpm/models/`（仓库外）。
+- **感知/主动判断层**：`MiniCPM-o-4_5` Q4_K_M 主模型（约 5.03GB）与 audio/vision/tts/token2wav GGUF 由固定版本 C++ Metal 引擎加载；模型目录必须在仓库外，完整清单与哈希见 `backend.lock.json`。
 - **大脑层** `qwen/qwen3.6-35b-a3b`：在 **LM Studio** 中加载（`127.0.0.1:12345`），原生多模态、`enable_thinking=False`。代码按模型标识符精确匹配。
 - **云端层**：云端 OpenClaw，接入 **DeepSeek API**，有公网地址，处理更复杂/长时间任务。
-- **音色克隆**：MiniCPM-o 的 speaker embedding（`.pt`），离线从样本音频（`voices/silverwalf_voice.wav`）在 NVIDIA 机器上提取，`--tts-speaker-emb` 加载。
+- **音色克隆**：直接使用 `voices/silverwalf_voice.wav`，转为 16k mono float32 Base64，经 `session.init.payload.voice` 传给本机 Gateway。
 - **记忆**：ChromaDB 向量库 + `BGE-Small-ZH-v1.5`（ONNX INT8）embedding，权重由 ONNX runtime 加载（仓库外缓存）。
 - **物体检测** `yolov8n.pt`：首次运行由 `ultralytics` 自动下载到缓存，不进仓库。
 
 ## 设置与运行
 
-完整安装与配置见 **`new_computer_download/READMEfirst.md`**（双语，已按新架构改写）。**运行环境锁定 python3.11**。
-
-快速开始：
-
-```bash
-# 1. 创建并激活虚拟环境（python3.11）
-python3.11 -m venv .venv && source .venv/bin/activate
-
-# 2. 安装依赖（国内可加清华镜像）
-pip install -r requirements.txt
-
-# 3. 编译并启动 MiniCPM-o-4_5 全双工后端（OpenBMB llama-cpm 分支）
-git clone https://github.com/OpenBMB/llama.cpp.git llama-cpm
-cd llama-cpm && make GGML_METAL=1 -j18
-huggingface-cli download openbmb/MiniCPM-o-4_5-gguf minicpm-o-4_5-q4_k_m.gguf --local-dir ./models
-./llama-server -m ./models/minicpm-o-4_5-q4_k_m.gguf \
-  --host 127.0.0.1 --port 8080 -ngl 999 -c 4096 -t 8 \
-  --mlock --no-mmap --flash-attn --tts-speaker-emb ./my_custom_voice.pt
-
-# 4. LM Studio 加载大脑模型 qwen/qwen3.6-35b-a3b，本地服务器 127.0.0.1:12345
-
-# 5. 运行原型（GUI）
-python main.py
-```
+完整步骤见 **`new_computer_download/READMEfirst.md`**。M0 用 `python3.11 -m venv .cache/m0/venv` 和独立 `requirements-m0.txt`，保留现有 `.venv`。按 lock 编译外部引擎，再用 `start_m0_backend.py` 启动、`verify_duplex.py` 验证。**`python main.py` 仍运行旧架构，不能作为方案 B 验收。**
 
 ### 运行前置条件
 
-- **MiniCPM-o-4_5 后端**：按上文编译并启动 `llama-cpm` 的 `llama-server`（`:8080`，Metal）。
+- **MiniCPM-o-4_5 后端**：固定版本 Gateway / Worker / C++ Metal；M0 所有服务绑定 loopback，禁用上游会话录制。
 - **LM Studio**：加载 `qwen/qwen3.6-35b-a3b`（大脑层），`127.0.0.1:12345`。
 - **云端 OpenClaw**：处理更长任务时需服务器在跑（可选）。
 - 可用的摄像头、麦克风；项目根或 PATH 中的 FFmpeg。
@@ -266,9 +202,9 @@ python main.py
 
 - 坚持本地优先设计。唤醒词检测、VAD、基础感知、紧急交互留在本地（MiniCPM-o-4_5 全双工层）。
 - 分层升级：本地 MiniCPM-o-4_5 → 大脑 qwen3.6-35b → 云端 OpenClaw，按「简单规则 → 小模型 → 大模型」逐级上抛，避免让大模型决定每个底层路由。
-- **采集与推理解耦**：音频用 SoundDevice 实时重采样（16k/16bit/Mono）；视频在独立后台线程用 OpenCV 采集，经线程安全 Queue 以最高 10fps（640×480，5~10fps）上送，**绝不在主事件循环里同步 `cv2.read()` / JPEG 编码**。
+- **采集与推理解耦**：SoundDevice 回调只入队；后台转为 16k float32 mono、固定 1 秒块。OpenCV 独立线程 640×480、5~10fps 采集；每秒附最新 1 帧，不在主线程读摄像头或编码。
 - **记忆性能铁律**：ChromaDB 写库走「缓存 5 条摘要 → 批量 `collection.add()`」；检索只在「WS 建立发 init 前」与「VAD 判定说完一句后」两处触发，严禁放音频回调里。
-- **语音输出由 MiniCPM-o 承担**：音色克隆用 o 版 speaker embedding（`.pt`），不用外部 Voicebox；文件输出才走大脑层/云端层。
+- **语音输出由 MiniCPM-o 承担**：参考音频克隆 + 原生 24k float32 流；文件输出走大脑层/云端层。
 - 谨慎对待隐私与安全：主动常开感知必须包含可见的同意、本地过滤、日志控制，以及在录音/识别人物/向云 API 发送数据前的清晰边界。
 - 任何新的 agent/工具执行功能，对高风险操作必须显式白名单与确认。
 - 延迟优化优先做流式与流水线：流式 ASR、增量推理、流式/提前 TTS。
@@ -277,7 +213,8 @@ python main.py
 ## 已知限制（当前代码，待新架构落地后重新评估）
 
 - 当前代码仍为**旧架构**：omni 走 llama.cpp-omni `:9060`（Q8_0）、语音走 Voicebox、记忆走 fastembed + MemoryStore、判断引擎走 `minicpm-v-4_5` 轮询——**与已定案新架构不一致，属待迁移项**，勿据此误判新架构。
-- 运行强依赖外部软件（LM Studio / 后端 llama-server / 可选云端 OpenClaw）。
+- 运行依赖外部软件（LM Studio / 固定版本 Gateway、Worker、llama-omni-server / 可选云端 OpenClaw）。
+- 方案 B M0 的文件探针不能证明实时麦克风、摄像头、播放听感、10 次启停或 30 分钟稳定性；这些仍需要后续真机验证。
 - 旧架构 STT 仍为 Whisper tiny 非流式；旧架构 TTS 为句子级桥接而非 token 级（新架构语音输出改 o 版自带 TTS 后此限制重新评估）。
 - 无 WebRTC AEC（新架构以戴耳机规避回声，AEC 需求待重新评估）。
 - 无云端 OpenClaw 集成（新架构新增项，代码未落地）。
