@@ -5,6 +5,38 @@
 
 ---
 
+## 2026-10-06 — 明确推送范围：模板录音保留，模型与架构目录仅本地
+
+- bo s s 明确授权推送本轮代码和模板录音 `voices/silverwalf_voice.wav`，不推送模型或架构文档，今后也按此执行；实际测试录音录像不在本次授权范围内。
+- `.gitignore` 新增整个 `brainstorming_projectPLAN/`，保留模型排除并补充 `.pth` / `.ckpt` / `.tflite`；从 Git 索引移除架构目录，**本地 DOCX 保留不删除**。
+- 为避免新版 DOCX 经提交历史上传，重新整理本轮两个尚未推送的本地提交，以既有远端分支为基点生成不含新版架构文档的发布提交；旧本地提交通过 `refs/local-backups/m0-before-publish-20261006` 本地备份引用保留，不随分支推送。
+- 已发布的旧历史不在本次操作中清除，也不强推或修改 main。模板 WAV 已跟踪，发布提交继续保留该文件。
+- 同步 `AGENTS.md`、双语 README 和安装指南的发布边界，移除指向不再随仓库分发的 DOCX 的 GitHub 相对链接。未修改运行代码或依赖，无需重新进行设备测试。
+
+---
+
+## 2026-10-06 — 方案 B 定案并建立独立 M0 验证入口
+
+- bo s s 确认采用方案 B。权威 DOCX、AGENTS、README 与安装指南已改为固定版本官方 Gateway / Worker + C++ Metal；生产入口仍保留旧实现，尚未完成架构迁移。
+- 新增 `backend.lock.json`：Demo commit `47709a9`、引擎 commit `8730567`、模型 revision `db25077`、10 个 GGUF SHA256、端口与 Realtime 协议。旧 `/duplex`、16-bit PCM、`.pt` 音色路线停止作为目标实现依据。
+- 新增 `verify_duplex.py`：本机专用、固定 1 秒 16k float32 音频块，校验排队/初始化/增量输出/关闭，独立验证 24k 原生 TTS；报告不保存原始媒体或文本。
+- 新增 `verify_live_duplex.py`：显式设备同意后使用 SoundDevice 与后台 OpenCV 线程做短时真机验收；48k 实时重采样到 16k，上行每秒最新 640×480 JPEG，原生 24k PCM 直接播放，所有缓冲有界，不录制媒体。macOS 首次摄像头授权在启动主线程申请，读取与编码仍在后台。
+- 新增 `start_m0_backend.py`：commit 与模型预检、三进程启动与注册、loopback 绑定、禁用 Gateway 会话录制、回收自身子进程。
+- 发现并处理上游启动问题：默认 OpenSSL 构建会使用空证书 SSLServer，内部 HTTP 构建显式关闭 `LLAMA_OPENSSL`；上游硬编码 `0.0.0.0`，通过已登记的 `engine-loopback.patch` 改为遵守 `--host`。启动器仅接受固定 commit 加这份补丁。
+- Python 3.11.17 已安装，M0 独立环境位于 `.cache/m0/venv`，原 Python 3.13 `.venv` 保留；新增 `.python-version`、`requirements-m0.txt`，安装器新增 `--only m0`，其他安装阶段与生产依赖保持旧基线。
+- 已编译 Metal 引擎；10 个现有 GGUF 通过锁定 SHA256 校验，以临时符号链接视图复用，不覆盖原文件或重复下载。发现部分主文件哈希不符，匹配版本存在于 `.1.gguf` 备份。
+- 独立 M0 测试 **33 passed**，覆盖协议时序、PCM 校验、缺失原生音频/性能指标失败、源码/模型/端口预检、安装隔离与回调缓冲。新增 `--require-realtime`，耗时缺失或 P95≥1000ms 会明确失败。
+- 旧架构回归 **134 passed**（157.72 秒，保留旧环境且用 `-o addopts=`）；旧环境缺少 pytest-timeout，出现 1 项 `Unknown config option: timeout` 警告，不影响用例通过。M0 环境已单独安装测试插件。
+- 真实文件探针：音频 P95 **860.804ms**、视频 P95 **591.786ms**，都收到原生音频。启动阶段会强制听取若干块，探针先发 4 秒静音再发语音；短窗口不出声不会被包装成语音验收通过。
+- 40 秒真机测试通过：640×480、194 帧，原生音频收播均 **31 秒**，P95 **679.310ms**，输入/输出流异常均 0，音频队列最高 1 块、播放队列最高 2 块，设备和线程清理通过。bo s s 确认耳机可听且回答与提问相符。
+- **10 次设备/WS 快速启停通过**：每次建立/关闭真实 Gateway 会话、启动并释放摄像头/麦克风/播放流与采集线程，均无设备错误，闭环清理通过；不等同于每次都完成语音问答。
+- **30 分钟长测未做**：bo s s 本轮要求先保存结果，后续再长测。M0 仅短时门槛通过，`main.py`、生产 `src/`、旧环境和旧依赖未切换。本次启动的后端服务已停止。
+- 权威 DOCX 已按方案 B 更新，修正东亚字体、跨页表格行与代码块分页，并通过逐页渲染检查；文档渲染使用的源码和 PDF/PNG 不进 Git。
+- `.cache/`、`output/` 与 `*.gguf` 已在 `.gitignore`，不提交环境、后端源码、模型、日志及渲染产物；只补正模型管理注释。`codinglog_by_awaqwq233/` 未修改。
+- `.gitattributes` 仅为后端 `.patch` 文件排除补丁格式必需的空白上下文前缀检查，保留普通源码的尾空格检查和原模型 LFS 规则。
+
+---
+
 ## 2026-10-06 — 更新架构规划目录的编辑权限（未改代码）
 
 > **本次只修改开发者契约与变更日志，未改代码，也未改架构方案正文。**
@@ -120,12 +152,12 @@
 > 本附录承接原 `codingLOG.md` 全部内容。文件已删除，日后修订**直接改本附录**。
 > 注：本附录是"差距笔记"，不是精确实现状态。已落地的进展（主动判断引擎、多模态图像问答、多后端大脑）以 `AGENTS.md` 为准。
 
-> ⚠️ **新架构锚定（2026-10-01）**：bo s s 已定案新架构（`brainstorming_projectPLAN/10月1日新架构.docx`），本附录作为历史差距笔记保留，但以下条目的结论已被新架构**覆盖 / 改写**，勿再按旧口径执行：
-> - **A1 判断模型**：旧结论「judge 用 `minicpm-v-4_5` 标准 chat API 轮询」已作废——新架构由 MiniCPM-o-4_5 **全双工**承担主动判断（`llama-cpm` 分支 + `/duplex`），`src/judgment/judge.py` 的轮询式 judge **待移除**。
+> **当前目标锚点（2026-10-06）**：bo s s 已确认方案 B，精确契约以 `backend.lock.json` 与权威 DOCX 为准。下方旧实现记录仍作历史证据保留；生产代码尚未切换。
+> - **A1 判断模型**：目标由 MiniCPM-o-4_5 全双工承担主动判断，固定 Gateway `/v1/realtime?mode=video`；`src/judgment/judge.py` 的轮询式 judge 待替代链路验收后移除。
 > - **A3 记忆**：旧结论「fastembed + JSON 长期记忆」已作废——新架构改 **ChromaDB + BGE-Small-ZH-v1.5（ONNX INT8）+ JSON**，`src/memory/`（自研 MemoryStore）**待重写**；附 B/C/D/E/F 为旧记忆子系统契约，仅作历史存档。
 > - **A5 云端 / OpenClaw**：旧结论「无 MCP / OpenClaw 集成」已作废——新架构**新增云端 OpenClaw 层**（DeepSeek API），属待实现项。
-> - **A4 语音 / TTS**：旧结论「Voicebox + Qwen3-TTS 兜底」已作废——新架构语音输出由 MiniCPM-o **自带音色克隆**（speaker embedding）承担，Voicebox 依赖待移除。
-> - **A4 后端参数**：旧结论「llama.cpp-omni `:9060` Q8_0 `-c 8192`」已作废——新架构为 OpenBMB `llama-cpm` `:8080` Q4_K_M `-c 4096 --flash-attn`。
+> - **A4 语音 / TTS**：目标为参考 WAV 经 `session.init.payload.voice` 编码发送，24k float32 原生音频流；不使用 speaker embedding `.pt`。旧 Voicebox 依赖待原生播放验收后移除。
+> - **A4 后端参数**：目标固定 Gateway `:8006`、Worker `:22400`、引擎 `:22500`，Q4_K_M、起始 `-c 4096 -t 8 -ngl 99`；Metal 构建关闭内部 TLS并应用已登记的 loopback 补丁。
 > 其余历史坑位记录（令牌碎片、背压、回声门控等）作为工程经验保留，但在新架构后端 / 协议下需**重新验证**。
 
 #### A1. 交互方式：从被动到主动（部分解决）
