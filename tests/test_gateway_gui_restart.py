@@ -177,7 +177,6 @@ def test_startup_exception_cleans_partially_started_runtime(window, monkeypatch)
         raise RuntimeError("模拟初始化异常")
 
     monkeypatch.setattr(window.runtime, "start", fail_start)
-    window.gateway_consent_chk.setChecked(True)
     window.video_enabled_chk.setChecked(False)
     window._toggle_run()
     deadline = time.monotonic() + 3
@@ -234,7 +233,6 @@ def test_slow_stop_keeps_qt_responsive_and_blocks_restart(window, monkeypatch):
         release.set()
         wait_gui(lambda: not window._stopping)
     assert window.start_btn.isEnabled() and window.start_btn.text() == "启动语音"
-    window.gateway_consent_chk.setChecked(True)
     window.video_enabled_chk.setChecked(False)
     window._toggle_run()
     wait_gui(lambda: window.runtime.starts == 2 and window.start_btn.text() == "停止语音")
@@ -475,7 +473,6 @@ def test_close_window_waits_for_owned_backend_process(window, tmp_path):
 def test_voice_start_requires_ready_backend_without_opening_devices(window, monkeypatch):
     """后端未就绪时不发起客户端启动或首次摄像头权限请求。"""
     window.backend.state = 'stopped'
-    window.gateway_consent_chk.setChecked(True)
     def forbidden(*args):
         """没有后端时任何设备权限调用都是错误。"""
         pytest.fail('后端未就绪时访问了设备')

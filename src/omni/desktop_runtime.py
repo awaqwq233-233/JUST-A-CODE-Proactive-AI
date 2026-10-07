@@ -77,7 +77,7 @@ class GatewayRuntime:
             self.notify(False)
             raise RuntimeError("方案 B Gateway GUI 必须使用 Python 3.11 环境")
         if not config.gateway_consent_devices:
-            print("[Gateway] 请先勾选设备同意并戴好耳机。")
+            print("[Gateway] 请先授权使用设备并戴好耳机。")
             self.notify(False)
             return
         ref = Path(config.omni_ref_audio)

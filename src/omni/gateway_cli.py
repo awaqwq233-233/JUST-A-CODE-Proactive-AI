@@ -1,4 +1,4 @@
-"""M1 Gateway 入口：真实设备须明确同意，文件回放不打开任何采集或播放设备。"""
+"""M1 Gateway 入口：终端设备使用须显式许可；GUI 默认许可，点击启动语音才开启设备。"""
 
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ def main(argv=None) -> int:
     """解析独立 Gateway 参数，保存无原始媒体的 M1 运行报告。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--consent-devices", action="store_true", help="同意使用设备且已戴耳机")
-    parser.add_argument("--gui", action="store_true", help="打开 Gateway GUI，启动设备前在界面明确同意")
+    parser.add_argument("--gui", action="store_true", help="打开 Gateway GUI，设备默认许可，点击启动语音才开启")
     parser.add_argument("--url", default="ws://127.0.0.1:8006")
     parser.add_argument("--input-device", type=int)
     parser.add_argument("--output-device", type=int)

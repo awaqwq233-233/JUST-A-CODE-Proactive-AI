@@ -44,6 +44,10 @@ QPushButton#primary { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
 QPushButton#primary:hover { background: #178eaf; border-color: #8cecff; }
 QPushButton#primary:disabled { background: #22496a; border-color: #315472; color: #8ba7bc; }
 QPushButton#backend { color: #a7e5ff; border-color: #3178a4; }
+QPushButton#settingsToggle:checked { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+    stop:0 #176f91,stop:1 #204f89); color: #effcff; border: 1px solid #5dcfe8; }
+QPushButton#settingsToggle:checked:hover { background: #1c7fa2; border-color: #99efff; }
+QPushButton#settingsToggle:pressed { background: #0d405e; border-color: #a1f0ff; }
 QPushButton#quiet { padding: 5px 10px; border-radius: 9px; font-size: 12px; }
 QPlainTextEdit { border: none; background: transparent; padding: 4px; selection-background-color: #245982; }
 QPlainTextEdit#console { font-size: 15px; }
@@ -216,7 +220,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config):
         """建立 Gateway 工作台，初始化仅探测本机后端，不打开用户设备。"""
         super().__init__()
-        self.config, self.context = config, SharedContext()
+        self.config, self.context = replace(config, gateway_consent_devices=True), SharedContext()
         self._runtime_state_changed.connect(self._apply_runtime_state, Qt.QueuedConnection)
         self._stop_runtime_requested.connect(self._safe_stop_runtime, Qt.QueuedConnection)
         self._startup_failed.connect(self._handle_startup_failure, Qt.QueuedConnection)
@@ -288,6 +292,8 @@ class MainWindow(QMainWindow):
         self.start_btn.clicked.connect(self._toggle_run)
         header.addWidget(self.start_btn)
         self.settings_btn = QPushButton("调节参数")
+        self.settings_btn.setObjectName("settingsToggle")
+        self.settings_btn.setToolTip("收起参数面板")
         self.settings_btn.setCheckable(True)
         self.settings_btn.setChecked(True)
         self.settings_btn.toggled.connect(self._toggle_panel)
@@ -413,11 +419,6 @@ class MainWindow(QMainWindow):
 
     def _build_options(self, op):
         """只呈现固定 Gateway 客户端实际支持的设置。"""
-        self.gateway_consent_chk = QCheckBox("同意开启设备，已戴好耳机")
-        self.gateway_consent_chk.setChecked(self.config.gateway_consent_devices)
-        self.gateway_consent_chk.setToolTip("开启麦克风、摄像头与语音播放；不保存原始媒体。")
-        self._controls.append(self.gateway_consent_chk)
-        op.addWidget(self.gateway_consent_chk)
         self._section(op, "采集")
         self.mic_gain_spin = QDoubleSpinBox()
         self.mic_gain_spin.setRange(.1, 8.)
@@ -738,9 +739,6 @@ class MainWindow(QMainWindow):
             self.console.appendPlainText('请先启动后端，并等待就绪后再启动语音。')
             return
         config = self._collect_config()
-        if not config.gateway_consent_devices:
-            self.console.appendPlainText("请先勾选设备同意，并戴好耳机。")
-            return
         try:
             from src.omni.realtime_protocol import gateway_url
             gateway_url(config.gateway_url, "video")
@@ -882,7 +880,7 @@ class MainWindow(QMainWindow):
     def _collect_config(self):
         """收集真实生效的 Gateway 参数，保留未在界面暴露的配置。"""
         return replace(self.config, omni_enabled=True, omni_backend="gateway",
-            gateway_consent_devices=self.gateway_consent_chk.isChecked(),
+            gateway_consent_devices=True,
             gateway_input_device=self.input_device_combo.currentData(),
             gateway_output_device=self.output_device_combo.currentData(),
             gateway_camera=self.camera_spin.value(), gateway_url=self.url_edit.text().strip(),
@@ -893,6 +891,7 @@ class MainWindow(QMainWindow):
     def _toggle_panel(self, visible):
         """隐藏设置后将空间交给画面与对话记录。"""
         self.option_panel.setVisible(visible)
+        self.settings_btn.setToolTip("收起参数面板" if visible else "展开参数面板")
 
     def closeEvent(self, event):
         """退出先等待会话关闭，然后恢复日志流并释放 Qt 定时器。"""
