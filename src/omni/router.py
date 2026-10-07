@@ -1,13 +1,4 @@
-"""M2 升级路由：把 omni 发出的 <<CALL_QWEN>> 令牌转交 qwen3.6-35b + 工具执行。
-
-职责边界（详见项目根 AGENTS.md / 升级计划）：
-  - omni（耳朵 + 眼睛 + 嘴巴）遇到「需要联网 / 操作电脑 / 复杂推理 / 调工具」的任务时，
-    输出 `<<CALL_QWEN>>{任务}` 交给这里。
-  - 本路由用独立的 LocalBrain（lm_studio 上的 qwen3.6-35b-a3b，即「大脑 + 手」）
-    跑 agentic 工具循环，把最终结果回传调用方；调用方再经 omni 的 turn_based
-    回灌通道（backfeed.py）自然播报给 boss。
-  - 本模块不直接发声、不操作 GUI，只产出「给 boss 的结果文本」。
-"""
+"""待迁移的 Qwen 工具路由；Gateway 尚未接线，不启动旧 MiniCPM 或播报链。"""
 import logging
 
 from src.brain.llm import LocalBrain

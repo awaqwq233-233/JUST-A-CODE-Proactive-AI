@@ -1,53 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-J.A.C. 新电脑「一键依赖补全」工具
-======================================================================
+"""J.A.C. 安装工具：默认创建 Python 3.11 Gateway 环境并检查 GUI 导入。
 
-用途
-----
-把 J.A.C. 项目迁移到一台全新的电脑（Windows / macOS / Linux 均可）后，
-运行本工具即可把项目补全到「能直接跑 main.py」的状态：
-
-  1. Python 包依赖（按当前平台自动过滤，避免 Windows 专属包在 Mac/Linux 上装失败；
-     已安装的包会自动跳过，只下载/安装缺失项；含 GUI 依赖 PySide6）
-  2. 系统级依赖（portaudio 麦克风录音库、ffmpeg 音视频库）
-  3. ffmpeg 可执行文件（跨平台放到项目根目录，main.py 能直接找到）
-  4. 外部 AI 软件指引（大脑 / 判断 / TTS 的模型不再由本工具下载，改由
-     LM Studio / Voicebox 等外部软件管理；本步打印加载指引）
-  5. 记忆向量检索的 embedding 模型权重（fastembed + 默认 sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2，
-     用于记忆的语义向量召回；国内走 HF 镜像下载，下载失败自动降级关键词检索，不影响主功能）
-
-网络问题应对（针对国内网络 / 弱网）
-------------------------------
-  * pip 默认走清华镜像；整批失败自动改逐个安装，仍失败的包再回退官方源 pypi.org 重试一次
-    （部分大包如 PySide6 在清华镜像返回 403，官方源通常可用）。
-  * embedding 模型权重走 HuggingFace；国内自动设 HF_ENDPOINT=hf-mirror.com 镜像，
-    证书仍报错可用 --insecure 关校验（仅可信内网，有中间人风险）。
-
-用法（任选其一）
-----------------
-  python setup_new_computer.py                 # 默认：全部补全（自动建 venv）
-  python setup_new_computer.py --only pip      # 只装 Python 包
-  python setup_new_computer.py --only gateway  # 方案 B：独立 Python 3.11 环境、后端控制与 GUI
-  python setup_new_computer.py --only m0       # gateway 的兼容别名
-  python setup_new_computer.py --only external # 只打印外部 AI 软件（LM Studio / Voicebox）加载指引
-  python setup_new_computer.py --only embed    # 只预下载记忆 embedding 模型
-  python setup_new_computer.py --skip-embed    # 跳过 embedding 模型（首次运行 main.py 时自动联网下）
-  python setup_new_computer.py --torch cuda    # Linux/Windows 装带 CUDA 的 torch
-  python setup_new_computer.py --no-venv       # 不建虚拟环境，直接装到当前 Python
-  python setup_new_computer.py --insecure      # 联网下载关闭 SSL 校验（仅可信内网，有中间人风险）
-  python setup_new_computer.py --dry-run       # 只打印将做什么，不改动任何东西
-
-说明
-----
-  * 本工具自身只依赖 Python 标准库 + 系统 curl，可在全新机器上直接跑。
-  * 默认会在项目根目录建一个 .venv 虚拟环境并安装进去（避免污染系统 Python / 免 sudo）；
-    若你已自己建好 venv 并激活，加 --no-venv 即可直接装进当前解释器。
-  * 每个 Python 包安装前会先探测是否能 import 成功，已装的自动跳过、只装缺失项，
-    既省时间也省流量（PySide6 等 GUI 依赖也在其中）。
-  * 模型文件（大脑 / 判断 / TTS）全部由外部软件管理，项目内不再保留 models/ 目录；
-    详细安装见 new_computer_download/READMEfirst.md。
+默认使用清华 pip 镜像，失败回退官方源。保留 --only m0 兼容别名。
+--only all / pip / verify 同样使用当前 Gateway 清单；system / ffmpeg / embed
+为尚未迁移组件的独立维护阶段，不接回旧 MiniCPM、Voicebox 或判断轮询。
+模型必须放在仓库外，固定版本后端由 start_m0_backend.py 单独启动。
 """
 
 import argparse
@@ -450,22 +408,11 @@ def step_ffmpeg(args):
 # 步骤 4：外部 AI 软件指引（模型不再由本工具下载）
 # ----------------------------------------------------------------------------
 def step_external_software(args):
-    """打印外部 AI 软件的加载指引（大脑 / 判断 / TTS 由 LM Studio / Voicebox 管理）。"""
-    hr("步骤 4/6  外部 AI 软件指引（模型不在项目中下载）")
-    if args.dry_run:
-        log("  [dry-run] 将打印 LM Studio / Voicebox 的安装与模型加载指引。")
-        return True
-    log(
-        "J.A.C. 的模型文件全部由外部软件管理，本工具不下载任何本地模型权重：\n"
-        "  1) 大脑（LLM）：安装 LM Studio，加载模型标识符 `qwen/qwen3.6-35b-a3b`\n"
-        "     （原生多模态、禁用思考），并启动本地服务（默认 127.0.0.1:12345）。\n"
-        "  2) 主动判断（可选）：如需主动介入，在 LM Studio 额外加载 MiniCPM-o；\n"
-        "     默认 JUDGMENT_ENGINE_ENABLED=True，未加载 MiniCPM-o 时自动进入被动模式。\n"
-        "  3) TTS（语音）：安装 Voicebox App，导入 voices/silverwalf_voice.wav\n"
-        "     建立名为 JAC 的克隆声纹；macOS 上 Qwen3-TTS 不可用，由 Voicebox 接管。\n"
-        "  4) 视觉检测：yolov8n.pt 在首次运行 main.py 时由 ultralytics 自动下载到项目根。\n"
-        "详细安装步骤见 new_computer_download/READMEfirst.md。"
-    )
+    """说明固定后端和待接入的大脑，不下载模型或启动设备。"""
+    hr("外部模型服务")
+    log("感知与语音：按 backend.lock.json 配置仓库外固定版本模型，使用 start_m0_backend.py。")
+    log("Qwen 大脑：未来使用 LM Studio 127.0.0.1:12345；本轮 GUI 尚未接线。")
+    log("参考音：voices/silverwalf_voice.wav，由 Gateway 原生语音输出使用。")
     return True
 
 
@@ -559,7 +506,7 @@ def step_verify(args):
 # 主流程
 # ----------------------------------------------------------------------------
 def step_m0(args):
-    """建立独立 3.11 M0/M1 环境（含 Gateway GUI），保留生产 .venv。"""
+    """建立当前主程序的 3.11 环境（含 Gateway GUI），保留已有 .venv。"""
     hr("方案 B M0/M1 独立环境")
     interpreter = sys.executable if sys.version_info[:2] == (3, 11) else shutil.which("python3.11")
     if not interpreter:
@@ -591,8 +538,10 @@ def step_m0(args):
         return False
     verification = run_cmd(
         [m0_python, "-c", "import sys; from src.omni import GatewayClient; "
-         "from PySide6.QtWidgets import QApplication; import httpx, fastapi, uvicorn; "
+         "from PySide6.QtWidgets import QApplication; import gui, main; "
+         "from src.omni.backend_control import BackendController; import httpx, fastapi, uvicorn; "
          "assert 'torch' not in sys.modules and 'pyaudio' not in sys.modules; "
+         "assert 'src.omni.client' not in sys.modules and 'src.judgment.judge' not in sys.modules; "
          "print('Gateway client, GUI and backend dependencies verified')"],
         capture=True, check=False, cwd=PROJECT_ROOT,
     )
@@ -613,7 +562,7 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "external", "embed", "verify", "m0", "gateway"],
-                   default="all", help="只运行指定阶段（默认 all）")
+                   default="gateway", help="只运行指定阶段（默认 gateway）")
     p.add_argument("--skip-embed", action="store_true", help="跳过记忆 embedding 模型预下载（首次运行 main.py 时自动联网下）")
     p.add_argument("--torch", choices=["auto", "cpu", "cuda"], default="auto",
                    help="torch 安装变体（auto: macOS=MPS, 其他=CPU）")
@@ -628,7 +577,7 @@ def parse_args():
 def main():
     """主"""
     args = parse_args()
-    if args.only in {"m0", "gateway"}:
+    if args.only in {"m0", "gateway", "all", "pip", "verify"}:
         raise SystemExit(0 if step_m0(args) else 1)
     # torch auto 映射到 cpu/cuda 语义
     if args.torch == "auto":

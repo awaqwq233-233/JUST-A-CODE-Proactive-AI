@@ -71,11 +71,28 @@ class GatewayClient:
         self._stop = threading.Event()
         self._ready = threading.Event()
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
         self._reply = self._pending_text = ""
         self._recent = deque(maxlen=8)
         self._costs = deque(maxlen=3000)
         self._stats = Counter()
         self.last_error = None
+
+    async def _close_session(self, ws, receiver, reason) -> None:
+        """保留唯一接收器直到关闭确认，避免提前断链令 Worker 收尾与重启冲突。"""
+        try:
+            if not receiver.done():
+                await ws.send(json.dumps({"type": "session.close", "reason": reason}))
+            await asyncio.wait_for(asyncio.shield(receiver), 35)
+            # 固定版本会先发关闭事件再收尾；WS 关闭并不等于 C++ 已完全释放。
+            await asyncio.wait_for(ws.wait_closed(), 5)
+            await asyncio.sleep(1)
+        except (ConnectionClosed, OSError, TimeoutError):
+            with self._lock:
+                self._stats["close_handshake_failures"] += 1
+            raise
+        with self._lock:
+            self._stats["close_handshakes"] += 1
 
     async def _init_message(self, voice) -> dict:
         """每次建会话重新注入用户提供的上下文和有界助手历史，不伪造用户转写。"""
@@ -117,7 +134,8 @@ class GatewayClient:
                 self.callbacks.on_text_delta(text)
             elif kind == "audio":
                 samples = protocol.decode_pcm(event["audio"])
-                devices.enqueue_output(samples)
+                if not self._stop.is_set():
+                    devices.enqueue_output(samples)
                 with self._lock:
                     self._stats["native_audio_samples"] += len(samples)
                 self.callbacks.on_audio_chunk(samples.tobytes())
@@ -137,28 +155,31 @@ class GatewayClient:
         try:
             async with connect(self.url, proxy=None, max_size=32 * 1024 * 1024,
                                open_timeout=20, close_timeout=5) as ws:
-                events = Counter()
-                await protocol.receive_until(ws, "session.queue_done", 120, events)
-                await ws.send(json.dumps(await self._init_message(voice), ensure_ascii=False))
-                created = await protocol.receive_until(ws, "session.created", 120, events)
-                if created.get("mode") != "full_duplex" or not created.get("session_id"):
-                    raise ValueError("Gateway 未创建有效全双工会话")
-                startup = asyncio.create_task(asyncio.to_thread(devices.start))
+                receiver = None
+                initialized = closed = False
                 try:
-                    await asyncio.shield(startup)
-                except asyncio.CancelledError:
-                    # to_thread 不能抢占正在启动的设备，先等启动返回再由 finally 回收。
-                    await startup
-                    raise
-                await asyncio.to_thread(devices.camera_ready.wait, 8)
-                if devices.error or (self.device_kwargs["video_enabled"] and not devices.captured_frames):
-                    raise RuntimeError(devices.error or "摄像头无画面")
-                with self._lock:
-                    self._stats["sessions_started"] += 1
-                self.callbacks.on_state("ready")
-                self._ready.set()
-                receiver = asyncio.create_task(self._receive(ws, devices, costs))
-                try:
+                    events = Counter()
+                    await protocol.receive_until(ws, "session.queue_done", 120, events)
+                    await ws.send(json.dumps(await self._init_message(voice), ensure_ascii=False))
+                    initialized = True
+                    created = await protocol.receive_until(ws, "session.created", 120, events)
+                    if created.get("mode") != "full_duplex" or not created.get("session_id"):
+                        raise ValueError("Gateway 未创建有效全双工会话")
+                    startup = asyncio.create_task(asyncio.to_thread(devices.start))
+                    try:
+                        await asyncio.shield(startup)
+                    except asyncio.CancelledError:
+                        # to_thread 不能抢占设备启动，等它返回后再完整释放。
+                        await startup
+                        raise
+                    await asyncio.to_thread(devices.camera_ready.wait, 8)
+                    if devices.error or (self.device_kwargs["video_enabled"] and not devices.captured_frames):
+                        raise RuntimeError(devices.error or "摄像头无画面")
+                    with self._lock:
+                        self._stats["sessions_started"] += 1
+                    receiver = asyncio.create_task(self._receive(ws, devices, costs))
+                    self.callbacks.on_state("ready")
+                    self._ready.set()
                     stream_start = None
                     for index in range(self.session_seconds):
                         chunk = await asyncio.to_thread(devices.audio.get, True, 2)
@@ -189,23 +210,34 @@ class GatewayClient:
                     if receiver.done():
                         if await receiver != "timeout":
                             raise RuntimeError("Gateway 在主动关闭前意外结束")
-                    else:
-                        await ws.send(json.dumps({"type": "session.close", "reason": "session_rotation"}))
-                        await asyncio.wait_for(receiver, 10)
+                    await self._close_session(ws, receiver, "session_rotation")
+                    closed = True
                     deadline = time.monotonic() + 5
                     while (not devices.playback.empty() or len(devices.pending_output)) and time.monotonic() < deadline:
                         await asyncio.sleep(0.1)
                     with self._lock:
                         self._stats["sessions_completed"] += 1
                 finally:
-                    if not receiver.done():
-                        receiver.cancel()
-                    await asyncio.gather(receiver, return_exceptions=True)
-                    # 停止或异常路径也尝试让 Gateway 收到正常关闭请求。
                     try:
-                        await asyncio.wait_for(ws.send(json.dumps({"type": "session.close", "reason": "client_stop"})), 2)
-                    except (ConnectionClosed, OSError, TimeoutError):
-                        pass
+                        if initialized and not closed:
+                            # 即使停在 init/设备启动阶段，也必须走关闭握手。
+                            if receiver is None:
+                                receiver = asyncio.create_task(self._receive(ws, devices, costs))
+                            if not receiver.done():
+                                await asyncio.to_thread(devices.finish_input)
+                                # 避免在 C++ 同步 decode 正在用栈请求时强制打断；
+                                # 先停采集并保留接收尾窗，与正常会话轮换采用同样的收尾。
+                                await asyncio.wait({receiver}, timeout=self.drain_seconds)
+                                try:
+                                    await self._close_session(ws, receiver, "client_stop")
+                                except (ConnectionClosed, OSError):
+                                    # 已断网时无法取得确认；保留触发收尾的原始错误。
+                                    pass
+                    finally:
+                        if receiver is not None:
+                            if not receiver.done():
+                                receiver.cancel()
+                            await asyncio.gather(receiver, return_exceptions=True)
         finally:
             cleaned = await asyncio.to_thread(devices.stop)
             self._remember_text()
@@ -244,16 +276,20 @@ class GatewayClient:
 
     def start(self, timeout=180) -> bool:
         """在专用 asyncio 线程启动并等待 ready；超时完整停止，供 GUI 运行时调用。"""
-        if self.is_running():
-            return True
-        self._stop.clear()
-        self._ready.clear()
-        self.last_error = None
-        self._thread = threading.Thread(target=self._thread_main, name="jac-gateway", daemon=True)
-        self._thread.start()
+        with self._lifecycle_lock:
+            if self._thread is not None and self._thread.is_alive():
+                if self._stop.is_set():
+                    raise RuntimeError("Gateway 上一次停止尚未完成，请等待关闭确认")
+            else:
+                self._stop.clear()
+                self._ready.clear()
+                self.last_error = None
+                self._thread = threading.Thread(target=self._thread_main, name="jac-gateway", daemon=True)
+                self._thread.start()
+            worker = self._thread
         deadline = time.monotonic() + timeout
         while not self._ready.wait(0.05):
-            if not self._thread.is_alive() or time.monotonic() >= deadline:
+            if not worker.is_alive() or time.monotonic() >= deadline:
                 self.stop()
                 return False
         return self.last_error is None and self.is_running()
@@ -270,6 +306,8 @@ class GatewayClient:
                 self.callbacks.on_state("closed")
             except Exception as error:
                 self.last_error = type(error).__name__
+                if isinstance(error, RuntimeError):
+                    self.last_error += ": " + str(error)[:300]
                 self.callbacks.on_error(self.last_error)
                 self.callbacks.on_state("error")
             finally:
@@ -279,16 +317,18 @@ class GatewayClient:
 
     def stop(self) -> None:
         """协作取消 WS/设备任务并等待线程清理，不停止用户已有后端服务。"""
-        self._stop.set()
-        loop, task = self._loop, self._task
-        if loop is not None and task is not None:
-            try:
-                loop.call_soon_threadsafe(task.cancel)
-            except RuntimeError:
-                pass
-        if self._thread is not None and self._thread is not threading.current_thread():
-            self._thread.join(timeout=15)
-            if self._thread.is_alive():
+        with self._lifecycle_lock:
+            stopping = self._stop.is_set()
+            self._stop.set()
+            loop, task, worker = self._loop, self._task, self._thread
+            if not stopping and loop is not None and task is not None:
+                try:
+                    loop.call_soon_threadsafe(task.cancel)
+                except RuntimeError:
+                    pass
+        if worker is not None and worker is not threading.current_thread():
+            worker.join(timeout=50)
+            if worker.is_alive():
                 raise RuntimeError("Gateway 客户端停止超时")
 
     def is_running(self) -> bool:

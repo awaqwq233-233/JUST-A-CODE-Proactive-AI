@@ -337,7 +337,7 @@ class LocalBrain:
                 headers={"Content-Type": "application/json"}
             )
             # 个别 LM Studio 聊天模板不支持 enable_thinking 参数：移除后重试一次，
-            # 退回"直接输出"模式（对齐 src/judgment/judge.py 的判断引擎兜底逻辑）
+            # 退回直接输出模式，兼容不支持该请求参数的后端
             if resp.status_code == 400 and "enable_thinking" in resp.text.lower() and "chat_template_kwargs" in payload:
                 payload.pop("chat_template_kwargs", None)
                 print("[System] 大脑模型/模板不支持 enable_thinking 参数，已移除 chat_template_kwargs 后重试（保持直接输出）")

@@ -18,7 +18,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 
 ## 新架构（2026-10-01 定案，2026-10-06 方案 B 修订）
 
-> bo s s 已确认方案 B：保留三层模型架构，第一层使用固定版本官方 MiniCPM-o-Demo Gateway / Worker 与 `tc-mb/llama.cpp-omni` Metal。权威 DOCX 为 `brainstorming_projectPLAN/10月1日新架构.docx`，精确版本、模型 SHA256 和协议参数记录在 `backend.lock.json`。**M0 经用户确认通过并免做 30 分钟长测，当前进入 M1，新增生产 Gateway 听看说入口；其余模块仍待迁移。**
+> bo s s 已确认方案 B：保留三层模型架构，第一层使用固定版本官方 MiniCPM-o-Demo Gateway / Worker 与 `tc-mb/llama.cpp-omni` Metal。权威 DOCX 为 `brainstorming_projectPLAN/10月1日新架构.docx`，精确版本、模型 SHA256 和协议参数记录在 `backend.lock.json`。**M0 经用户确认通过并免做 30 分钟长测；M1 生产听看说、GUI 与启停已获用户验收，下一步接入 Qwen 大脑升级；其余模块仍待迁移。**
 
 ### 一、三层模型架构
 
@@ -82,7 +82,7 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 ### 七、GUI
 
-配置**图形化 GUI**，包含：**画面预览、设置参数、对话文本记录**。
+配置 **Gateway 专用语音 GUI**：Qt 绘制的深蓝渐变科技风格（青色高光与细网格），原比例无黑边摄像头、连续回复文本、折叠连接日志、顶部单状态提示。无文字输入/发送、显示分辨率/缩放或旧模型开关。右侧仅显示已支持的 Gateway 设备/增益/采集帧率/会话/连接/音色参数；启动前调整、运行中锁定。「调节参数」按钮按面板开/关保持高亮/暗色，并提供按压反馈。按 bo s s 2026-10-07 本轮要求，GUI 设备同意默认开启且不显示勾选项，仅点击「启动语音」才开启设备；终端/探针仍保留显式 --consent-devices。顶部提供「启动后端」与「启动语音」，后端路径通过图形目录选择器保存到忽略的 `.cache/gui/backend.json`；仅回收本窗口拥有的后端，不接管外部服务。
 
 ### 八、DLC（未来可选）
 
@@ -94,19 +94,19 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 ## 代码迁移状态（旧架构 → 新架构，M1）
 
-> M1 已接入独立 Gateway 生产路径；传统与 legacy omni 保留兼容入口，其余改造点按下表推进。详细差距见 `CHANGELOG.md` 附 A。
+> M1 已接入独立 Gateway 生产路径；旧 MiniCPM 客户端、轮询 judge 和传统运行入口已退役，其余改造点按下表推进。详细差距见 `CHANGELOG.md` 附 A。
 
-| 维度 | 新架构（目标） | 当前代码（旧实现） | 迁移动作 |
+| 维度 | 新架构（目标） | 当前实现 | 迁移动作 |
 |---|---|---|---|
-| omni 后端 | 固定版本 Gateway / Worker / C++ Metal，Q4_K_M，`:8006/v1/realtime?mode=video` | 新 `GatewayClient` 已接入 `main.py --gateway` 和轻量 GUI；旧入口保留 | 继续验证生产设备与升级接线 |
-| 上下文/参数 | 起始 `-c 4096 -t 8 -ngl 99` | `-c 8192` | 真机确认资源与实时性 |
-| 语音输出 | 参考 WAV Base64 + 原生 24k float32 PCM | Gateway 使用原生参考音与 SoundDevice 播放；旧模式仍用旧 TTS | 旧模式退役时清理依赖 |
+| omni 后端 | 固定版本 Gateway / Worker / C++ Metal，Q4_K_M，`:8006/v1/realtime?mode=video` | 新 `GatewayClient` 已接入 `main.py --gateway` 和轻量 GUI；旧入口已移除 | 继续验证生产设备与升级接线 |
+| 上下文/参数 | 起始 `-c 4096 -t 8 -ngl 99` | 固定方案 B 参数 | 后续性能优化需实测 |
+| 语音输出 | 参考 WAV Base64 + 原生 24k float32 PCM | Gateway 使用原生参考音与 SoundDevice 播放；旧桥接与回灌已移除 | 主依赖已统一，未迁移组件独立保留 |
 | 记忆 | **ChromaDB** + BGE-Small-ZH-v1.5（ONNX INT8） + JSON | fastembed + paraphrase-multilingual-MiniLM + 自研 MemoryStore | 重写 `src/memory/` |
-| 模型层数 | 三层（o-4_5 + qwen + 云端 OpenClaw） | 两层（o-4_5 + qwen，无 OpenClaw） | 新增云端 OpenClaw 通道 |
-| 音频输入 | SoundDevice + 16k float32 mono + 固定 1 秒块 | Gateway 已接入；旧路径仍用 PyAudio | 并行 VAD/Whisper 转写待接入 |
-| 视频输入 | 独立线程 640×480、采集 5~10fps、默认每秒上行最新 1 帧 | Gateway 使用线程采集与独立 GUI 帧缓冲；旧路径仍为 1280×720 | 后续设备验收与旧路径退役 |
-| 运行环境 | Python 3.11 | Gateway CLI/GUI 已使用 `.cache/m0/venv` 3.11；旧 `.venv` 3.13 保留 | 旧模式退役时再清理环境 |
-| 判断引擎 | 由 MiniCPM-o-4_5 全双工承担（不再单独轮询） | Gateway 不启动 judge 轮询；传统路径保留 | 旧模式退役时删除 judge |
+| 模型层数 | 三层（o-4_5 + qwen + 云端 OpenClaw） | 第一层 Gateway 已运行；Qwen 组件保留但升级未接线，OpenClaw 未接入 | 接入 Qwen 升级与云端通道 |
+| 音频输入 | SoundDevice + 16k float32 mono + 固定 1 秒块 | Gateway 已接入；旧运行入口已移除 | 并行 VAD/Whisper 转写待接入 |
+| 视频输入 | 独立线程 640×480、采集 5~10fps、默认每秒上行最新 1 帧 | Gateway 使用线程采集与独立 GUI 帧缓冲；无旧采集入口 | 新界面真机使用确认与后续性能验证 |
+| 运行环境 | Python 3.11 | Gateway CLI/GUI 已使用 `.cache/m0/venv` 3.11；旧 `.venv` 3.13 保留 | 已有旧环境保留，不再用于主程序 |
+| 判断引擎 | 由 MiniCPM-o-4_5 全双工承担（不再单独轮询） | 轮询 judge 与传统运行时已删除 | 已退役 |
 
 ## 文档同步硬性规定（Agent 必读）
 
@@ -124,20 +124,24 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 - 检查 `.gitignore` 是否需要新增忽略（如新增大体积/二进制产物）。
 - 推送包含用户明确允许的模板 `voices/silverwalf_voice.wav`，不含模型、`brainstorming_projectPLAN/` 或测试录音录像。忽略规则不影响已跟踪文件，需停止跟踪但保留本地文件；尚未推送的提交也必须检查，避免排除文件随历史上传。已发布历史的清理须另行授权，不自动强推。
 - 每次代码/配置修改后检查依赖与运行方式变化，同步检查 `requirements.txt`、独立依赖清单、`new_computer_download/` 一键安装脚本和 `READMEfirst.md`，确保其他机器可按文档安装。新增或改变依赖时必须更新对应安装阶段与安装后自检，不只修改当前机器环境；没有相关变化时在日志说明已检查、无需调整。
+- **阶段自动发布**：项目达到经验证可交付的里程碑或完成当前阶段目标时，自动提交并推送当前开发分支到 GitHub，仅纳入本轮相关代码、测试和文档，继续遵守上述模型/规划目录/实际媒体排除规则；不自动强推或合并 main。
+- **操作命令交付**：每次需要 bo s s 操作时，提供当前环境可直接执行的完整命令，逐条单独给出，说明和注释放在代码块外；不以「用原命令」或未填路径代替所需命令。
 - `codinglog_by_awaqwq233/` 仍只由 bo s s 手动维护，Agent 不得自动编辑；`brainstorming_projectPLAN/` 已获准由 Agent 按 bo s s 确认的架构决策编辑和同步。
 - **开发平台**：当前以 macOS（Apple Silicon）为主开发机，保持跨平台兼容代码；Windows 开发机已不再使用。
 
-## 当前开发状态（2026-10-06 更新）
+## 当前开发状态（2026-10-07 更新）
 
-> **M0 已由 bo s s 确认通过，30 分钟长测明确免测；当前执行 M1 生产接入。** 新旧入口并存，工具升级、云端和记忆尚未迁移。
+> **M0 已通过且 30 分钟长测免测；M1 基础听看说、GUI 和手动启停已由 bo s s 真机验收。** 下一步接入 Qwen 大脑升级与工具闭环；旧 MiniCPM 及传统运行入口已删除，云端和记忆尚未迁移。
 
-- **M1 Gateway 入口**：`main.py --gateway`（终端）、`main.py --gateway --gui`（GUI），使用 Python 3.11 独立环境；后端须先由固定版本启动器启动，客户端不接管现有后端进程。GUI 懒加载新旧运行时，Gateway 不依赖旧 torch/PyAudio/Voicebox/YOLO。默认 `omni_backend=gateway`，旧模式可选择 `legacy`。
+- **M1 Gateway 入口**：`main.py --gateway`（终端）、`main.py --gateway --gui`（GUI），使用 Python 3.11 独立环境；GUI 可异步调用固定启动器启动/回收自己拥有的后端；外部已运行服务只探测与复用，不接管。收到启动器就绪事件后才开放语音，停止后端/关闭窗口先等待音视频会话清理，再回收所属后端。GUI 仅使用 Gateway，不依赖旧 torch/PyAudio/Voicebox/YOLO。`omni_backend` 只接受 `gateway`；`legacy` 会明确报错。`main.py --gui` 与 `python -m src.omni --gui` 同样进入 Gateway，`--gateway` 保留兼容。
+- **GUI 后端控制**：`src/omni/backend_control.py` 使用 QProcess 与启动器 `--events-json` 事件管理固定三进程，健康检查在后台且只访问本机；启动/停止/取消/异常均反馈至 GUI，窗口退出等待清理。设置不改变固定版本、端口、模型清单和构建参数。
 - **M0 文件**：`backend.lock.json`、`verify_duplex.py`、`new_computer_download/start_m0_backend.py`、`new_computer_download/requirements-m0.txt`。后端源码、模型和测试运行产物不提交到 Git。
 - **M0 已通过（用户验收）**：文件协议、40 秒真机、10 次启停和后续两段各 225 秒通过；累计上行 450 秒、P95 679/891ms、原生音频收播合计 176.2 秒，异常为零。bo s s 明确认可短测效果并免做 30 分钟长测，不再以该项阻塞迁移；原始报告保留 `soak_30min_verified=false`，不伪造未执行的测量。
 - **M1 会话重建**：默认每 240 秒上行后受控关闭、释放设备和重连；重新注入参考音、已确认上下文、有界助手历史。段间采集暂停并显示状态；未转写的用户语音不能完整恢复，不声称无缝或无限单会话。启动保护通过 `force_listen` 保留真实音频，不把用户输入换成静音。
-- **M1 验证**：Python 3.11 专项现为 49 项通过（含新增 5 项离屏启停回归），GUI 渲染/控件与安装自检通过；新生产入口两次真实后端文件会话共 40 块、原生音频 5.64 秒、P95 977ms。bo s s 随后确认真机听看说正常，仅停止重启后 GUI 预览黑屏；已修复帧定时器恢复与 Qt 主线程状态通知，真实画面修复待用户重开 GUI 复验。
+- **M1 验证与验收**：Python 3.11 专项 57 项通过，覆盖画面清空、异步停止、关闭确认、在途推理尾窗、重复停止与退出窗口。此前两次真实后端文件会话共 40 块、原生音频 5.64 秒、P95 977ms，随后合成帧/静音三次手动启停通过。2026-10-07 bo s s 在修复后确认「这次完全正常」，基础听看说、GUI 预览与启停现按用户反馈验收通过；未新增或推测真机循环次数、时长及长期稳定性测量。
+- **M1 手动停止**：先在 Qt 主线程停绘制、清空画面，再后台停止采集并保留默认 8 秒接收尾窗，等待 `session.closed` 和 Gateway 断链，额外冷却 1 秒，清理成功才恢复启动按钮；常规约 9 秒，超时显示「重试停止」，不允许重叠客户端。窗口退出也等待同一清理。固定上游会先报告关闭再完成 C++ 清理，尾窗/冷却是客户端兼容处理，不声称其底层竞争已被源码修复；锁定后端与补丁未改变。
 - **设备探针**：`verify_live_duplex.py`（短测）和 `verify_soak_duplex.py`（长测）必须显式 `--consent-devices` 且戴耳机。macOS 首次摄像头权限在启动主线程申请；帧读取/编码仍在独立线程。探针不保存原始媒体，使用后释放设备。长测保持同一组后端常驻，8 段累计 1800 秒上行，每段 225 秒，段间重开设备；不代表单会话无限运行或上下文恢复已完成。
-- **旧架构已定性的 MiniCPM-o 能力天花板**（历史结论，仍有效，作为新架构「为何换后端分支/参数」的动机留存）：
+- **旧 MiniCPM 实现的历史问题**（仅作为退役原因保留，不用于判断已验收的新 Gateway）：
   1. **视觉分辨率仅 grid 1x1 / 64 视觉 token**（服务端日志 `image encoded ... grid: 1x1`），细节视觉问答不可行（真机曾把 boss 本人误判成"电脑桌面"）。
   2. **音频理解（ASR）质量差**：内建麦离嘴远、人声 RMS 仅 0.03~0.065，模型听不清寒暄，会从 prompt 示例里"捡"输出。
   3. **"说/听切换"不稳**：`listen_prob_scale` 1.0 偏沉默、0.8 偏抢话，无稳定工作点；它是开口意愿旋钮（`listen_bias=(scale-1.0)*2.0`），不是 VAD、不影响听清。
@@ -146,17 +150,17 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 ## 重要文件与目录
 
-- `main.py`：主入口；`--gateway` 在旧重依赖导入前分流到方案 B CLI/GUI，其余传统入口保留。
-- `src/capture/camera.py`：摄像头封装（旧：主循环 1280×720；新架构改独立线程 640×480）。
+- `main.py`：统一 Gateway CLI/GUI 入口；`--gateway` 为兼容参数，不再分流至旧实现。
+- `src/capture/camera.py`：未迁移的旧通用摄像头组件，无生产入口；Gateway 使用 `src/omni/media.py` 独立线程 640×480。
 - `src/analysis/detector.py`：YOLOv8 检测器封装。
 - `src/audio/recorder.py`：VAD 麦克风录音（旧：PyAudio + WebRTC VAD；新架构改 SoundDevice）。
 - `src/audio/stt.py`：Whisper 语音识别（旧架构非流式转写；新架构音频直通 o 版全双工，STT 仅保留作可观测/校验）。
 - `src/audio/`（`voicebox_tts.py` / `qwen_tts.py` / `speaker_factory.py` / `tts.py` / `playback.py`）：旧架构 TTS 链（Voicebox → Qwen3-TTS → 系统 TTS）——**新架构语音输出改由 MiniCPM-o 自带音色克隆承担，此链待移除/降级**。
 - `src/brain/llm.py`：`LocalBrain`，多后端大脑层（lm_studio / ollama / llama_cpp / auto）——大脑层 `qwen/qwen3.6-35b-a3b` 在新架构中保留为第二层。
 - `src/tools/`：Function Calling 工具层（装手）——新架构中归属大脑层 `qwen/qwen3.6-35b-a3b` 的 Tool Use / Agentic Coding。
-- `src/judgment/judge.py`：旧架构的独立主动判断引擎（`minicpm-v-4_5` 每 4s 轮询）——**新架构中该职责由 MiniCPM-o-4_5 全双工承担，此模块待移除**。
+- `src/judgment/` 与 `src/runtime.py`：已删除，旧 MiniCPM 判断轮询与传统运行编排不再启动。
 - `src/memory/`：旧架构记忆子系统（fastembed + 自研 MemoryStore）——**新架构改 ChromaDB + BGE-Small-ZH-v1.5，此目录待重写**。
-- `src/omni/`：新 Gateway 客户端/协议/设备/桌面运行时，与旧全双工实现并存；懒导入避免新入口加载旧重依赖。
+- `src/omni/`：Gateway 客户端/协议/设备/桌面运行时和 GUI 后端控制器；旧 `client.py` / `server_launcher.py` / Voicebox 桥接 / 回灌 / 令牌过滤已删除。保留未接入的 Qwen 路由草案，不宣称升级可用。
 - `voices/silverwalf_voice.wav`：方案 B 原生音色参考 WAV，启动会话时编码发送给本机 Gateway。
 - `backend.lock.json`：后端与模型精确版本、SHA256、端口及协议配置。
 - `verify_duplex.py`：独立 M0 协议/媒体文件探针，不调用生产运行时，也不打开麦克风或摄像头。
@@ -164,7 +168,7 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 - `verify_soak_duplex.py`：明确授权后的 M0 分会话长测，记录健康/RSS 与逐段统计，失败也保存报告。
 - `new_computer_download/start_m0_backend.py`：固定版本校验、模型预检、启动本机三进程与回收。
 - `temp/`：运行时临时音频文件。
-- `requirements.txt` / `requirements_fixed.txt`：依赖快照。
+- `requirements.txt`：引用固定 Gateway 依赖；`requirements_fixed.txt` 仅为未迁移组件的历史快照。
 - `Modelfile`：Ollama 构建定义。
 - `new_computer_download/READMEfirst.md`：新机器一键环境搭建与安装指南（已按新架构改写）。
 - `setup_ffmpeg.py`：从 imageio-ffmpeg 复制二进制为项目根 `ffmpeg`。
@@ -191,7 +195,9 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 ## 设置与运行
 
-完整步骤见 **`new_computer_download/READMEfirst.md`**。安装器 `--only gateway`（兼容 `--only m0`）建立 `.cache/m0/venv` Python 3.11，安装 `requirements-m0.txt`（已含 Qt GUI）并执行导入自检，保留现有 `.venv`。先用 `start_m0_backend.py` 启动后端，再运行 `main.py --gateway --gui` 或经设备同意的终端入口。不带 `--gateway` 的终端模式仍为传统实现。
+完整步骤见 **`new_computer_download/READMEfirst.md`**。安装器默认 `gateway`（兼容 `--only gateway` / `--only m0`）建立 `.cache/m0/venv` Python 3.11，安装 `requirements-m0.txt`（已含 Qt GUI）并执行导入自检，保留现有 `.venv`。运行 `main.py --gateway --gui` 后可点「启动后端」，再启动语音；独立后端与经设备同意的终端入口仍支持。不带 `--gateway` 同样进入 Gateway；所有旧 MiniCPM 入口已移除。
+
+VS Code 本机调试配置为忽略的 `.vscode/launch.json`「J.A.C. · Gateway GUI」，显式指定 `.cache/m0/venv/bin/python`、`--gateway --gui` 和项目工作目录。新工作区须选择项目解释器，已缓存系统解释器时手动切换；编辑器直接运行文件不会应用 F5 配置参数。`.vscode/` 不提交，安装步骤见 READMEfirst 第 10 节。
 
 ### 运行前置条件
 
@@ -208,16 +214,16 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 - **采集与推理解耦**：SoundDevice 回调只入队；后台转为 16k float32 mono、固定 1 秒块。OpenCV 独立线程 640×480、5~10fps 采集；每秒附最新 1 帧，不在主线程读摄像头或编码。
 - **记忆性能铁律**：ChromaDB 写库走「缓存 5 条摘要 → 批量 `collection.add()`」；检索只在「WS 建立发 init 前」与「VAD 判定说完一句后」两处触发，严禁放音频回调里。
 - **语音输出由 MiniCPM-o 承担**：参考音频克隆 + 原生 24k float32 流；文件输出走大脑层/云端层。
-- 谨慎对待隐私与安全：主动常开感知必须包含可见的同意、本地过滤、日志控制，以及在录音/识别人物/向云 API 发送数据前的清晰边界。
+- 谨慎对待隐私与安全：主动常开感知必须遵循用户设备授权和明确的启动/停止状态、本地过滤、日志控制，以及在录音/识别人物/向云 API 发送数据前的清晰边界。
 - 任何新的 agent/工具执行功能，对高风险操作必须显式白名单与确认。
 - 延迟优化优先做流式与流水线：流式 ASR、增量推理、流式/提前 TTS。
 - 记忆从 JSON 结构化摘要起步，向量检索用 ChromaDB。
 
 ## 已知限制（当前代码，待新架构落地后重新评估）
 
-- 新 Gateway 入口已迁移听看说与 GUI，但旧模式仍保留 `:9060`、Voicebox、旧记忆和 judge。M1 Gateway 尚未接入 Qwen 工具升级、并行转写、ChromaDB 或 OpenClaw。
+- Gateway 已接入听看说与新 GUI；旧 `:9060`、轮询判断模型和传统运行入口已删除。M1 尚未接入 Qwen 工具升级、并行转写、ChromaDB 或 OpenClaw。未迁移通用音频/记忆/检测组件保留，无生产入口。
 - 运行依赖外部软件（LM Studio / 固定版本 Gateway、Worker、llama-omni-server / 可选云端 OpenClaw）。
 - M0 基于已有真机验证与 bo s s 明确验收通过；30 分钟稳定性免测，不作为阻塞项。M1 文件回放不等于新增生产 GUI/设备的真机听感验收。
-- 旧架构 STT 仍为 Whisper tiny 非流式；旧架构 TTS 为句子级桥接而非 token 级（新架构语音输出改 o 版自带 TTS 后此限制重新评估）。
+- 并行 Whisper 转写尚未接入，GUI 目前显示助手回复，不能展示或恢复未经转写的用户原话。
 - 无 WebRTC AEC（新架构以戴耳机规避回声，AEC 需求待重新评估）。
 - 无云端 OpenClaw 集成（新架构新增项，代码未落地）。

@@ -145,7 +145,7 @@ def test_cancel_during_queue_closes_resources(tmp_path):
         async with serve(handler, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
             client = GatewayClient(url=f"ws://127.0.0.1:{port}", ref_audio_path=voice,
-                                   consent_devices=True, device_factory=FakeDevices)
+                                   consent_devices=True, device_factory=FakeDevices, drain_seconds=0)
             task = asyncio.create_task(client.run(max_sessions=1))
             await queued.wait()
             task.cancel()
@@ -169,3 +169,136 @@ def test_gateway_entrypoint_does_not_import_legacy_dependencies():
     """独立 3.11 环境可加载生产客户端，不隐式加载 PyAudio 或 torch。"""
     command = "from src.omni import GatewayClient; import sys; assert 'pyaudio' not in sys.modules; assert 'torch' not in sys.modules"
     subprocess.run([sys.executable, "-c", command], check=True, timeout=15)
+
+
+def test_manual_stop_waits_for_close_ack_before_restart(tmp_path):
+    """用真实线程及 WS 延迟关闭确认，停止必须等待 Worker 释放后才能重启。"""
+    import soundfile as sf
+    voice = tmp_path / "voice.wav"
+    sf.write(voice, np.zeros(160, dtype="float32"), 16000)
+    FakeDevices.instances = []
+
+    async def scenario():
+        """模拟关闭耗时的 Worker；提前断开即保留 busy，第二次建会话将失败。"""
+        busy = False
+        acknowledged = 0
+        close_requested = asyncio.Event()
+
+        async def handler(ws):
+            """只有客户端保持连接等待 session.closed 才完成关闭确认。"""
+            nonlocal busy, acknowledged
+            await ws.send(json.dumps({"type": "session.queue_done"}))
+            if busy:
+                await ws.send(json.dumps({"type": "error", "error": {"code": "session_failed"}}))
+                return
+            busy = True
+            await ws.recv()
+            await ws.send(json.dumps({"type": "session.created", "session_id": "manual", "mode": "full_duplex"}))
+            async for raw in ws:
+                if json.loads(raw)["type"] == "session.close":
+                    close_requested.set()
+                    await asyncio.sleep(0.25)
+                    try:
+                        await ws.send(json.dumps({"type": "session.closed", "reason": "client_closed"}))
+                    except Exception:
+                        return
+                    busy = False
+                    acknowledged += 1
+                    return
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            client = GatewayClient(url=f"ws://127.0.0.1:{port}", ref_audio_path=voice,
+                                   consent_devices=True, device_factory=FakeDevices, drain_seconds=0)
+            try:
+                for _ in range(3):
+                    assert await asyncio.to_thread(client.start, 3)
+                    close_requested.clear()
+                    stopper = asyncio.create_task(asyncio.to_thread(client.stop))
+                    await asyncio.wait_for(close_requested.wait(), 2)
+                    with pytest.raises(RuntimeError, match="停止尚未完成"):
+                        await asyncio.to_thread(client.start, 3)
+                    # 第二个停止调用不能再次取消正在执行的关闭握手。
+                    await asyncio.gather(stopper, asyncio.to_thread(client.stop))
+                    assert not busy, "停止返回时 Worker 尚未完成关闭"
+                assert acknowledged == 3
+            finally:
+                await asyncio.to_thread(client.stop)
+
+    asyncio.run(scenario())
+    assert all(device.stopped for device in FakeDevices.instances)
+
+
+def test_server_error_code_is_preserved_without_payload(tmp_path):
+    """启动拒绝保留安全错误代码，不再只有 RuntimeError，也不输出后端原始消息。"""
+    import soundfile as sf
+    voice = tmp_path / "voice.wav"
+    sf.write(voice, np.zeros(160, dtype="float32"), 16000)
+
+    async def scenario():
+        """模拟 Gateway 返回会话失败，验证错误没有被关闭收尾覆盖。"""
+        async def handler(ws):
+            """拒绝初始化并携带不应显示的原始消息。"""
+            await ws.send(json.dumps({"type": "session.queue_done"}))
+            await ws.recv()
+            await ws.send(json.dumps({"type": "error", "error": {
+                "code": "session_failed", "message": "private_payload_not_for_gui"}}))
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            client = GatewayClient(url=f"ws://127.0.0.1:{port}", ref_audio_path=voice,
+                                   consent_devices=True, device_factory=FakeDevices)
+            assert not await asyncio.to_thread(client.start, 3)
+            assert "session_failed" in client.last_error
+            assert "private_payload_not_for_gui" not in client.last_error
+            await asyncio.to_thread(client.stop)
+
+    asyncio.run(scenario())
+
+
+def test_manual_stop_drains_inflight_input_before_close(tmp_path):
+    """停止必须先停采集并给已发送输入收尾，避免中断 C++ 尚未结束的 decode。"""
+    import soundfile as sf
+    voice = tmp_path / "voice.wav"
+    sf.write(voice, np.zeros(160, dtype="float32"), 16000)
+
+    async def scenario():
+        """模拟在途推理，关闭过早时明确拒绝。"""
+        received, processed = asyncio.Event(), asyncio.Event()
+        close_after_drain = []
+
+        async def processing():
+            """模拟推理仍在使用当前输入的短窗口。"""
+            await asyncio.sleep(0.1)
+            processed.set()
+
+        async def handler(ws):
+            """收到输入后异步处理，关闭时记录是否已经完成。"""
+            await ws.send(json.dumps({"type": "session.queue_done"}))
+            await ws.recv()
+            await ws.send(json.dumps({"type": "session.created", "session_id": "drain", "mode": "full_duplex"}))
+            tasks = []
+            try:
+                async for raw in ws:
+                    message = json.loads(raw)
+                    if message["type"] == "input.append":
+                        tasks.append(asyncio.create_task(processing()))
+                        received.set()
+                    elif message["type"] == "session.close":
+                        close_after_drain.append(processed.is_set())
+                        await ws.send(json.dumps({"type": "session.closed", "reason": "client_closed"}))
+                        return
+            finally:
+                await asyncio.gather(*tasks)
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            client = GatewayClient(url=f"ws://127.0.0.1:{port}", ref_audio_path=voice,
+                                   consent_devices=True, device_factory=FakeDevices, drain_seconds=0.25)
+            assert await asyncio.to_thread(client.start, 3)
+            await asyncio.wait_for(received.wait(), 2)
+            await asyncio.to_thread(client.stop)
+            assert close_after_drain == [True]
+            assert client.stats()["close_handshakes"] == 1
+
+    asyncio.run(scenario())

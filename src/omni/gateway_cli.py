@@ -1,4 +1,4 @@
-"""M1 Gateway 入口：真实设备须明确同意，文件回放不打开任何采集或播放设备。"""
+"""M1 Gateway 入口：终端设备使用须显式许可；GUI 默认许可，点击启动语音才开启设备。"""
 
 from __future__ import annotations
 
@@ -82,12 +82,15 @@ def main(argv=None) -> int:
     """解析独立 Gateway 参数，保存无原始媒体的 M1 运行报告。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--consent-devices", action="store_true", help="同意使用设备且已戴耳机")
-    parser.add_argument("--gui", action="store_true", help="打开 Gateway GUI，启动设备前在界面明确同意")
+    parser.add_argument("--gui", action="store_true", help="打开 Gateway GUI，设备默认许可，点击启动语音才开启")
     parser.add_argument("--url", default="ws://127.0.0.1:8006")
     parser.add_argument("--input-device", type=int)
     parser.add_argument("--output-device", type=int)
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--no-video", action="store_true")
+    parser.add_argument("--fps", type=int, default=5, choices=range(5, 11), help="相机采集帧率，上行仍每秒一帧")
+    parser.add_argument("--mic-gain", type=float, default=1.0)
+    parser.add_argument("--retry-limit", type=int, default=3)
     parser.add_argument("--session-seconds", type=int, default=240)
     parser.add_argument("--sessions", type=int, help="限制会话数；默认持续运行，Ctrl+C 停止")
     parser.add_argument("--input-file", type=Path, help="文件验证，不打开真实设备，不播放")
@@ -97,6 +100,10 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if sys.version_info[:2] != (3, 11):
         parser.error("方案 B Gateway 入口必须使用 Python 3.11")
+    if not 5 <= args.session_seconds <= 240 or not 0 <= args.retry_limit <= 10:
+        parser.error("会话须为 5–240 秒，重连次数须为 0–10")
+    if not np.isfinite(args.mic_gain) or not .1 <= args.mic_gain <= 8:
+        parser.error("麦克风增益须为 0.1–8")
     if args.gui:
         if args.input_file or args.image_file:
             parser.error("GUI 模式不接受文件回放参数")
@@ -105,6 +112,9 @@ def main(argv=None) -> int:
         config = Config.load()
         config.omni_backend = "gateway"
         config.omni_enabled = True
+        config.omni_fps = args.fps
+        config.omni_mic_gain = args.mic_gain
+        config.gateway_retry_limit = args.retry_limit
         config.gateway_url = args.url
         config.gateway_session_seconds = args.session_seconds
         config.gateway_consent_devices = args.consent_devices
@@ -141,7 +151,8 @@ def main(argv=None) -> int:
     client = GatewayClient(url=args.url, ref_audio_path=args.voice, callbacks=ConsoleCallbacks(),
                            consent_devices=True, input_device=args.input_device,
                            output_device=args.output_device, camera=args.camera,
-                           video_enabled=video_enabled, session_seconds=args.session_seconds, **kwargs)
+                           video_enabled=video_enabled, session_seconds=args.session_seconds,
+                           video_fps=args.fps, mic_gain=args.mic_gain, retry_limit=args.retry_limit, **kwargs)
     outcome, error_type = "completed", None
     try:
         asyncio.run(client.run(max_sessions=args.sessions))

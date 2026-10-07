@@ -106,6 +106,13 @@ def terminate_children(children: list) -> None:
             child.wait(timeout=5)
 
 
+def report_event(args, state: str, detail: str = '') -> None:
+    """GUI 模式输出有标识的机器事件，原终端输出保持可读。"""
+    if getattr(args, 'events_json', False):
+        print(json.dumps({'event': 'jac.backend', 'state': state, 'detail': detail},
+                         ensure_ascii=False), flush=True)
+
+
 def launch(args, lock: dict) -> None:
     """按 Backend、Worker、Gateway 顺序启动并注册固定版本服务。"""
     ports = lock["ports"]
@@ -127,6 +134,8 @@ def launch(args, lock: dict) -> None:
     with ExitStack() as stack, httpx.Client(trust_env=False) as client:
         try:
             for name, command, cwd in commands:
+                report_event(args, 'phase', {'backend': '正在加载 Metal 模型…',
+                             'worker': '正在启动 Worker…', 'gateway': '正在启动 Gateway…'}[name])
                 log = stack.enter_context((logs / f"{name}.log").open("ab"))
                 child = subprocess.Popen(command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
                 children.append((name, child))
@@ -139,6 +148,7 @@ def launch(args, lock: dict) -> None:
             )
             registration.raise_for_status()
             print(f"M0 后端就绪: {lock['protocol']['url']}；Ctrl+C 停止。", flush=True)
+            report_event(args, 'ready', lock['protocol']['url'])
             while True:
                 for name, child in children:
                     if child.poll() is not None:
@@ -161,6 +171,7 @@ def main() -> int:
     parser.add_argument("--model-dir", type=Path, required=True)
     parser.add_argument("--verify-sha", action="store_true", help="逐文件验证 lock 中的 SHA256")
     parser.add_argument("--preflight", action="store_true", help="只做检查，不启动服务或写配置")
+    parser.add_argument('--events-json', action='store_true', help='GUI 使用的结构化生命周期事件')
     args = parser.parse_args()
     if sys.version_info[:2] != (3, 11):
         parser.error("M0 必须使用 Python 3.11")
@@ -170,6 +181,7 @@ def main() -> int:
     lock = json.loads((ROOT / "backend.lock.json").read_text(encoding="utf-8"))
     signal.signal(signal.SIGTERM, stop_on_signal)
     try:
+        report_event(args, 'phase', '正在校验后端版本与模型…')
         check_checkout(args.demo_dir, lock["repositories"]["demo"]["commit"])
         engine = lock["repositories"]["engine"]
         check_checkout(args.engine_dir, engine["commit"], ROOT / engine["patch"])

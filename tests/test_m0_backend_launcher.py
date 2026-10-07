@@ -208,3 +208,12 @@ def test_installer_rejects_dependency_import_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(installer, "run_cmd", command)
     assert installer.step_m0(SimpleNamespace(mirror=None, no_mirror=False, dry_run=False)) is False
+
+
+def test_gui_lifecycle_events_are_opt_in_and_machine_readable(capsys):
+    """只有 GUI 模式生成结构化事件，普通终端不混入机器消息。"""
+    launcher.report_event(SimpleNamespace(events_json=False), 'ready')
+    assert capsys.readouterr().out == ''
+    launcher.report_event(SimpleNamespace(events_json=True), 'phase', '正在加载模型')
+    event = json.loads(capsys.readouterr().out)
+    assert event == {'event': 'jac.backend', 'state': 'phase', 'detail': '正在加载模型'}
