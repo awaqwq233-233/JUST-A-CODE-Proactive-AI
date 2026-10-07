@@ -50,7 +50,8 @@ TOOLS = [
         "parameters": {
             "type": "object",
             "properties": {
-                "info_type": {"type": "string", "description": "取值 time/battery/cpu/memory/all，默认 all"}
+                "info_type": {"type": "string", "enum": ["time", "battery", "cpu", "memory", "all"],
+                              "description": "取值 time/battery/cpu/memory/all，默认 all"}
             },
             "required": [],
         },

@@ -1,71 +1,21 @@
-import requests
-import json
+"""独立检查本机 Qwen 精确实例；Gateway 听看说仍需要其独立后端。"""
+
+from src.brain.lm_studio import LMStudioClient, BrainError
+
 
 def verify():
-    """验证"""
-    print("--------------------------------------------------")
-    print("     J.A.C 后端验证工具")
-    print("--------------------------------------------------")
-    print()
-
-    # 1. 检查 LM Studio
-    print("[1] 检查 LM Studio API...")
+    """验证已加载目标与零思考回答，不回退 Ollama 或清单首项。"""
     try:
-        r = requests.get("http://localhost:12345/v1/models", timeout=3)
-        if r.status_code == 200:
-            models = r.json().get("data", [])
-            if models:
-                print(f"    [OK] LM Studio 运行中，已加载模型: {models[0].get('id', 'unknown')}")
-            else:
-                print("    [OK] LM Studio 运行中 (未加载模型)")
-            print()
-            
-            # 2. 简单对话测试
-            print("[2] 简单对话测试...")
-            resp = requests.post(
-                "http://localhost:12345/v1/chat/completions",
-                json={
-                    "messages": [{"role": "user", "content": "用一句话介绍你自己"}],
-                    "max_tokens": 100,
-                    "temperature": 0.7,
-                    "stream": False
-                },
-                timeout=30,
-                headers={"Content-Type": "application/json"}
-            )
-            if resp.status_code == 200:
-                reply = resp.json()["choices"][0]["message"]["content"]
-                print(f"    [OK] 模型回复: {reply[:80]}...")
-                print()
-                print("--------------------------------------------------")
-                print("恭喜！LM Studio 后端已就绪。")
-                print("现在可以运行 python main.py 体验 J.A.C. 了。")
-                print("--------------------------------------------------")
-            else:
-                print(f"    [FAIL] API 返回 {resp.status_code}")
-        else:
-            print(f"    [FAIL] LM Studio API 返回 {r.status_code}")
-            print("    请确保 LM Studio 已启动并启用 API 服务器")
-    except requests.exceptions.ConnectionError:
-        print("    [FAIL] 无法连接到 LM Studio (127.0.0.1:12345)")
-        print("    请确保 LM Studio 已启动并启用了 API 服务器")
-        print()
-        
-        # 3. 回退检查 Ollama
-        print("[!] 检查 Ollama...")
-        try:
-            r2 = requests.get("http://localhost:11434/api/tags", timeout=2)
-            if r2.status_code == 200:
-                print("    [OK] Ollama 运行中")
-                print("    代码已配置为自动检测后端，请直接运行 python main.py")
-            else:
-                print("    [FAIL] 无可用后端")
-        except:
-            print("    [FAIL] 无可用后端")
-            print()
-            print("--------------------------------------------------")
-            print("请启动 LM Studio 或 Ollama 后再试。")
-            print("--------------------------------------------------")
+        client = LMStudioClient()
+        print(f'[模型] {client.require_loaded_model()}')
+        reply = client.complete([{'role': 'user', 'content': '用一句简体中文介绍你自己。'}], max_tokens=256)
+        print(reply.content)
+        print('[通过] Qwen 独立大脑可用；语音入口的升级仍待后续接入。')
+        return 0
+    except BrainError as exc:
+        print(f'[未通过] {exc}')
+        return 2
 
-if __name__ == "__main__":
-    verify()
+
+if __name__ == '__main__':
+    raise SystemExit(verify())

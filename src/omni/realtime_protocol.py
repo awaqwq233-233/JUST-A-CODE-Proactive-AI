@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import time
 from collections import Counter
@@ -50,8 +51,12 @@ def decode_pcm(value: str) -> np.ndarray:
 
 
 def build_init(prompt: str, voice: np.ndarray | None) -> dict:
-    """生成当前公开 Gateway 协议的 session.init 消息。"""
-    payload = {"system_prompt": prompt, "config": {"length_penalty": 1.1}}
+    """生成固定 C++ 后端的 init，保留参考音频后的 system 模板边界。"""
+    # 锁定的 ws_handler.cpp 将 system_prompt 覆盖到 omni_assistant_prompt（后缀），
+    # 而非完整 system 内容。普通文本会被上游加上 user 前缀，且丢失 audio_end。
+    # 显式补齐后缀，使参考音和助手指令留在同一 system 消息内；不改变后端源码。
+    suffix = f"<|audio_end|>\n{prompt}\n<|im_end|>\n"
+    payload = {"system_prompt": suffix, "config": {"length_penalty": 1.1}}
     if voice is not None:
         reference = encode_pcm(voice)
         payload["voice"] = {
@@ -59,6 +64,19 @@ def build_init(prompt: str, voice: np.ndarray | None) -> dict:
             "tts_ref_audio_base64": reference,
         }
     return {"type": "session.init", "payload": payload}
+
+
+def require_voice_condition(created: dict, init: dict) -> None:
+    """请求克隆时须取得对应 PCM 哈希的 native 条件确认，否则拒绝启动设备。"""
+    voice = init.get("payload", {}).get("voice", {})
+    reference = voice.get("tts_ref_audio_base64") or voice.get("ref_audio_base64")
+    if not reference:
+        return
+    expected = hashlib.sha256(base64.b64decode(reference, validate=True)).hexdigest()
+    condition = created.get("voice_conditioning") or {}
+    if (not isinstance(condition, dict) or condition.get("applied") is not True
+            or condition.get("reference_sha256") != expected):
+        raise ValueError("后端未确认应用指定音色，请使用已更新并重新编译的固定后端")
 
 
 def build_input(samples: np.ndarray, jpeg: bytes | None = None) -> dict:

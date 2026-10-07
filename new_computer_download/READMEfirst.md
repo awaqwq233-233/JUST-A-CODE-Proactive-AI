@@ -12,7 +12,7 @@ The Chinese section below contains the same commands, one per block. Run environ
 
 Create `.cache/m0/venv` and install `requirements-m0.txt`. Use `start_m0_backend.py --preflight --verify-sha` before launching. The launcher binds all ports to loopback, disables upstream session recording, rejects occupied ports and terminates only its own children on Ctrl+C.
 
-The Gateway URL is `ws://127.0.0.1:8006/v1/realtime?mode=video`. Inputs are 16 kHz mono float32 PCM Base64; outputs are 24 kHz mono float32 PCM Base64. The probe sends fixed one-second chunks and reference-WAV voice fields. `--require-audio` fails if no native audio is returned.
+The Gateway URL is `ws://127.0.0.1:8006/v1/realtime?mode=video`. Inputs are 16 kHz mono float32 PCM Base64; outputs are 24 kHz mono float32 PCM Base64. The combined engine patch applies the TTS reference using two pinned CPU ONNX frontend models in the external GGUF directory's `voice-frontend/`. Install them with `prepare_native_voice.py --model-dir <GGUF-directory>/voice-frontend --download-models --self-test`; the installer verifies the frontend dependencies and the backend launcher verifies resource hashes. Derived conditions remain in ignored `.cache/voices/`. The client requires an applied-reference hash before opening devices. `--require-audio` checks native output presence; it does not establish perceptual voice similarity. The client supplies the version-specific audio/system prompt suffix; do not reuse it with another backend without checking its template.
 
 The file probe proves protocol and native-audio transport only. The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds. The M1 production client now rotates video sessions after 240 input seconds, with visible capture pauses and re-injection of the reference voice, supplied confirmed context and bounded assistant history. Untranscribed user speech is not reconstructed.
 
@@ -87,10 +87,10 @@ git -C /absolute/backend/llama.cpp-omni checkout 873056743b74e1a4ce5dcf7290e2298
 ```
 
 ```bash
-git -C /absolute/backend/llama.cpp-omni apply /absolute/JAC/new_computer_download/patches/engine-loopback.patch
+git -C /absolute/backend/llama.cpp-omni apply /absolute/JAC/new_computer_download/patches/engine-loopback-native-voice.patch
 ```
 
-该补丁只让内部引擎遵守 --host。固定版本自动启用 OpenSSL 时会构造需要证书的 SSLServer；本机内部链路使用 HTTP，因此显式关闭 LLAMA_OPENSSL。
+该组合补丁让内部引擎遵守 --host，并在会话初始化时应用指定音色的原生合成条件。固定版本自动启用 OpenSSL 时会构造需要证书的 SSLServer；本机内部链路使用 HTTP，因此显式关闭 LLAMA_OPENSSL。
 
 ```bash
 cmake -S /absolute/backend/llama.cpp-omni -B /absolute/backend/llama.cpp-omni/build -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON -DLLAMA_OPENSSL=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF
@@ -130,6 +130,8 @@ MiniCPM-o-4_5-gguf/
   token2wav-gguf/flow_extra.gguf
   token2wav-gguf/hifigan2.gguf
   token2wav-gguf/prompt_cache.gguf
+  voice-frontend/campplus.onnx
+  voice-frontend/speech_tokenizer_v2_25hz.onnx
 ```
 
 已有文件优先通过 SHA256 复用。若使用 Hugging Face CLI 下载，需先在专用环境安装 `huggingface_hub`；不要因此替换主程序依赖。
@@ -139,6 +141,16 @@ hf download openbmb/MiniCPM-o-4_5-gguf --revision db25077c33951fe163b42986fba013
 ```
 
 国内网络可为同一命令设置 `HF_ENDPOINT=https://hf-mirror.com`，但下载后必须按 lock 的 SHA256 校验，不能仅依赖文件名或镜像元数据。
+
+**原生音色（2026-10-07 修复）**：组合补丁将指定 TTS 参考音转成本地声纹、token 与 mel 条件，加载到 C++ Token2Wav。依赖新增 onnxruntime 1.24.4 / kaldi-native-fbank 1.22.3，已纳入 Gateway 安装及导入自检；不加载完整 torch 模型。参考音要求 1–30 秒、单一清晰声音。先完成本节的独立资源安装与自检；模型只存放在仓库外。运行时不下载、不发云端，失败不默默使用默认音色。
+
+在 GGUF 下载阶段之后运行以下安装命令。`--model-dir` 应为上文实际 GGUF 目录下的 `voice-frontend` 子目录；两个官方 ONNX（合计约 524MB）的 revision / SHA256 已记录于 backend.lock.json，国内 HTTPS 镜像失败回退官方并验证哈希。自检用项目参考 WAV 生成条件，不开启或播放设备。
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/prepare_native_voice.py --model-dir /absolute/models/MiniCPM-o-4_5-gguf/voice-frontend --download-models --self-test
+```
+
+已安装旧 loopback 补丁的后端，应在确认源码只有该旧补丁时撤销它，再应用新的完整组合补丁并重新构建；不同时叠加两份补丁、不重置未知源码修改。启动器会核对最终完整 diff，不能只更新 Python 客户端。新资源安装完成后再执行第 6 节预检。官方 GGUF 文件与哈希保持不变。
 
 ### 6 预检与启动
 
@@ -159,6 +171,8 @@ hf download openbmb/MiniCPM-o-4_5-gguf --revision db25077c33951fe163b42986fba013
 ### 7 协议与原生语音探针
 
 在第二个终端、J.A.C. 根目录运行。参考 WAV 通过 voice 字段转换成 16k float32 PCM；不需要 .pt、NVIDIA GPU 或 Voicebox。以下探针只发送仓库已有音频文件，不打开麦克风、摄像头或扬声器。
+
+客户端在开启设备前验证 `session.created.voice_conditioning` 中的参考 PCM 哈希；旧二进制未提供确认时明确拒绝。生产 Gateway URL 仍为 video 模式，文件回放验证该路径时应附测试 JPEG。`--require-audio` 只检查原生语音存在，听感相似度需另外试听；技术验证记录见 CHANGELOG 附 A4。
 
 ```bash
 .cache/m0/venv/bin/python verify_duplex.py --mode audio --audio /absolute/中文提问.wav --voice voices/silverwalf_voice.wav --chunks 25 --require-audio --require-realtime
@@ -200,7 +214,7 @@ M0 已根据真实模型/设备验证与 bo s s 明确确认标记通过，30 �
 
 固定 Gateway 视频会话 300 秒、音频会话 600 秒。后续客户端必须实现受控重连、重新注入记忆和上下文；旧 /ws/duplex 页面不作为当前客户端协议依据。
 
-M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo s s 真机验收，反馈为「这次完全正常」。专项回归 57 项通过；这不增加未测的长测时长或循环次数。下一步接入 Qwen 大脑/工具升级，之后推进并行转写、ChromaDB 和 OpenClaw。Qwen 继续使用 LM Studio 127.0.0.1:12345；基础听看说无需加载 Qwen 或启动云端。
+M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo s s 真机验收，反馈为「这次完全正常」。专项回归 57 项通过；这不增加未测的长测时长或循环次数。M2b 已接入并行 VAD/Whisper 与 Gateway 明确系统任务，见第 12 节；原生结果播报、ChromaDB 和 OpenClaw 仍待接入。Qwen 继续使用 LM Studio 127.0.0.1:12345；基础听看说无需加载 Qwen 或启动云端。
 
 ### 9 M1 生产入口
 
@@ -237,4 +251,84 @@ M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo 
 - queue_done 超时：检查 Worker 已注册、三个健康接口正常，以及 output/m0 下的日志。
 - 无 audio 增量：原生 TTS 验收尚未通过，检查全部 Token2Wav / TTS 模块和参考音。
 - 中文字体异常：DOCX 使用显式东亚字体；如 Windows 缺少字体，安装对应字体后再检查页面渲染。Python 和 Markdown 文件统一 UTF-8。
-- 依赖冲突：当前运行环境为 Python 3.11 `.cache/m0/venv`；根 `requirements.txt` 直接引用 `requirements-m0.txt`，`requirements_fixed.txt` 是历史组件快照。科技主题与 GUI 后端管理没有新增依赖，无需重装。安装器默认 Gateway，原 `.venv` 保留但不作为主程序环境。
+- 依赖冲突：当前运行环境为 Python 3.11 `.cache/m0/venv`；根 `requirements.txt` 直接引用 `requirements-m0.txt`，`requirements_fixed.txt` 是历史组件快照。原生音色前端新增 onnxruntime / kaldi-native-fbank；已有机器须更新当前清单并安装 voice-frontend 资源、重新应用组合补丁和构建后端。安装器默认 Gateway，原 `.venv` 保留但不作为主程序环境。
+
+### 11 M2a：独立 Qwen 只读任务与文件验证
+
+This independent check needs LM Studio 0.4.8+ and the exact loaded instance `qwen/qwen3.6-35b-a3b` at `http://127.0.0.1:12345`. It uses the existing Python 3.11/httpx environment, opens no devices, and does not connect Gateway voice escalation. Reports stay under ignored `output/m2/qwen/`.
+
+在 LM Studio 0.4.8+ 加载 `qwen/qwen3.6-35b-a3b`，启用本机 `http://127.0.0.1:12345`。安装器已增加大脑模块导入自检，无新依赖或模型下载阶段；不能用“清单第一项”替代目标已加载实例。探针仅查询时间、电池、CPU、内存，结果是本机 UTF-8 Markdown 文件，不开启设备。
+
+从项目根执行默认三项验收（macOS/Linux）：
+
+```bash
+.cache/m0/venv/bin/python verify_toolcall.py
+```
+
+显式只读任务示例，仍仅允许系统状态查询：
+
+```bash
+.cache/m0/venv/bin/python verify_toolcall.py --url http://127.0.0.1:12345 --model qwen/qwen3.6-35b-a3b --task "查询电脑状态并生成中文报告"
+```
+
+Windows 的独立大脑入口使用其项目解释器（不代表 Metal 后端已在 Windows 验收）：
+
+```powershell
+.cache\m0\venv\Scripts\python.exe verify_toolcall.py
+```
+
+成功以退出码 0 和 `verification.json` 的 `passed=true` 为准；失败退出码 2，失败报告保留，不能只看模型回复。默认三项还核对回答保留真实工具数值；自定义 `--task` 只证明执行/交付，数值核对标为未做。Ctrl+C 取消在途 HTTP 与后续工具/文件发布，已开始的只读系统查询按自身超时返回。单次 HTTP 上限 90 秒，整个任务 120 秒，最多 4 轮。日志/报告不加入 Git，未请求任何模型或测试媒体上传。
+
+普通聊天 SSE 与独立 agent 文件输出分别处理；不把思考正文当答案、截断输出当成功，也不重复生成已经完成的回答。下一阶段才接并行转写、用户任务来源校验及 GUI/Gateway 升级；当前不能直接对语音助手使用这项能力。固定后端、音色补丁、原模型哈希和权威目标架构不变。
+
+### 12 M2b：并行转写与 Gateway 系统任务
+
+The default Gateway install now prepares the pinned multilingual Whisper small resources outside the repository and runs a CPU process self-check. Runtime transcription is offline. CPU VAD/Whisper and Qwen run beside the existing audio stream; the CLI/GUI open no second microphone. Native speech feedback for task results remains pending.
+
+当前安装器默认安装 CPU 转写依赖，并下载锁定的 Whisper small 四项资源（约 487MB，仓库外 `~/.cache/jac/models/whisper-small`），逐文件 SHA256 和纯 CPU 自检通过才报成功。运行期不下载，不发送云端。下载采用 HTTPS 镜像/官方回退，持续过慢会切源，失败保留明确结果。根依赖和固定独立清单已同步，历史 requirements_fixed 不用于主程序。
+
+从项目根更新安装并自检：
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/setup_new_computer.py --only gateway
+```
+
+仅安装依赖、暂不准备模型时：
+
+```bash
+python3.11 new_computer_download/setup_new_computer.py --only gateway --skip-transcription-model
+```
+
+只准备或修复转写资源时：
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/prepare_transcription.py --download-models --self-test
+```
+
+新机器可指定仓库外目录，GUI 参数中填写同一目录，或设置 JAC_WHISPER_MODEL_DIR。默认 GUI 已启用“本地转写与系统任务”；缺少/损坏模型明确拒绝开始采集，可先关闭该项运行基础听看说。LM Studio 要按第 11 节加载精确 Qwen，默认本机 12345；大脑不可用时任务明确失败，感知继续运行。运行中设置锁定，下次启动生效。
+
+启动 GUI：
+
+```bash
+.cache/m0/venv/bin/python main.py --gateway --gui
+```
+
+GUI 内先启动后端再启动语音，戴耳机。第一轮使用明确短句：“查询电脑状态”“查一下电池电量”“查询本机当前时间”“生成一份系统状态报告”。界面应出现独立用户转写、大脑任务状态和可打开的真实报告。报告含该条任务转写及实际工具证据，仅在本机 output/m2/qwen/；一般转写只在内存，音视频不落盘。目前任务结果不会从原生音色播报，不能把界面文件交付当成播报验收。
+
+仅基础听看说的完整命令：
+
+```bash
+.cache/m0/venv/bin/python main.py --gateway --gui --no-transcription
+```
+
+终端设备入口仍需显式授权：
+
+```bash
+.cache/m0/venv/bin/python main.py --gateway --consent-devices --transcription
+```
+
+Windows 使用 .cache\m0\venv\Scripts\python.exe 替换解释器；CPU 子进程强制 UTF-8 管道，Qt 保留中文字体回退。但本轮仍只在 Apple Silicon 实跑，不宣称 Windows Metal 后端已验收。
+
+本机安装器已实跑通过：依赖/主进程隔离检查、四项资源 SHA256 与 CPU 就绪自检。真实固定后端 60 秒合成文件联调交付唯一系统报告，设备未打开；这不代表真机识别质量或长时性能已验收。
+
+VAD 在线程以 30ms 判定，至少 300ms 有声和 600ms 句末静音；12 秒长句不会截成多个指令。低置信度、播放期间讲话、过期结果、否定/转述或未支持的复合任务不执行；忙碌时不排队旧任务。停止/重连会取消待完成任务，请会话恢复后重新说；旁路积压/异常提示重启，持续上行不会靠丢弃用户语音追赶。

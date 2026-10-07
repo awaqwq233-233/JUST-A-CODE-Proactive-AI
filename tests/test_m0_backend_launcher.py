@@ -155,7 +155,8 @@ def test_installer_dry_run_never_executes_or_writes(tmp_path, monkeypatch):
         pytest.fail("dry-run 执行了外部命令")
 
     monkeypatch.setattr(installer, "run_cmd", forbidden)
-    args = SimpleNamespace(mirror=None, no_mirror=False, dry_run=True)
+    args = SimpleNamespace(mirror=None, no_mirror=False, dry_run=True,
+                           skip_transcription_model=False, whisper_model_dir=str(tmp_path / "external-whisper"))
     assert installer.step_m0(args) is True
     assert list(tmp_path.iterdir()) == []
 
@@ -188,7 +189,8 @@ def test_installer_mirror_failure_falls_back_without_disabling_tls(tmp_path, mon
         return SimpleNamespace(stdout="3.11\n", returncode=1 if len(calls) == 2 else 0)
 
     monkeypatch.setattr(installer, "run_cmd", command)
-    assert installer.step_m0(SimpleNamespace(mirror=None, no_mirror=False, dry_run=False)) is True
+    assert installer.step_m0(SimpleNamespace(mirror=None, no_mirror=False, dry_run=False,
+        skip_transcription_model=True, whisper_model_dir=str(tmp_path / "external-whisper"))) is True
     assert calls[-2][-1] == installer.OFFICIAL_PIP_INDEX
     assert "PySide6" in calls[-1][-1] and "GatewayClient" in calls[-1][-1]
     assert all("--trusted-host" not in call for call in calls)

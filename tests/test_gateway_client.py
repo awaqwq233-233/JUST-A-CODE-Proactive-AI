@@ -1,6 +1,8 @@
 """方案 B 客户端的真实本机 WebSocket 契约测试，不打开设备。"""
 
 import asyncio
+import base64
+import hashlib
 import json
 import queue
 import subprocess
@@ -14,6 +16,12 @@ from websockets.asyncio.server import serve
 from src.omni.gateway_client import GatewayClient, GatewayCallbacks
 from src.omni import realtime_protocol as protocol
 from src.omni.gateway_cli import main as cli_main
+
+
+def voice_ack(init):
+    """模拟后端已实际应用当前参考 PCM 的结构化确认。"""
+    pcm = base64.b64decode(init["payload"]["voice"]["tts_ref_audio_base64"])
+    return {"applied": True, "reference_sha256": hashlib.sha256(pcm).hexdigest()}
 
 
 class FakeDevices:
@@ -82,7 +90,7 @@ def test_two_sessions_restore_context_and_keep_exact_audio(tmp_path):
             init = json.loads(await ws.recv())
             assert init["type"] == "session.init"
             inits.append(init)
-            await ws.send(json.dumps({"type": "session.created", "session_id": str(len(inits)), "mode": "full_duplex"}))
+            await ws.send(json.dumps({"type": "session.created", "session_id": str(len(inits)), "mode": "full_duplex", "voice_conditioning": voice_ack(init)}))
             while True:
                 message = json.loads(await ws.recv())
                 if message["type"] == "session.close":
@@ -165,6 +173,69 @@ def test_device_consent_rejected_before_hardware_or_network():
     assert failure.value.code == 2
 
 
+def test_media_failure_cancels_task_before_receive_tail(tmp_path):
+    """采集故障进入协议尾窗前必须取消任务，不能在收尾期间发布旧报告。"""
+    import soundfile as sf
+    voice = tmp_path / "voice.wav"
+    sf.write(voice, np.zeros(160, dtype="float32"), 16000)
+    state = {"active": False, "finished": False}
+
+    class Pipeline:
+        """仅观察任务代次的生命周期。"""
+        def __init__(self, *args):
+            """不加载转写模型。"""
+        def start(self):
+            """模拟 CPU 就绪。"""
+        def begin_session(self):
+            """模拟已确认会话。"""
+            state["active"] = True
+        def invalidate(self):
+            """使旧任务不可发布。"""
+            state["active"] = False
+        def offer_audio(self, *args):
+            """模拟旁路入队。"""
+        def request_stop(self):
+            """取消旁路。"""
+            self.invalidate()
+        def stop(self):
+            """模拟最终回收。"""
+        def stats(self):
+            """不返回正文。"""
+            return {}
+
+    class FailingDevices(FakeDevices):
+        """首块产生采集错误，仍须完成协议清理。"""
+        def get(self, *args):
+            """在上行线程发现模拟故障。"""
+            self.error = "模拟采集失败"
+            return super().get(*args)
+        def finish_input(self):
+            """协议尾窗开始时任务必须已经失效。"""
+            assert not state["active"]
+            state["finished"] = True
+
+    async def scenario():
+        """使用真实本机 WS 关闭确认，验证故障收尾顺序。"""
+        async def handler(ws):
+            """完成初始化并等待客户端关闭。"""
+            await ws.send(json.dumps({"type": "session.queue_done"}))
+            init = json.loads(await ws.recv())
+            await ws.send(json.dumps({"type": "session.created", "session_id": "failure",
+                "mode": "full_duplex", "voice_conditioning": voice_ack(init)}))
+            assert json.loads(await ws.recv())["type"] == "session.close"
+            await ws.send(json.dumps({"type": "session.closed", "reason": "client_closed"}))
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            client = GatewayClient(url=f"ws://127.0.0.1:{port}", ref_audio_path=voice,
+                consent_devices=True, device_factory=FailingDevices, drain_seconds=.01,
+                transcription_enabled=True, pipeline_factory=Pipeline)
+            with pytest.raises(RuntimeError, match="模拟采集失败"):
+                await client.run(max_sessions=1)
+            assert state["finished"] and client._pipeline is None
+    asyncio.run(scenario())
+
+
 def test_gateway_entrypoint_does_not_import_legacy_dependencies():
     """独立 3.11 环境可加载生产客户端，不隐式加载 PyAudio 或 torch。"""
     command = "from src.omni import GatewayClient; import sys; assert 'pyaudio' not in sys.modules; assert 'torch' not in sys.modules"
@@ -192,8 +263,8 @@ def test_manual_stop_waits_for_close_ack_before_restart(tmp_path):
                 await ws.send(json.dumps({"type": "error", "error": {"code": "session_failed"}}))
                 return
             busy = True
-            await ws.recv()
-            await ws.send(json.dumps({"type": "session.created", "session_id": "manual", "mode": "full_duplex"}))
+            init = json.loads(await ws.recv())
+            await ws.send(json.dumps({"type": "session.created", "session_id": "manual", "mode": "full_duplex", "voice_conditioning": voice_ack(init)}))
             async for raw in ws:
                 if json.loads(raw)["type"] == "session.close":
                     close_requested.set()
@@ -275,8 +346,8 @@ def test_manual_stop_drains_inflight_input_before_close(tmp_path):
         async def handler(ws):
             """收到输入后异步处理，关闭时记录是否已经完成。"""
             await ws.send(json.dumps({"type": "session.queue_done"}))
-            await ws.recv()
-            await ws.send(json.dumps({"type": "session.created", "session_id": "drain", "mode": "full_duplex"}))
+            init = json.loads(await ws.recv())
+            await ws.send(json.dumps({"type": "session.created", "session_id": "drain", "mode": "full_duplex", "voice_conditioning": voice_ack(init)}))
             tasks = []
             try:
                 async for raw in ws:

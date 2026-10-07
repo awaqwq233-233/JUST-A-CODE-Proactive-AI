@@ -31,10 +31,12 @@ async def run_live(args) -> dict:
     try:
         async with connect(protocol.gateway_url(args.url, "video"), proxy=None, max_size=32 * 1024 * 1024) as ws:
             await protocol.receive_until(ws, "session.queue_done", 120, events)
-            await ws.send(json.dumps(protocol.build_init("你是 J.A.C. 私人助手。请自然地用中文回应听到的话。", protocol.load_audio(args.voice))))
+            init = protocol.build_init("你是 J.A.C. 私人助手。请自然地用中文回应听到的话。", protocol.load_audio(args.voice))
+            await ws.send(json.dumps(init))
             created = await protocol.receive_until(ws, "session.created", 120, events)
             if created.get("mode") != "full_duplex":
                 raise RuntimeError("未进入全双工会话")
+            protocol.require_voice_condition(created, init)
             devices.start()
             await asyncio.to_thread(devices.camera_ready.wait, 8)
             if devices.error or not devices.captured_frames:

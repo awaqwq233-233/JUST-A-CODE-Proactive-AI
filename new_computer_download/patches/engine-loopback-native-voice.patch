@@ -1,0 +1,201 @@
+diff --git a/tools/omni/omni.h b/tools/omni/omni.h
+index ab524b3..103e83d 100644
+--- a/tools/omni/omni.h
++++ b/tools/omni/omni.h
+@@ -25,7 +25,7 @@ struct audition_audio_f32;
+ // Forward declaration for C++ Token2Wav
+ namespace omni {
+ namespace flow {
+-class Token2WavSession;
++struct Token2WavSession;
+ }
+ }
+ 
+diff --git a/tools/server/server-omni.cpp b/tools/server/server-omni.cpp
+index 851038a..2751e37 100644
+--- a/tools/server/server-omni.cpp
++++ b/tools/server/server-omni.cpp
+@@ -411,7 +411,7 @@ int main(int argc, char ** argv) {
+     });
+ 
+     // start server
+-    svr.listen("0.0.0.0", params.port);
++    svr.listen(params.hostname, params.port);
+ 
+     // cleanup
+     {
+diff --git a/tools/server/ws_handler.cpp b/tools/server/ws_handler.cpp
+index 5cf6427..97ffa2b 100644
+--- a/tools/server/ws_handler.cpp
++++ b/tools/server/ws_handler.cpp
+@@ -20,6 +20,22 @@
+ #include "audition.h"
+ #include "vision.h"
+ 
++#include "token2wav/token2wav.h"
++#include <cerrno>
++#ifdef _WIN32
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#include <process.h>
++#else
++#include <spawn.h>
++#include <sys/wait.h>
++#include <signal.h>
++#include <unistd.h>
++extern char ** environ;
++#endif
++
+ namespace fs = std::filesystem;
+ 
+ static double elapsed_ms(std::chrono::steady_clock::time_point start,
+@@ -568,6 +584,115 @@ static omni_context * create_session_octx(common_params & params, const ParsedSe
+     return octx;
+ }
+ 
++// Run the pinned local voice frontend without a shell; a timeout rejects init.
++static bool jac_run_voice_frontend(const std::vector<std::string> & args) {
++#ifdef _WIN32
++    std::vector<std::wstring> wide;
++    for (const auto & arg : args) {
++        int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, arg.c_str(), -1, nullptr, 0);
++        if (size <= 0) return false;
++        std::wstring value(size, L'\0');
++        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, arg.c_str(), -1, value.data(), size);
++        value.resize(size - 1);
++        wide.push_back(value);
++    }
++    std::vector<const wchar_t *> argv;
++    for (const auto & value : wide) argv.push_back(value.c_str());
++    argv.push_back(nullptr);
++    intptr_t child = _wspawnv(_P_NOWAIT, argv[0], argv.data());
++    if (child == -1) return false;
++    HANDLE handle = reinterpret_cast<HANDLE>(child);
++    DWORD wait = WaitForSingleObject(handle, 60000), code = 1;
++    if (wait != WAIT_OBJECT_0) {
++        TerminateProcess(handle, 1);
++        WaitForSingleObject(handle, 5000);
++    } else {
++        GetExitCodeProcess(handle, &code);
++    }
++    CloseHandle(handle);
++    return wait == WAIT_OBJECT_0 && code == 0;
++#else
++    std::vector<char *> argv;
++    for (const auto & arg : args) argv.push_back(const_cast<char *>(arg.c_str()));
++    argv.push_back(nullptr);
++    pid_t child;
++    if (posix_spawn(&child, argv[0], nullptr, nullptr, argv.data(), environ) != 0) return false;
++    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
++    int status = 0;
++    while (std::chrono::steady_clock::now() < deadline) {
++        pid_t result = waitpid(child, &status, WNOHANG);
++        if (result == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
++        if (result < 0 && errno != EINTR) return false;
++        std::this_thread::sleep_for(std::chrono::milliseconds(50));
++    }
++    kill(child, SIGKILL);
++    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
++    return false;
++#endif
++}
++
++// Apply the requested TTS voice before duplex threads start; never fall back.
++static bool jac_apply_voice_condition(omni_context * octx, const ParsedSessionInit & init,
++                                      const std::string & temp_dir, json & metadata) {
++    if (!init.use_tts) return true;
++    if (!octx->token2wav_initialized || !octx->token2wav_session) return false;
++    // Clear all per-session token buffers before selecting a voice, including the default.
++    octx->token2wav_buffer = {4218, 4218, 4218};
++    octx->token2wav_wav_idx = 0;
++    if (init.tts_ref_audio_b64.empty()) {
++        octx->token2wav_session->reset();
++        bool ok = octx->token2wav_session->t2w.start_stream_with_prompt_cache_gguf(
++            octx->token2wav_model_dir + "/prompt_cache.gguf", 5, 1.0f);
++        metadata = {{"applied", false}, {"source", "official_default"}};
++        LOG_INF("JAC native voice selected: official_default\n");
++        return ok;
++    }
++    const char * python = std::getenv("JAC_VOICE_PYTHON");
++    const char * script = std::getenv("JAC_VOICE_PREPARE_SCRIPT");
++    const char * models = std::getenv("JAC_VOICE_MODEL_DIR");
++    const char * cache = std::getenv("JAC_VOICE_CACHE_DIR");
++    if (!python || !script || !models || !cache || !octx->token2wav_initialized || !octx->token2wav_session) {
++        LOG_ERR("JAC native voice frontend is not configured; use the pinned J.A.C. launcher\n");
++        return false;
++    }
++    std::string wav = TempMediaFiles::write_audio_wav(init.tts_ref_audio_b64, temp_dir, -1);
++    if (wav.empty()) return false;
++    std::string result_file = wav + ".voice.json";
++    bool ok = false;
++    try {
++        if (!jac_run_voice_frontend({python, script, "--audio", wav, "--model-dir", models,
++                                    "--cache-dir", cache, "--result-file", result_file})) {
++            throw std::runtime_error("local frontend failed or timed out");
++        }
++        std::ifstream stream(result_file);
++        json prepared = json::parse(stream);
++        std::string hash = prepared.at("voice_sha256").get<std::string>();
++        fs::path bundle_dir = fs::canonical(prepared.at("bundle_dir").get<std::string>());
++        if (hash.size() != 64 || hash.find_first_not_of("0123456789abcdef") != std::string::npos ||
++            bundle_dir.parent_path() != fs::canonical(cache) || bundle_dir.filename() != "v1-" + hash) {
++            throw std::runtime_error("voice cache identity mismatch");
++        }
++        omni::flow::Token2Mel::PromptBundle bundle;
++        if (!omni::flow::Token2Mel::load_prompt_bundle_dir(bundle_dir.string(), bundle)) {
++            throw std::runtime_error("voice bundle could not be loaded");
++        }
++        octx->token2wav_session->reset();
++        if (!octx->token2wav_session->t2w.start_stream_with_prompt(bundle, 5, 1.0f)) {
++            throw std::runtime_error("Token2Wav voice setup failed");
++        }
++        metadata = {{"applied", true}, {"reference_sha256", hash},
++                    {"cache_hit", prepared.at("cache_hit")}};
++        LOG_INF("JAC native voice applied: sha256=%s cache_hit=%d tokens=%lld\n", hash.c_str(),
++                prepared.at("cache_hit").get<bool>(), (long long) bundle.T_prompt_token - 3);
++        ok = true;
++    } catch (const std::exception & error) {
++        LOG_ERR("JAC native voice setup failed: %s\n", error.what());
++    }
++    fs::remove(wav);
++    fs::remove(result_file);
++    return ok;
++}
++
+ // ============================================================================
+ // Main WS handler
+ // ============================================================================
+@@ -653,6 +778,19 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+         return;
+     }
+ 
++    json voice_conditioning;
++    {
++        std::lock_guard<std::mutex> lock(octx_mutex);
++        if (!jac_apply_voice_condition(octx, parsed_init, temp_dir, voice_conditioning)) {
++            // Close outside octx_mutex: close joins reusable context threads.
++            octx = nullptr;
++        }
++    }
++    if (!octx) {
++        fail_fast(session_id, "voice_condition_setup_failed");
++        return;
++    }
++
+     // Full-duplex requires index=0 prefill before the first frame. This
+     // initializes the system prompt and starts the duplex encoder/LLM pipeline.
+     if (parsed_init.mode == "full_duplex" || !parsed_init.ref_audio_b64.empty()) {
+@@ -694,8 +832,9 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+     }
+ 
+     // Send session.created
+-    send_event(make_session_created(session_id, parsed_init.mode, make_runtime_metrics(octx)));
+-
++    auto created = make_session_created(session_id, parsed_init.mode, make_runtime_metrics(octx));
++    if (!voice_conditioning.is_null()) created["voice_conditioning"] = voice_conditioning;
++    send_event(created);
+     LOG_INF("WS /backend: session %s activated, mode=%s\n", session_id.c_str(), parsed_init.mode.c_str());
+ 
+     // ================================================================

@@ -50,9 +50,13 @@ def _get_memory():
             total = int(subprocess.run(["sysctl", "-n", "hw.memsize"],
                                        capture_output=True, text=True, timeout=5).stdout.strip())
             vm = subprocess.run(["vm_stat"], capture_output=True, text=True, timeout=5).stdout
-            pages = 4096  # macOS vm_stat 默认页大小
+            match = re.search(r"page size of (\d+) bytes", vm)
+            if not match:
+                return "内存：vm_stat 未报告页大小，无法精确读取。"
+            pages = int(match.group(1))
 
             def _pages(key):
+                """读取指定内存页类别，采用 vm_stat 实际报告的页大小。"""
                 for line in vm.splitlines():
                     if line.startswith(key):
                         return int("".join(filter(str.isdigit, line.split(":")[1])))
@@ -61,7 +65,7 @@ def _get_memory():
             used_pages = _pages("Pages active") + _pages("Pages wired down")
             used_gib = used_pages * pages / (1024 ** 3)
             total_gib = total / (1024 ** 3)
-            return f"内存：已用约 {used_gib:.1f} GB / 共 {total_gib:.1f} GB（macOS）"
+            return f"内存：活跃与有线页合计约 {used_gib:.1f} GiB / 共 {total_gib:.1f} GiB（不含压缩等类别，macOS）"
         except Exception:
             pass
     return "内存：当前平台/环境无法精确读取。"

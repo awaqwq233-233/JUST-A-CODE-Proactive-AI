@@ -1,79 +1,100 @@
 #!/usr/bin/env python3
-"""验证 LM Studio 上的大脑模型是否支持 OpenAI 风格的 function calling（tools 参数）。
+"""M2 独立实机验收：Qwen 结构化调用 → 真实只读工具 → 中文文件。"""
 
-本脚本仅用于开发期验证，不进入主程序运行链路。
-用法：python verify_toolcall.py
-可选环境变量：
-    LM_STUDIO_URL     LM Studio 的 chat/completions 地址，默认 http://127.0.0.1:12345/v1/chat/completions
-    JAC_BRAIN_MODEL   模型标识符，默认 qwen/qwen3.6-35b-a3b（需与 LM Studio 中加载的 id 一致）
-"""
-import os
-import sys
+import argparse
 import json
+from pathlib import Path
+import re
+import signal
+import sys
+import threading
 
-import requests
+from src.brain.llm import LocalBrain
+from src.brain.lm_studio import BrainError, MODEL
+from src.brain.task_runner import BrainTaskRunner, atomic_write, ROOT
 
 
-def main():
-    # 从环境变量读取地址与模型，未设置则回退项目约定值
-    url = os.environ.get("LM_STUDIO_URL", "http://127.0.0.1:12345/v1/chat/completions")
-    model = os.environ.get("JAC_BRAIN_MODEL", "qwen/qwen3.6-35b-a3b")
+def check_grounding(name, result):
+    """验收答案保留真实时间、电量及完整报告的 CPU/内存数值。"""
+    output = "\n".join(entry["output"] for entry in result.trace)
+    values = []
+    if name in {"time", "all"}:
+        stamp = re.search(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", output)
+        if not stamp:
+            return False
+        values.append(stamp.group())
+    if name in {"battery", "all"}:
+        battery = re.search(r"\d+%", output)
+        if battery:
+            values.append(battery.group())
+        elif "无法" not in result.answer:
+            return False
+    if name == "all":
+        cpu = re.search(r"CPU 核心数：(\d+)", output)
+        load = re.search(r"负载：([\d./]+)", output)
+        memory = re.search(r"合计约 ([\d.]+) GiB / 共 ([\d.]+) GiB", output)
+        if cpu:
+            values.append(cpu.group(1))
+        if load:
+            values.extend(load.group(1).split("/"))
+        if memory:
+            values.extend(memory.groups())
+            values.append("GiB")
+        elif "无法" not in result.answer:
+            return False
+    return all(re.search(r"(?<![\d.])" + re.escape(value) + r"(?![\d.])", result.answer)
+               for value in values)
 
-    # 定义一个最小工具：打开网址，用于探测模型是否会返回 tool_calls
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "open_url",
-                "description": "在浏览器中打开一个网址",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "url": {"type": "string", "description": "要打开的网址"}
-                    },
-                    "required": ["url"],
-                },
-            },
-        }
-    ]
 
-    # 构造与 J.A.C. 主程序一致的请求体（非流式 + 关闭思考链，降延迟）
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": "帮我打开百度首页"}],
-        "tools": tools,
-        "tool_choice": "auto",
-        "temperature": 0.2,
-        "max_tokens": 200,
-        "stream": False,
-        "chat_template_kwargs": {"enable_thinking": False},
-    }
+def main(argv=None):
+    """默认验收时间/电池/状态报告；可传显式文本任务，只开放系统查询。"""
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--url', default='http://127.0.0.1:12345', help='LM Studio 本机根地址')
+    parser.add_argument('--model', default=MODEL, help='精确已加载模型实例 ID')
+    parser.add_argument('--task', help='可选显式任务文字；仍仅允许查询系统状态')
+    parser.add_argument('--output-dir', type=Path, default=ROOT / 'output/m2/qwen')
+    args = parser.parse_args(argv)
+    if sys.version_info[:2] != (3, 11):
+        parser.error('请使用项目 .cache/m0/venv 的 Python 3.11')
+    stopped = threading.Event()
+    previous = signal.getsignal(signal.SIGINT)
 
-    # 发起请求，连接失败给出可操作提示
+    def cancel(signum, frame):
+        """Ctrl+C 协作取消在途请求，不发布未完成任务文件。"""
+        stopped.set()
+
+    signal.signal(signal.SIGINT, cancel)
+    report = {'model': args.model, 'url': args.url, 'passed': False, 'cases': []}
     try:
-        resp = requests.post(url, json=payload, timeout=30)
-    except requests.ConnectionError:
-        print("[连接失败] 请确认 LM Studio 已启动，并在 127.0.0.1:12345 加载了模型。")
-        sys.exit(2)
+        brain = LocalBrain(backend='lm_studio', lm_studio_model=args.model, lm_studio_url=args.url)
+        runner = BrainTaskRunner(brain, args.output_dir)
+        cases = [('task', args.task, None)] if args.task else [
+            ('time', '查询本机当前时间，回答必须原样保留工具返回的完整日期和时间。', ['time']),
+            ('battery', '查询本机实际电池状态，回答保留真实百分比与充放电状态；无法读取时如实说明。', ['battery']),
+            ('all', '查询本机时间、电池、CPU、内存，并生成中文系统状态报告，保留真实数值与测量限制。', ['all']),
+        ]
+        for name, task, info_types in cases:
+            result = runner.run(task, stopped.is_set, info_types)
+            grounded = None if name == 'task' else check_grounding(name, result)
+            report['cases'].append(dict(name=name, seconds=round(result.elapsed_seconds, 3),
+                                        tool_count=len(result.trace), grounded=grounded,
+                                        reasoning_tokens=(brain.lm_client.last_usage.get('completion_tokens_details') or {}).get('reasoning_tokens', 0),
+                                        file=result.path.name))
+            print(f'[{name}] {len(result.trace)} 次真实工具调用，{result.elapsed_seconds:.2f} 秒；{result.path}')
+            if grounded is False:
+                raise BrainError('最终回答未保留要求核对的实际工具数值，验收失败')
+        if stopped.is_set():
+            raise BrainError('任务已取消')
+        report['passed'] = True
+        return 0
+    except (BrainError, ValueError) as exc:
+        report['error'] = str(exc)
+        print(f'[未通过] {exc}', file=sys.stderr)
+        return 2
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        atomic_write(args.output_dir / 'verification.json', json.dumps(report, ensure_ascii=False, indent=2) + '\n')
 
-    if resp.status_code != 200:
-        print(f"[LM Studio 返回 {resp.status_code}] {resp.text[:300]}")
-        sys.exit(2)
 
-    # 解析返回，判断是否存在 tool_calls
-    data = resp.json()
-    msg = data["choices"][0]["message"]
-    tool_calls = msg.get("tool_calls")
-
-    if tool_calls:
-        print("[支持] 模型返回了 tool_calls，Function Calling 可直接实现：")
-        print(json.dumps(tool_calls, ensure_ascii=False, indent=2))
-        print("\n结论：可以开工实现 Function Calling（扩展 brain.think 支持 tools 即可）。")
-    else:
-        print("[警告] 未返回 tool_calls，模型输出为纯文本：")
-        print(msg.get("content"))
-        print("\n结论：该模型/配置暂不支持 tool calling，需走提示词式伪 tool-call 降级方案。")
-
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    raise SystemExit(main())

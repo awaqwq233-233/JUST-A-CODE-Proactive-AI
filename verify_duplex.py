@@ -16,7 +16,7 @@ import numpy as np
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from src.omni.realtime_protocol import (
-    load_audio, encode_pcm, decode_pcm, build_init, build_input, input_chunks,
+    load_audio, encode_pcm, decode_pcm, build_init, build_input, input_chunks, require_voice_condition,
     gateway_url, check_event, receive_until,
 )
 
@@ -63,6 +63,7 @@ async def probe(
             raise ValueError("session.created 缺少 session_id")
         if created.get("mode") != "full_duplex":
             raise ValueError("服务端未进入 full_duplex")
+        require_voice_condition(created, init)
 
         async def receive_outputs() -> None:
             """持续校验增量输出，播放流与文本流分别统计。"""

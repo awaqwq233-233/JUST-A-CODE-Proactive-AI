@@ -6,16 +6,24 @@ sounddevice==0.5.5
 opencv-python==5.0.0.93
 soxr==1.0.0
 websockets==16.0
-httpx==0.28.1
+httpx==0.28.1  # Gateway 控制与 M2 独立 Qwen HTTP；无 requests/SDK 新依赖
 fastapi==0.128.0
 uvicorn==0.40.0
 pydantic==2.12.5
 python-multipart==0.0.22
 PyYAML==6.0.3
 librosa==0.11.0
+onnxruntime==1.24.4  # 仅 CPU 参考音色前端，完整推理仍为 C++ Metal
+kaldi-native-fbank==1.22.3  # CAMPPlus 的 Kaldi 特征；不引入 torch/torchaudio
 markdown==3.10.2
 Pygments==2.19.2
 pytest==8.4.2
 pytest-cov==7.0.0
 pytest-timeout==2.4.0
 PySide6==6.11.2  # Gateway 语音工作台；科技风格与 QProcess 后端管理使用现有 Qt，无新增依赖
+faster-whisper==1.2.1  # 仅 CPU 子进程转写，不加载 torch/MPS
+ctranslate2==4.8.2
+webrtcvad-wheels==2.0.14.post1
+av==18.1.0
+tokenizers==0.23.2
+huggingface-hub==1.33.0  # 运行期 offline；模型由锁定资源安装器下载

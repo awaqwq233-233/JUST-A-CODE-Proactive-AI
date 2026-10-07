@@ -53,6 +53,8 @@ class LiveDevices:
         self.input_status_events = self.output_status_events = 0
         self.mic_rms_max = 0.0
         self.mic_rms_current = 0.0
+        self.audio_tap = None
+        self.playback_active_until = 0.0
 
     def microphone_callback(self, data, frames, timing, status) -> None:
         """实时回调只复制入队；溢出显式失败，绝不悄悄丢弃用户语音。"""
@@ -81,6 +83,7 @@ class LiveDevices:
             self.pending_output = self.pending_output[count:]
             offset += count
             self.played_samples += count
+            self.playback_active_until = time.monotonic() + .3
 
     def audio_worker(self) -> None:
         """后台流式重采样 48k→16k，按完整一秒入队并保留波形顺序。"""
@@ -94,6 +97,9 @@ class LiveDevices:
             self.mic_rms_current = float(np.sqrt(np.mean(raw * raw)))
             self.mic_rms_max = max(self.mic_rms_max, self.mic_rms_current)
             converted = np.clip(resampler.resample_chunk(raw) * self.mic_gain, -1, 1)
+            if self.audio_tap is not None:
+                self.audio_tap(converted, time.monotonic() < self.playback_active_until
+                               or bool(len(self.pending_output)) or not self.playback.empty())
             pending = np.concatenate((pending, converted))
             while len(pending) >= 16000:
                 try:

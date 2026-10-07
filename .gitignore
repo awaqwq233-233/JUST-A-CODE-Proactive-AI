@@ -24,6 +24,9 @@ temp/
 output/
 *.log
 temp_audio.wav
+.coverage
+.coverage.*
+.pytest_cache/
 
 # Large model / media assets (do not commit to GitHub)
 # 模型保存在项目外：大脑由 LM Studio 管理、MiniCPM-o 由固定 C++ Metal 后端加载，
