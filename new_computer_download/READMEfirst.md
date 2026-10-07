@@ -12,7 +12,7 @@ The Chinese section below contains the same commands, one per block. Run environ
 
 Create `.cache/m0/venv` and install `requirements-m0.txt`. Use `start_m0_backend.py --preflight --verify-sha` before launching. The launcher binds all ports to loopback, disables upstream session recording, rejects occupied ports and terminates only its own children on Ctrl+C.
 
-The Gateway URL is `ws://127.0.0.1:8006/v1/realtime?mode=video`. Inputs are 16 kHz mono float32 PCM Base64; outputs are 24 kHz mono float32 PCM Base64. The probe sends fixed one-second chunks and reference-WAV voice fields. `--require-audio` fails if no native audio is returned.
+The Gateway URL is `ws://127.0.0.1:8006/v1/realtime?mode=video`. Inputs are 16 kHz mono float32 PCM Base64; outputs are 24 kHz mono float32 PCM Base64. The probe sends fixed one-second chunks and reference-WAV voice fields. `--require-audio` fails if no native audio is returned. It does not verify speaker identity: the pinned C++ backend does not yet apply the TTS reference and still uses its official default Token2Wav speaker cache. The client supplies the version-specific audio/system prompt suffix; do not reuse it with another backend without checking its template.
 
 The file probe proves protocol and native-audio transport only. The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds. The M1 production client now rotates video sessions after 240 input seconds, with visible capture pauses and re-injection of the reference voice, supplied confirmed context and bounded assistant history. Untranscribed user speech is not reconstructed.
 
@@ -159,6 +159,8 @@ hf download openbmb/MiniCPM-o-4_5-gguf --revision db25077c33951fe163b42986fba013
 ### 7 协议与原生语音探针
 
 在第二个终端、J.A.C. 根目录运行。参考 WAV 通过 voice 字段转换成 16k float32 PCM；不需要 .pt、NVIDIA GPU 或 Voicebox。以下探针只发送仓库已有音频文件，不打开麦克风、摄像头或扬声器。
+
+**音色限制（2026-10-07 核实）**：当前固定 C++ 后端没有将 TTS 参考音接入 Token2Wav，仍加载官方默认音色缓存。客户端已补齐该版本参考音后的 system 模板边界，但不是完整克隆修复；`--require-audio` 只验证原生音频存在，不验证与参考 WAV 的音色一致。完整修复范围见 CHANGELOG 附 A4，目前无需安装新依赖或更换模型。
 
 ```bash
 .cache/m0/venv/bin/python verify_duplex.py --mode audio --audio /absolute/中文提问.wav --voice voices/silverwalf_voice.wav --chunks 25 --require-audio --require-realtime

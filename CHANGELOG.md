@@ -5,6 +5,17 @@
 
 ---
 
+## 2026-10-07 — 定位指定音色未生效，修复固定 C++ 会话提示词边界
+
+- bo s s 反馈当前声音似乎没有克隆指定音色。核查默认参考文件 `voices/silverwalf_voice.wav`：44.1kHz / 单声道 / PCM16 / 12.376 秒，波形有效；客户端转为 16k mono float32 后，同一 Base64 确实发送到 LLM 与 TTS 两个 voice 字段，GUI/CLI 路径未丢失参考音。
+- 根因在固定 C++ 合成接线：`tools/server/protocol.cpp` 解析 `tts_ref_audio_b64`，但该量没有被 `ws_handler.cpp` 或其他 C++ 合成代码使用。`tools/omni/omni.cpp` 初始化 Token2Wav 时加载官方模型目录的 `prompt_cache.gguf`；该缓存包含 `prompt_cache.spk_cb` 声纹，未按会话参考 WAV 替换。本机历史日志和本轮真实文件回放均确认使用同一默认缓存；不再把「发送参考音成功 / 原生音频存在」当成指定音色已克隆。
+- 同时定位到提示词模板 bug：上游把 `payload.system_prompt` 原样覆盖到 `omni_assistant_prompt` 后缀，普通中文因此被自动加上 user 前缀，丢失参考音后的 `<|audio_end|>` 与 system 结束边界。共享 `realtime_protocol.build_init()` 现显式发送该固定版本需要的 `<|audio_end|>…<|im_end|>` 后缀，首次与重连会话/文件和设备探针均复用；不改锁定引擎、模型或补丁。此兼容编码仅针对当前 C++ 版本，换后端必须重新核查。
+- 新增两项回归覆盖有/无参考音的完整模板边界、唯一用户前缀及两个参考字段的 PCM 一致性。协议/生产客户端专项 26 项通过，设备探针/长测探针/入口专项 15 项通过，共 41 项。首轮真实验证受执行沙箱 Metal command queue 初始化限制而在 init 前失败，改为获批的沙箱外后端后，同一固定后端文件回放通过：22 个上行块、9.72 秒原生音频、P95 701.310ms、正常关闭；日志确认修正后的模板与默认音色缓存。报告仅保存计数到忽略的 `output/m1/voice-template-20261007.json`，不保存对话文本或原始媒体；未打开摄像头/麦克风/扬声器，不声称音色相似度或真机听感已通过。验证后回收本轮启动的三个后端进程。
+- 同步双语 README、AGENTS、安装指南及附 A4，明确完整克隆仍未完成。修复建议为沿用 MiniCPM-o / Metal 原生合成，增加本地参考音色条件生成、按参考音哈希隔离缓存、按会话加载 Token2Wav 条件并在失败时明确报错；实施需要扩展当前只允许 loopback 补丁的固定后端范围，待 bo s s 确认。未切回旧 Voicebox，也未修改目标架构或本地权威 DOCX。
+- 本轮无新依赖或新增文件；已检查根 requirements、固定独立清单、历史依赖快照、一键安装阶段与自检，无需修改下载/安装流程。已检查 .gitignore，运行报告/日志仍在忽略目录；不提交模型、规划目录、测试媒体或个人笔记。git diff --check 通过。
+
+---
+
 ## 2026-10-07 — 完善参数按钮反馈，GUI 默认设备许可并移除勾选项
 
 - 按 bo s s 要求，「调节参数」按钮新增持续选中高亮、收起暗色，以及悬停/按压反馈；状态与面板显示同步，提示文字随展开/收起变化。
@@ -264,9 +275,16 @@
 > - **A1 判断模型**：目标由 MiniCPM-o-4_5 全双工承担主动判断，固定 Gateway `/v1/realtime?mode=video`；旧 `src/judgment/` 轮询 judge 已于本轮删除，旧 :9060 客户端与传统运行入口也已退役。
 > - **A3 记忆**：旧结论「fastembed + JSON 长期记忆」已作废——新架构改 **ChromaDB + BGE-Small-ZH-v1.5（ONNX INT8）+ JSON**，`src/memory/`（自研 MemoryStore）**待重写**；附 B/C/D/E/F 为旧记忆子系统契约，仅作历史存档。
 > - **A5 云端 / OpenClaw**：旧结论「无 MCP / OpenClaw 集成」已作废——新架构**新增云端 OpenClaw 层**（DeepSeek API），属待实现项。
-> - **A4 语音 / TTS**：目标为参考 WAV 经 `session.init.payload.voice` 编码发送，24k float32 原生音频流；不使用 speaker embedding `.pt`。旧 omni Voicebox 桥接/回灌已删除，主依赖仅 Gateway；未迁移的通用音频组件独立保留。
+> - **A4 语音 / TTS**：目标为参考 WAV 经 `session.init.payload.voice` 编码发送，24k float32 原生音频流；不使用 speaker embedding `.pt`。2026-10-07 核查确认参考音已发送，但固定 C++ Token2Wav 未应用 TTS 参考字段，仍使用官方默认声纹缓存，**指定音色克隆尚未完成**。客户端已修复音频/system 模板边界，不能据此宣称完整克隆生效。旧 omni Voicebox 桥接/回灌已删除，主依赖仅 Gateway；未迁移的通用音频组件独立保留。
 > - **A4 后端参数**：目标固定 Gateway `:8006`、Worker `:22400`、引擎 `:22500`，Q4_K_M、起始 `-c 4096 -t 8 -ngl 99`；Metal 构建关闭内部 TLS并应用已登记的 loopback 补丁。
 > 其余历史坑位记录（令牌碎片、背压、回声门控等）作为工程经验保留，但在新架构后端 / 协议下需**重新验证**。
+
+#### A4. 当前固定原生音色的缺口与修复建议（2026-10-07）
+
+- **已核实的链路**：参考 WAV → 16k float32 Base64 → Gateway/Worker 原样转发 → C++ 将 LLM 参考音写临时 WAV 并 APM prefill；TTS 参考字段仅解析。最终 Token2Wav 从官方 `prompt_cache.gguf` 加载 `spk_cb` 与流式条件缓存，未从指定 WAV 生成或替换这些量。参考音影响 LLM 条件不等于最终合成器已换声纹。
+- **已修复的独立问题**：固定 C++ 将 system_prompt 用作音频后的模板后缀，客户端补齐 `<|audio_end|>` 与 `<|im_end|>`，避免参考音与助手指令之间的角色边界损坏。真实后端日志与 22 块文件回放验证通过；完整克隆、相似度与真机听感仍待验证。
+- **具体修复范围（待确认，未实施）**：保留固定 MiniCPM-o / C++ Metal 主链路，用本地前处理将参考 WAV 转成 Token2Wav 已有 `PromptBundle` 接口要求的声纹、参考语音 token 与 mel 条件；优先评估 CPU/ONNX 前处理并单独锁定必要资源，不加载完整 PyTorch 全双工模型。使用参考音内容哈希缓存派生产物，放入忽略目录、禁发云端，不覆盖官方模型与其锁定 SHA256。扩展登记的引擎补丁，在创建/复用会话时按 TTS 参考音加载条件，换参考音时刷新，失败明确报错而不默默使用默认音色。同步安装阶段、导入/资源自检和必要的权威架构说明。验证需包含不同参考音切换、受控重连复用、失败拒绝以及同文案默认/目标声音对比和 bo s s 听感确认。
+- **边界**：AGENTS 当前规定启动器只接受已登记 loopback 补丁，因此不能直接给固定外部引擎加未登记源码变化；以上范围需 bo s s 确认后才实施。不恢复旧桥接或改变模型层数来绕过此缺口。
 
 #### A1. 交互方式：从被动到主动（部分解决）
 

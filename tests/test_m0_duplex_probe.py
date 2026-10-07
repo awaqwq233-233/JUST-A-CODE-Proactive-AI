@@ -67,6 +67,27 @@ def test_gateway_url_uses_current_endpoint():
     assert probe.gateway_url("ws://127.0.0.1:8006/duplex", "video") == "ws://127.0.0.1:8006/v1/realtime?mode=video"
 
 
+@pytest.mark.parametrize("with_voice", [False, True])
+def test_pinned_cpp_init_preserves_system_and_reference_boundaries(with_voice):
+    """回归固定 C++ 把 prompt 当后缀的行为，避免参考音后的指令变成用户消息。"""
+    samples = np.linspace(-0.2, 0.2, 16000, dtype="<f4") if with_voice else None
+    payload = probe.build_init("称呼用户为 bo s s。", samples)["payload"]
+    # 复现 stream_prefill 的前缀选择规则，并检查拼接后完整的 ChatML 边界。
+    suffix = payload["system_prompt"]
+    effective_suffix = suffix if suffix.startswith("<|") else "<|im_start|>user\n" + suffix
+    template = "<|im_start|>system\nStreaming Duplex Conversation!\n<|audio_start|>"
+    template += "[reference embedding]" + effective_suffix + "<|im_start|>user\n"
+    assert template.index("<|audio_end|>") < template.index("称呼用户") < template.index("<|im_end|>")
+    assert template.count("<|im_start|>user") == 1
+    assert suffix.endswith("<|im_end|>\n")
+    if with_voice:
+        voice = payload["voice"]
+        assert voice["tts_ref_audio_base64"] == voice["ref_audio_base64"]
+        assert np.array_equal(probe.decode_pcm(voice["ref_audio_base64"]), samples)
+    else:
+        assert "voice" not in payload
+
+
 def test_protocol_with_delayed_queue_and_independent_audio():
     """验证先排队后 init、独立音频增量、输入节拍和优雅关闭。"""
     async def run():

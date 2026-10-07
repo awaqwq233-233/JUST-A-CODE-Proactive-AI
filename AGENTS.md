@@ -59,6 +59,7 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 - 参考音为 `voices/silverwalf_voice.wav`，客户端读取后转成 **16kHz mono float32 PCM Base64**。
 - 在 `session.init.payload.voice.ref_audio_base64` 与 `tts_ref_audio_base64` 发送，不再离线提取 `.pt`，也不使用 `--tts-speaker-emb` 或 `voice_id`。
 - 下行原生 24kHz PCM 直接通过 SoundDevice 输出流播放；运行时不将参考音发送给云端推理服务。bo s s 已明确允许将模板 `voices/silverwalf_voice.wav` 推送到本项目的公开 GitHub 仓库；此授权不包含实际测试录音。
+- **2026-10-07 实现核查**：固定 C++ 版本的 `tts_ref_audio_b64` 只被解析，未接入 Token2Wav；合成仍加载官方 `prompt_cache.gguf` 的声纹。收到参考 WAV / 原生音频不等于指定音色克隆成功。`realtime_protocol.build_init()` 现针对该版本将 `system_prompt` 编为 `<|audio_end|>…<|im_end|>` 后缀，以兼容上游把该字段覆盖到 `omni_assistant_prompt` 的行为；不能把此兼容编码直接用于其他后端。完整克隆修复涉及扩展已锁定的引擎补丁及本地音色条件生成，实施范围待 bo s s 确认，详见 CHANGELOG 附 A4。
 
 ### 五、输出层
 
@@ -100,7 +101,7 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 |---|---|---|---|
 | omni 后端 | 固定版本 Gateway / Worker / C++ Metal，Q4_K_M，`:8006/v1/realtime?mode=video` | 新 `GatewayClient` 已接入 `main.py --gateway` 和轻量 GUI；旧入口已移除 | 继续验证生产设备与升级接线 |
 | 上下文/参数 | 起始 `-c 4096 -t 8 -ngl 99` | 固定方案 B 参数 | 后续性能优化需实测 |
-| 语音输出 | 参考 WAV Base64 + 原生 24k float32 PCM | Gateway 使用原生参考音与 SoundDevice 播放；旧桥接与回灌已移除 | 主依赖已统一，未迁移组件独立保留 |
+| 语音输出 | 参考 WAV Base64 + 原生 24k float32 PCM | 参考音已发送、SoundDevice 原生播放正常；固定 C++ Token2Wav 仍用默认声纹，指定音色未生效 | 模板边界已修复；完整克隆接线待确认实施 |
 | 记忆 | **ChromaDB** + BGE-Small-ZH-v1.5（ONNX INT8） + JSON | fastembed + paraphrase-multilingual-MiniLM + 自研 MemoryStore | 重写 `src/memory/` |
 | 模型层数 | 三层（o-4_5 + qwen + 云端 OpenClaw） | 第一层 Gateway 已运行；Qwen 组件保留但升级未接线，OpenClaw 未接入 | 接入 Qwen 升级与云端通道 |
 | 音频输入 | SoundDevice + 16k float32 mono + 固定 1 秒块 | Gateway 已接入；旧运行入口已移除 | 并行 VAD/Whisper 转写待接入 |
@@ -227,3 +228,4 @@ VS Code 本机调试配置为忽略的 `.vscode/launch.json`「J.A.C. · Gateway
 - 并行 Whisper 转写尚未接入，GUI 目前显示助手回复，不能展示或恢复未经转写的用户原话。
 - 无 WebRTC AEC（新架构以戴耳机规避回声，AEC 需求待重新评估）。
 - 无云端 OpenClaw 集成（新架构新增项，代码未落地）。
+- 指定音色克隆未完成：C++ Token2Wav 使用官方默认缓存，尚未应用会话 TTS 参考音。提示词边界已修复，不能据此宣称克隆完成或覆盖用户听感反馈。

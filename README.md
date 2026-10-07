@@ -20,7 +20,7 @@ Option B was approved on 2026-10-06. The three model tiers remain:
 
 The local perception chain is J.A.C. → MiniCPM-o-Demo Gateway → Worker → llama.cpp-omni. The app connects to `ws://127.0.0.1:8006/v1/realtime?mode=video`. Repository commits, model revision and SHA256 hashes are pinned in [backend.lock.json](backend.lock.json).
 
-Input audio is 16 kHz mono float32 PCM, sent in fixed 1-second blocks. Output audio is 24 kHz mono float32 PCM. Voice cloning uses a reference WAV through `session.init.payload.voice`.
+Input audio is 16 kHz mono float32 PCM, sent in fixed 1-second blocks. Output audio is 24 kHz mono float32 PCM. The reference WAV is sent through `session.init.payload.voice`, but **custom voice cloning is not complete in the pinned C++ backend**: it parses the TTS reference field without applying it, while Token2Wav loads the official default speaker cache. The client now preserves the audio/system prompt boundaries required by this version; that correction alone does not replace the default speaker. See CHANGELOG Appendix A4 for the verified gap and proposed repair.
 
 The target capture pipeline uses SoundDevice and background OpenCV capture at 640×480 and 5–10 fps. Each audio block carries the latest JPEG frame by default; GUI preview and model input rates are independent. Audio callbacks and the Qt/asyncio main loop must not perform blocking capture, encoding or retrieval.
 
@@ -77,7 +77,7 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 
 第一层客户端连接 `ws://127.0.0.1:8006/v1/realtime?mode=video`，经 Worker 调用 C++ 引擎。固定 commit、模型 revision、SHA256 与端口见 [backend.lock.json](backend.lock.json)。
 
-音频上行为 16kHz mono float32 PCM，每 1 秒发送一块；下行为 24kHz mono float32 PCM。音色直接来自参考 WAV，通过 `session.init.payload.voice` 传递。模型二进制保存在项目外。
+音频上行为 16kHz mono float32 PCM，每 1 秒发送一块；下行为 24kHz mono float32 PCM。参考 WAV 通过 `session.init.payload.voice` 传递，但**固定 C++ 后端尚未完成指定音色克隆**：它解析 TTS 参考字段却未应用，Token2Wav 仍加载官方默认声纹缓存。客户端已补齐该版本要求的参考音频/system 提示词边界；这项修正本身不能替换默认声纹。核实的差距与修复建议见 CHANGELOG 附 A4。模型二进制保存在项目外。
 
 目标采集层使用 SoundDevice 和独立 OpenCV 线程，640×480、采集 5–10fps；每个音频块默认附最新一帧 JPEG。GUI 预览与模型上行频率独立，采集、编码、重采样和记忆检索不得阻塞主事件循环。
 

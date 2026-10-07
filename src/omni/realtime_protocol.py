@@ -50,8 +50,12 @@ def decode_pcm(value: str) -> np.ndarray:
 
 
 def build_init(prompt: str, voice: np.ndarray | None) -> dict:
-    """生成当前公开 Gateway 协议的 session.init 消息。"""
-    payload = {"system_prompt": prompt, "config": {"length_penalty": 1.1}}
+    """生成固定 C++ 后端的 init，保留参考音频后的 system 模板边界。"""
+    # 锁定的 ws_handler.cpp 将 system_prompt 覆盖到 omni_assistant_prompt（后缀），
+    # 而非完整 system 内容。普通文本会被上游加上 user 前缀，且丢失 audio_end。
+    # 显式补齐后缀，使参考音和助手指令留在同一 system 消息内；不改变后端源码。
+    suffix = f"<|audio_end|>\n{prompt}\n<|im_end|>\n"
+    payload = {"system_prompt": suffix, "config": {"length_penalty": 1.1}}
     if voice is not None:
         reference = encode_pcm(voice)
         payload["voice"] = {
