@@ -1,745 +1,653 @@
-"""J.A.C.Prototype —— PySide6 现代化桌面界面。
-
-布局：左侧视觉解析画面 + 控制条 / 中间控制台（日志 + 手动输入框 + 发送）/
-最右侧可折叠开关选项面板。
-- 黑色主题 + 圆角矩形 + 高 DPI 适配。
-- 「显示分辨率」「显示缩放」只改变程序在桌面的显示尺寸，不动摄像头采集分辨率，
-  也不影响送入大模型的帧。
-- 所有开关/滑块仅在程序未运行时可调节，运行中锁定。
-"""
-import os
-import sys
-import queue
+"""Gateway 专用语音工作台；Qt 绘制通透玻璃风格，保留异步启停。"""
 import logging
+import queue
+import sys
 import threading
+from dataclasses import replace
+from datetime import datetime
 
 import numpy as np
-
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QLabel, QPlainTextEdit, QPushButton, QFrame, QSplitter,
-    QToolButton, QComboBox, QSlider, QSizePolicy, QCheckBox,
-    QProgressBar, QDoubleSpinBox, QScrollArea, QStyle, QStyleOption,
-)
-from PySide6.QtCore import Qt, QTimer, Signal, Slot
-from PySide6.QtGui import (
-    QImage, QPixmap, QFont, QPainter, QPainterPath, QTextCursor,
-)
+from PySide6.QtCore import Qt, QTimer, Signal, Slot, QRectF
+from PySide6.QtGui import (QColor, QFont, QImage, QPixmap, QPainter, QPainterPath,
+                          QLinearGradient, QRadialGradient, QPen, QTextCursor)
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout,
+    QVBoxLayout, QLabel, QPlainTextEdit, QPushButton, QFrame, QComboBox,
+    QSizePolicy, QCheckBox, QProgressBar, QDoubleSpinBox, QSpinBox,
+    QScrollArea, QLineEdit, QFileDialog, QSplitter)
 
 from src.utils.config import Config
 from src.omni.desktop_runtime import DesktopRuntime
 from src.utils.context import SharedContext
 
-
-# ----------------------------- 暗色圆角主题 -----------------------------
-DARK_QSS = """
-QWidget {
-    background: #0d0d0f;
-    color: #e6e6e6;
-    font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-    font-size: 13px;
-}
-QMainWindow, QWidget#central { background: #0d0d0f; }
-
-QFrame, QPlainTextEdit, QPushButton, QComboBox, QSlider, QLabel, QToolButton {
-    background: #16161a;
-    border: 1px solid #2a2a30;
-    border-radius: 12px;
-    padding: 6px;
-}
-QPushButton {
-    background: #1c1c22;
-    border: 1px solid #34343c;
-    padding: 8px 16px;
-}
-QPushButton:hover { background: #26262e; border: 1px solid #4f8cff; }
-QPushButton:pressed { background: #2f2f3a; }
-QPushButton:disabled { background: #101012; color: #555; border: 1px solid #1c1c20; }
-
-QPlainTextEdit#console { background: #0a0a0c; border-radius: 12px; }
-QPlainTextEdit#input  { background: #111114; border-radius: 12px; }
-
-QLabel#video {
-    background: #000000;
-    border: 1px solid #2a2a30;
-    border-radius: 14px;
-}
-
-QComboBox { padding: 4px 8px; }
-QComboBox QAbstractItemView {
-    background: #16161a;
-    selection-background-color: #2a2a35;
-    border-radius: 8px;
-}
-
-QSlider::groove:horizontal {
-    background: #222228;
-    height: 6px;
-    border-radius: 3px;
-}
-QSlider::handle:horizontal {
-    background: #4f8cff;
-    width: 16px;
-    height: 16px;
-    margin-top: -5px;
-    border-radius: 8px;
-}
-QSlider::handle:horizontal:hover { background: #6fa0ff; }
-
-/* 横向滚动条（控制台等）；侧栏竖滚动条的专用样式见下方 */
-QScrollBar:horizontal {
-    background: #111114;
-    border-radius: 6px;
-}
-/* 右侧选项侧栏的滚动容器：必须显式去底去边，否则会套上上面「QFrame 通用卡片样式」
-   形成双层卡片（QScrollArea 本身继承 QFrame），观感很脏。 */
-QScrollArea#optionScroll,
-QScrollArea#optionScroll > QWidget > QWidget {
-    background: transparent;
-    border: none;
-    padding: 0;
-}
-QScrollBar:vertical {
-    background: transparent;
-    width: 8px;
-    margin: 0px;
-}
-QScrollBar::handle:vertical {
-    background: #3a3a44;
-    border-radius: 4px;
-    min-height: 32px;
-}
-QScrollBar::handle:vertical:hover { background: #4f8cff; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+GLASS_QSS = """
+QWidget { color: #25314b; font-size: 13px; background: transparent; }
+QLabel { border: none; }
+QLabel#brand { font-size: 25px; font-weight: 700; letter-spacing: 2px; }
+QLabel#subtitle, QLabel#hint { color: #6c7892; font-size: 12px; }
+QLabel#sectionTitle { font-size: 16px; font-weight: 600; }
+QLabel#eyebrow { color: #79859e; font-size: 11px; letter-spacing: 2px; }
+QLabel#logo { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+    stop:0 #677ff2, stop:1 #a086df); color: white; border-radius: 17px; font-size: 22px; }
+QLabel#statePill { border: 1px solid rgba(255,255,255,220); border-radius: 17px;
+    background: rgba(255,255,255,155); padding: 8px 16px; color: #63708a; }
+QLabel#statePill[active="true"] { color: #137e68; background: rgba(218,248,237,200); }
+QPushButton { border: 1px solid rgba(255,255,255,230); border-radius: 15px;
+    background: rgba(255,255,255,135); padding: 9px 16px; }
+QPushButton:hover { background: rgba(255,255,255,225); border-color: #b9c8f9; }
+QPushButton:pressed { background: #dce4fb; }
+QPushButton:disabled { color: #a5adc0; background: rgba(255,255,255,65); }
+QPushButton#primary { background: #647be4; color: white; border-color: #758bec;
+    font-weight: 600; padding: 10px 28px; }
+QPushButton#primary:hover { background: #526bd7; }
+QPushButton#primary:disabled { background: #a9b5e7; border-color: #a9b5e7; }
+QPushButton#quiet { padding: 5px 10px; border-radius: 11px; font-size: 12px; }
+QPlainTextEdit { border: none; background: transparent; padding: 4px; selection-background-color: #cad6fb; }
+QPlainTextEdit#console { font-size: 15px; }
+QPlainTextEdit#diagnostics { background: rgba(243,246,253,165); border-radius: 14px; font-size: 11px; padding: 10px; }
+QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { background: rgba(255,255,255,175);
+    border: 1px solid rgba(195,207,230,160); border-radius: 10px; padding: 7px; min-height: 20px; }
+QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QLineEdit:disabled { color: #99a3b7; background: rgba(255,255,255,75); }
+QComboBox::drop-down { border: none; width: 24px; }
+QComboBox QAbstractItemView { background: #f3f6fd; color: #25314b; selection-background-color: #dce5ff; }
+QCheckBox { spacing: 9px; padding: 4px 0; }
+QCheckBox::indicator { width: 17px; height: 17px; border-radius: 6px;
+    border: 1px solid #b9c6de; background: rgba(255,255,255,195); }
+QCheckBox::indicator:checked { background: #647be4; border-color: #647be4; }
+QCheckBox:disabled { color: #99a3b7; }
+QProgressBar { border: none; border-radius: 4px; background: rgba(170,186,211,70); min-height: 8px; max-height: 8px; }
+QProgressBar::chunk { border-radius: 4px; background: #7396d8; }
+QScrollArea { border: none; background: transparent; }
+QScrollBar:vertical { background: transparent; width: 6px; margin: 0; }
+QScrollBar::handle:vertical { background: rgba(132,151,186,100); border-radius: 3px; min-height: 32px; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
-QCheckBox { background: transparent; border: none; padding: 4px; }
-QToolButton { padding: 6px; }
-
-QStatusBar {
-    background: #16181d;
-    color: #c8ccd4;
-    border-top: 1px solid #2a2e36;
-    padding: 2px 8px;
-}
-QStatusBar QLabel { color: #c8ccd4; }
-QStatusBar::item { border: none; }
+QSplitter::handle { background: transparent; width: 12px; }
+QLabel#separator { background: rgba(154,173,209,45); min-height: 1px; max-height: 1px; }
 """
 
 
-# ----------------------------- 圆角视频标签 -----------------------------
-class RoundedVideoLabel(QLabel):
-    """把 pixmap 裁剪为圆角绘制，配合 #video 的圆角边框。
-    关键：摄像头画面保持原始比例居中绘制，绝不拉伸填满标签矩形。"""
+class AuroraBackground(QWidget):
+    """低成本绘制静态柔光背景，避免实时模糊影响音视频性能。"""
+
     def paintEvent(self, event):
-        """绘制事件：圆角裁剪后等比绘制视频帧。
-
-        关键防御：pix 可能是 None，也可能是 isNull() 的空 QPixmap——
-        PySide6 在 QLabel 未设置 pixmap 时会返回空 QPixmap 而非 None。对空 pixmap
-        调用 scaled() 会打印 "QPixmap::scaled: Pixmap is a null pixmap" 并触发 macOS
-        Metal 后端断言崩溃(abort)。因此必须同时判 None 与 isNull()。
-        """
+        """用径向渐变营造玻璃背后的淡蓝、紫色和暖色光。"""
         painter = QPainter(self)
-        # 自绘 QLabel 不依赖基类的局部清屏；每次覆盖整个控件，含留白两侧。
-        painter.fillRect(self.rect(), Qt.black)
-        option = QStyleOption()
-        option.initFrom(self)
-        self.style().drawPrimitive(QStyle.PE_Widget, option, painter, self)
-        pix = self.pixmap()
-        if pix is None or pix.isNull():
-            return
-        painter.setRenderHint(QPainter.Antialiasing, True)
-        r = 14
+        painter.fillRect(self.rect(), QColor("#edf2fa"))
+        for x, y, radius, color in ((0.12, 0.12, .7, "#cddcff"),
+                                   (.72, .14, .65, "#e6ddfa"),
+                                   (.4, .95, .6, "#d4e9ef"),
+                                   (1., .9, .45, "#f8e3df")):
+            gradient = QRadialGradient(self.width()*x, self.height()*y, self.width()*radius)
+            gradient.setColorAt(0, QColor(color))
+            transparent = QColor(color)
+            transparent.setAlpha(0)
+            gradient.setColorAt(1, transparent)
+            painter.fillRect(self.rect(), gradient)
+
+
+class GlassPanel(QFrame):
+    """自绘半透明渐变和高光边缘；跨平台保持同一可读性。"""
+
+    def paintEvent(self, event):
+        """玻璃表面不复制或模糊视频，降低持续采集时的绘制开销。"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        gradient.setColorAt(0, QColor(255, 255, 255, 185))
+        gradient.setColorAt(.55, QColor(255, 255, 255, 105))
+        gradient.setColorAt(1, QColor(248, 250, 255, 150))
+        painter.setBrush(gradient)
+        painter.setPen(QPen(QColor(255, 255, 255, 220), 1.2))
+        painter.drawRoundedRect(rect, 24, 24)
+
+
+class RoundedVideoLabel(QLabel):
+    """只在原比例矩形内绘制完整摄像头画面，圆角外透明。"""
+
+    def paintEvent(self, event):
+        """覆盖上一帧并直接绘制 pixmap，避免 Metal 上二次 scaled。"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
         path = QPainterPath()
-        path.addRoundedRect(0, 0, self.width(), self.height(), r, r)
+        path.addRoundedRect(QRectF(self.rect()), 18, 18)
         painter.setClipPath(path)
-        # 手动等比缩放绘制，避免调用 QPixmap.scaled() —— 该方法在 macOS
-        # Metal 后端会触发 "_status < MTLCommandBufferStatusCommitted" 断言崩溃(abort)。
-        pw, ph = pix.width(), pix.height()
-        lw, lh = self.width(), self.height()
-        if pw <= 0 or ph <= 0:
-            return
-        scale = min(lw / pw, lh / ph)
-        dw, dh = int(pw * scale), int(ph * scale)
-        x = (lw - dw) // 2
-        y = (lh - dh) // 2
-        painter.drawPixmap(x, y, dw, dh, pix)
+        painter.fillRect(self.rect(), QColor("#e1e8f5"))
+        pix = self.pixmap()
+        if pix is not None and not pix.isNull():
+            painter.drawPixmap(self.rect(), pix)
+        else:
+            painter.setPen(QColor("#7888a6"))
+            painter.drawText(self.rect(), Qt.AlignCenter, self.text() or "摄像头已暂停")
 
 
-# ----------------------------- 多行输入框 -----------------------------
-class InputBox(QPlainTextEdit):
-    """Enter 换行；Ctrl+Enter 触发发送。"""
-    sendRequested = Signal()
+class AspectVideoContainer(QWidget):
+    """容器可自由伸缩，内部视频控件严格跟随输入画面比例。"""
 
-    def keyPressEvent(self, event):
-        """键按键事件"""
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and \
-                (event.modifiers() & Qt.ControlModifier):
-            self.sendRequested.emit()
-            return
-        super().keyPressEvent(event)
+    def __init__(self, label):
+        """默认采用固定采集的 4:3，收到帧后使用真实比例。"""
+        super().__init__()
+        self.label, self.ratio = label, 4 / 3
+        label.setParent(self)
+        self.setMinimumSize(280, 210)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def set_ratio(self, width, height):
+        """只更新显示几何，不裁切、拉伸或改变摄像头采集设置。"""
+        ratio = width / height
+        if abs(ratio - self.ratio) > .0001:
+            self.ratio = ratio
+            self._fit_video()
+
+    def resizeEvent(self, event):
+        """窗口调整时重新计算原比例视频区域。"""
+        self._fit_video()
+        super().resizeEvent(event)
+
+    def _fit_video(self):
+        """把视频控件限制为等比矩形，余下区域属于透明布局而非黑边。"""
+        width = min(self.width(), round(self.height() * self.ratio))
+        height = round(width / self.ratio)
+        self.label.setGeometry((self.width()-width)//2, (self.height()-height)//2, width, height)
 
 
-# ----------------------------- 日志重定向 -----------------------------
 class _GuiStream:
-    """替换 sys.stdout / sys.stderr，把文本推入线程安全队列。"""
-    def __init__(self, q: queue.Queue):
-        """初始化实例"""
-        self.q = q
+    """日志写入有界队列，避免后台线程访问 Qt 控件。"""
 
-    def write(self, s):
-        """写入"""
-        if s:
-            self.q.put(s)
-        return len(s)
+    def __init__(self, messages):
+        """保存 GUI 日志队列。"""
+        self.messages = messages
+
+    def write(self, text):
+        """队列满时淘汰最旧日志，不阻塞实时媒体线程。"""
+        if text:
+            try:
+                self.messages.put_nowait(text)
+            except queue.Full:
+                try:
+                    self.messages.get_nowait()
+                    self.messages.put_nowait(text)
+                except (queue.Empty, queue.Full):
+                    pass
+        return len(text)
 
     def flush(self):
-        """刷新"""
-        pass
+        """GUI 定时读取日志，无需同步刷新。"""
 
     def isatty(self):
-        # GUI 模式下不是真实终端，状态行不应打印到 stdout（交给状态栏）
-        """终端判断"""
+        """声明非终端，避免输出原地刷新的控制字符。"""
         return False
 
 
 class _QtLogHandler(logging.Handler):
-    """把 logging 记录推入同一队列，供 GUI 控制台显示。"""
-    def __init__(self, q: queue.Queue):
-        """初始化实例"""
+    """复用 GUI 的有界日志写入器。"""
+
+    def __init__(self, messages):
+        """配置日志文本格式。"""
         super().__init__()
-        self.q = q
+        self.stream = _GuiStream(messages)
         self.setFormatter(logging.Formatter("%(message)s"))
 
     def emit(self, record):
-        """发出"""
-        try:
-            self.q.put(self.format(record) + "\n")
-        except Exception:
-            pass
+        """只入队，不从日志线程绘制 GUI。"""
+        self.stream.write(self.format(record) + "\n")
 
 
-# ----------------------------- 主窗口 -----------------------------
 class MainWindow(QMainWindow):
     _runtime_state_changed = Signal(bool)
     _stop_runtime_requested = Signal()
     _startup_failed = Signal(str)
     _shutdown_finished = Signal(str)
+    _reply_received = Signal(str)
+    _reply_finished = Signal()
 
-    def __init__(self, config: Config):
-        """初始化实例"""
+    def __init__(self, config):
+        """建立仅 Gateway 的工作台，初始化不打开摄像头或麦克风。"""
         super().__init__()
-        self.config = config
-        self.context = SharedContext()
+        self.config, self.context = config, SharedContext()
         self._runtime_state_changed.connect(self._apply_runtime_state, Qt.QueuedConnection)
         self._stop_runtime_requested.connect(self._safe_stop_runtime, Qt.QueuedConnection)
         self._startup_failed.connect(self._handle_startup_failure, Qt.QueuedConnection)
         self._shutdown_finished.connect(self._finish_stop_runtime, Qt.QueuedConnection)
-        self.runtime = DesktopRuntime(
-            context=self.context,
-            on_state_change=self._on_state_change,
-        )
-        self.panel_collapsed = False
-        self.zoom = 1.0
-        self._stop_requested = False  # 启动过程中若用户点「停止」，用于中止刚拉起的运行时
-        self._stopping = False
-        self._stop_error = ""
-        self._start_thread = None
-        self._close_after_stop = False
-
-        self.setWindowTitle("J.A.C.Prototype")
-        self.resize(1280, 720)
-
+        self._reply_received.connect(self._append_reply, Qt.QueuedConnection)
+        self._reply_finished.connect(self._end_reply, Qt.QueuedConnection)
+        self.runtime = DesktopRuntime(context=self.context, on_state_change=self._on_state_change)
+        self.runtime.text_callback = self._reply_received.emit
+        self.runtime.reply_finished_callback = self._reply_finished.emit
+        self._stop_requested = self._stopping = self._close_after_stop = False
+        self._stop_error, self._start_thread = "", None
+        self._reply_open = False
+        self._controls = []
+        self.setWindowTitle("J.A.C. · 本地语音工作台")
+        self.resize(1440, 880)
+        self.setMinimumSize(1100, 700)
+        self.setStyleSheet(GLASS_QSS)
         self._build_ui()
-        self._set_options_enabled(True)
         self._setup_timers()
         self._redirect_logging()
+        self._update_status()
 
-    # ----------------------------------------------------- UI 构建
+    def _label(self, text, name="", wrap=False):
+        """创建统一文本层级，中文字体由应用级回退链提供。"""
+        label = QLabel(text)
+        label.setObjectName(name)
+        label.setWordWrap(wrap)
+        return label
+
+    def _panel_layout(self, panel, margin=20):
+        """设置玻璃面板留白和控件间距。"""
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(margin, margin, margin, margin)
+        layout.setSpacing(14)
+        return layout
+
     def _build_ui(self):
-        central = QWidget()
-        central.setObjectName("central")
+        """布局为原比例相机、完整对话记录和可折叠调试设置。"""
+        central = AuroraBackground()
         self.setCentralWidget(central)
-        root = QHBoxLayout(central)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(12)
-
-        # ============ 左：视觉解析画面 + 控制 ============
-        left = QVBoxLayout()
-        left.setSpacing(10)
-
-        self.video_label = RoundedVideoLabel()
-        self.video_label.setObjectName("video")
-        self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.video_label.setMinimumSize(640, 360)
-        self.video_label.setText("未启动 · 摄像头画面将显示在这里")
-        left.addWidget(self.video_label, 1)
-
-        ctrl = QHBoxLayout()
-        ctrl.setSpacing(8)
-
+        root = QVBoxLayout(central)
+        root.setContentsMargins(24, 22, 24, 24)
+        root.setSpacing(22)
+        header = QHBoxLayout()
+        logo = self._label("◌", "logo")
+        logo.setFixedSize(48, 48)
+        logo.setAlignment(Qt.AlignCenter)
+        header.addWidget(logo)
+        brand = QVBoxLayout()
+        brand.setSpacing(2)
+        brand.addWidget(self._label("J.A.C.", "brand"))
+        brand.addWidget(self._label("本地语音工作台", "subtitle"))
+        header.addLayout(brand)
+        header.addStretch()
+        self.state_pill = self._label("● 已停止", "statePill")
+        header.addWidget(self.state_pill)
         self.start_btn = QPushButton("启动")
-        self.start_btn.setMinimumHeight(40)
+        self.start_btn.setObjectName("primary")
         self.start_btn.clicked.connect(self._toggle_run)
-        ctrl.addWidget(self.start_btn)
+        header.addWidget(self.start_btn)
+        self.settings_btn = QPushButton("调节参数")
+        self.settings_btn.setCheckable(True)
+        self.settings_btn.setChecked(True)
+        self.settings_btn.toggled.connect(self._toggle_panel)
+        header.addWidget(self.settings_btn)
+        root.addLayout(header)
 
-        ctrl.addWidget(QLabel("显示分辨率"))
-        self.res_combo = QComboBox()
-        self.res_combo.addItems(["1280×720", "1600×900", "1920×1080", "自适应"])
-        self.res_combo.setCurrentText("1280×720")
-        self.res_combo.currentTextChanged.connect(self._apply_resolution)
-        ctrl.addWidget(self.res_combo)
+        body = QHBoxLayout()
+        body.setSpacing(16)
+        self.content_splitter = QSplitter(Qt.Horizontal)
+        self.content_splitter.setChildrenCollapsible(False)
+        body.addWidget(self.content_splitter, 1)
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(16)
+        camera_panel = GlassPanel()
+        camera_layout = self._panel_layout(camera_panel)
+        title = QHBoxLayout()
+        title.addWidget(self._label("实时画面", "sectionTitle"))
+        title.addStretch()
+        title.addWidget(self._label("640 × 480", "hint"))
+        camera_layout.addLayout(title)
+        self.video_label = RoundedVideoLabel()
+        self.video_label.setText("启动后，画面将在这里出现")
+        self.video_container = AspectVideoContainer(self.video_label)
+        camera_layout.addWidget(self.video_container, 1)
+        self.camera_hint = self._label("画面保留原始比例 · 仅在本机处理", "hint")
+        camera_layout.addWidget(self.camera_hint)
+        left_layout.addWidget(camera_panel, 1)
 
-        ctrl.addWidget(QLabel("缩放"))
-        self.zoom_slider = QSlider(Qt.Horizontal)
-        self.zoom_slider.setRange(50, 200)
-        self.zoom_slider.setValue(100)
-        self.zoom_slider.setMinimumWidth(120)
-        self.zoom_slider.valueChanged.connect(self._apply_zoom)
-        ctrl.addWidget(self.zoom_slider)
-        self.zoom_label = QLabel("100%")
-        ctrl.addWidget(self.zoom_label)
+        activity_panel = GlassPanel()
+        activity = self._panel_layout(activity_panel)
+        activity.addWidget(self._label("VOICE / LOCAL", "eyebrow"))
+        self.activity_label = self._label("从一句话开始", "sectionTitle")
+        activity.addWidget(self.activity_label)
+        activity.addWidget(self._label("戴好耳机，直接与 J.A.C. 交流。", "hint"))
+        meter_title = QHBoxLayout()
+        meter_title.addWidget(self._label("麦克风电平", "hint"))
+        meter_title.addStretch()
+        self.mic_level_label = self._label("0%", "hint")
+        meter_title.addWidget(self.mic_level_label)
+        activity.addLayout(meter_title)
+        self.mic_bar = QProgressBar()
+        self.mic_bar.setTextVisible(False)
+        activity.addWidget(self.mic_bar)
+        self.session_hint = self._label("尚未连接", "hint")
+        activity.addWidget(self.session_hint)
+        left_layout.addWidget(activity_panel)
+        self.content_splitter.addWidget(left)
 
-        left.addLayout(ctrl)
-
-        left_w = QWidget()
-        left_w.setLayout(left)
-        root.addWidget(left_w, 3)
-
-        # ============ 中：控制台 ============
-        mid = QVBoxLayout()
-        mid.setSpacing(10)
-
+        conversation_panel = GlassPanel()
+        conversation = self._panel_layout(conversation_panel)
+        title = QHBoxLayout()
+        title.addWidget(self._label("对话记录", "sectionTitle"))
+        title.addStretch()
+        self.diagnostics_btn = QPushButton("连接日志")
+        self.diagnostics_btn.setObjectName("quiet")
+        self.diagnostics_btn.setCheckable(True)
+        title.addWidget(self.diagnostics_btn)
+        conversation.addLayout(title)
+        conversation.addWidget(self._label("语音交流 · 回复实时显示", "hint"))
         self.console = QPlainTextEdit()
         self.console.setObjectName("console")
         self.console.setReadOnly(True)
-        # 显式声明可选中/可复制：macOS + Fusion 样式下只读控件偶发选择被禁用，
-        # 这里强制开启鼠标与键盘选择，保证控制台日志随时可被 Cmd+C 复制（用于 debug）。
-        self.console.setTextInteractionFlags(
-            Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
-        )
-        self.console.setMinimumWidth(320)
-        self.console.setMaximumBlockCount(4000)  # 限制缓冲，防止无限增长卡顿
-        self.console.setFont(QFont("Consolas", 11))
-        self.console.appendPlainText("J.A.C.Prototype 控制台已就绪。点击「启动」开始。")
-        mid.addWidget(self.console, 3)
+        self.console.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+        self.console.setMaximumBlockCount(4000)
+        self.console.setPlaceholderText("对话从这里开始。\n\n启动后，J.A.C. 的回复会实时出现在这里。")
+        self.console.document().setDocumentMargin(8)
+        conversation.addWidget(self.console, 1)
+        self.diagnostics = QPlainTextEdit()
+        self.diagnostics.setObjectName("diagnostics")
+        self.diagnostics.setReadOnly(True)
+        self.diagnostics.setMaximumBlockCount(1200)
+        self.diagnostics.setMaximumHeight(170)
+        self.diagnostics.hide()
+        self.diagnostics_btn.toggled.connect(self.diagnostics.setVisible)
+        conversation.addWidget(self.diagnostics)
+        conversation.addWidget(self._label("文字可选中复制 · 不保存原始音视频", "hint"))
+        self.content_splitter.addWidget(conversation_panel)
+        self.content_splitter.setSizes([570, 480])
+        self.content_splitter.setStretchFactor(0, 5)
+        self.content_splitter.setStretchFactor(1, 4)
 
-        self.input_box = InputBox()
-        self.input_box.setObjectName("input")
-        self.input_box.setPlaceholderText(
-            "在此输入指令（Enter 换行，Ctrl+Enter 或点「发送」提交）…"
-        )
-        self.input_box.setMaximumHeight(90)
-        self.input_box.sendRequested.connect(self._send)
-        mid.addWidget(self.input_box, 1)
+        self.option_panel = GlassPanel()
+        self.option_panel.setFixedWidth(300)
+        options = self._panel_layout(self.option_panel, 18)
+        options.addWidget(self._label("调节参数", "sectionTitle"))
+        options.addWidget(self._label("启动前调整，下次启动生效", "hint"))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        options.addWidget(scroll, 1)
+        content = QWidget()
+        op = QVBoxLayout(content)
+        op.setContentsMargins(0, 0, 6, 0)
+        op.setSpacing(10)
+        scroll.setWidget(content)
+        self._build_options(op)
+        body.addWidget(self.option_panel)
+        root.addLayout(body, 1)
 
-        send_row = QHBoxLayout()
-        send_row.addStretch(1)
-        self.send_btn = QPushButton("发送")
-        self.send_btn.setMinimumHeight(36)
-        self.send_btn.clicked.connect(self._send)
-        send_row.addWidget(self.send_btn)
-        mid.addLayout(send_row)
+    def _section(self, layout, title):
+        """用轻分隔线划分参数组。"""
+        layout.addWidget(self._label("", "separator"))
+        layout.addWidget(self._label(title, "sectionTitle"))
 
-        mid_w = QWidget()
-        mid_w.setLayout(mid)
-        root.addWidget(mid_w, 2)
+    def _field(self, layout, title, control, hint=""):
+        """统一参数标题与帮助说明，并登记运行期间的锁定控件。"""
+        layout.addWidget(self._label(title, "hint"))
+        layout.addWidget(control)
+        if hint:
+            layout.addWidget(self._label(hint, "hint", True))
+        self._controls.append(control)
+        return control
 
-        # ============ 右：折叠开关选项面板（可滚动侧栏）============
-        # 为什么要滚动：面板里堆了 10+ 个控件（复选框 / 数字框 / 下拉 / 音量条 / 文字区 /
-        # 两个滑块，外加 OMNI 实时诊断区）。竖排总高度超过窗口可用高度时，QVBoxLayout 会把
-        # 子控件**压扁**——真机表现是底部两个滑块被压成几像素的方块、进度条文字被裁掉
-        # （bo s s 2026-09-17 截图）。塞进 QScrollArea 后控件保持自身比例，放不下就出竖滚动条。
-        # 宽度同理不能靠拉伸：三组 3:2:1 抢空间时面板会被挤到 260px 以下，标签被截断成
-        # 「Listen 概率系数（ON」这种。故面板给固定宽度带 + stretch=0，宽度恒定不压缩。
-        self.option_panel = QFrame()
-        self.option_panel.setObjectName("options")
-        self.option_panel.setMinimumWidth(340)     # 保证最长标签「图像上行间隔s (OMNI)」不截断
-        self.option_panel.setMaximumWidth(420)     # 上限防止它吞掉视频区
-        op_outer = QVBoxLayout(self.option_panel)
-        op_outer.setContentsMargins(10, 10, 10, 10)
-        op_outer.setSpacing(8)
+    def _spin(self, low, high, value, suffix=""):
+        """建立带上下界的整型参数控件。"""
+        spin = QSpinBox()
+        spin.setRange(low, high)
+        spin.setValue(value)
+        spin.setSuffix(suffix)
+        return spin
 
-        self.collapse_btn = QToolButton()
-        self.collapse_btn.setText("« 收起选项")
-        self.collapse_btn.clicked.connect(self._toggle_panel)
-        op_outer.addWidget(self.collapse_btn)      # 固定贴在顶部，不随内容滚动
-
-        self.option_scroll = QScrollArea()
-        self.option_scroll.setObjectName("optionScroll")
-        self.option_scroll.setWidgetResizable(True)         # 内容宽度跟随视口
-        self.option_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # 只竖滚
-        self.option_scroll.setFrameShape(QFrame.NoFrame)
-        op_outer.addWidget(self.option_scroll, 1)
-
-        op_w = QWidget()
-        op = QVBoxLayout(op_w)
-        op.setContentsMargins(4, 4, 4, 4)
-        op.setSpacing(14)
-        self.option_scroll.setWidget(op_w)
-
-        self.judge_chk = QCheckBox("前置判断模型（主动感知）")
-        self.judge_chk.setChecked(False)  # bo s s 偏好：GUI 默认不勾选判断模型
-        op.addWidget(self.judge_chk)
-
-        self.tts_chk = QCheckBox("Qwen3-TTS 语音合成")
-        self.tts_chk.setChecked(self.config.use_qwen_tts)
-        op.addWidget(self.tts_chk)
-
-        # 工具功能（Function Calling）开关：与主动模型/TTS 一致，属于启动前配置
-        self.tools_chk = QCheckBox("工具功能（Function Calling）")
-        self.tools_chk.setChecked(self.config.tools_enabled)
-        op.addWidget(self.tools_chk)
-
-        # MiniCPM-o-4_5 全双工开关：勾选后由 omni 直接接管 TTS + 判断引擎（OMNI 模式）
-        self.omni_chk = QCheckBox("MiniCPM-o-4_5 全双工（接管 TTS + 判断）")
-        self.omni_chk.setChecked(True)  # bo s s 偏好：GUI 默认进 OMNI 全双工
-        op.addWidget(self.omni_chk)
-        # OMNI 模式下传统 judge/TTS/tools 与 omni 架构互斥，勾选 OMNI 时灰掉它们并提示
-        self.omni_chk.toggled.connect(self._on_omni_toggled)
-
-        self.omni_backend_combo = QComboBox()
-        self.omni_backend_combo.addItem("方案 B Gateway（M1 听看说）", "gateway")
-        self.omni_backend_combo.addItem("旧架构（兼容入口）", "legacy")
-        self.omni_backend_combo.setCurrentIndex(0 if self.config.omni_backend == "gateway" else 1)
-        self.omni_backend_combo.setToolTip("Gateway 后端须先由固定版本启动器启动；M1 工具升级尚未接入。")
-        op.addWidget(self.omni_backend_combo)
+    def _build_options(self, op):
+        """只呈现固定 Gateway 客户端实际支持的设置。"""
         self.gateway_consent_chk = QCheckBox("同意开启设备，已戴好耳机")
-        self.gateway_consent_chk.setToolTip("启动将开启摄像头、麦克风和原生音频播放；不保存原始媒体。")
         self.gateway_consent_chk.setChecked(self.config.gateway_consent_devices)
+        self.gateway_consent_chk.setToolTip("开启麦克风、摄像头与语音播放；不保存原始媒体。")
+        self._controls.append(self.gateway_consent_chk)
         op.addWidget(self.gateway_consent_chk)
-        self.omni_backend_combo.currentIndexChanged.connect(
-            lambda: self._set_options_enabled(not self.runtime.running))
-        self.omni_chk.toggled.connect(
-            lambda: self._set_options_enabled(not self.runtime.running))
-
-        # 麦克风增益（OMNI 全双工：内建麦离嘴远、能量不足时调高，便于触发服务端 VAD）
-        gain_row = QHBoxLayout()
-        gain_row.addWidget(QLabel("麦克风增益 (OMNI)"))
+        self._section(op, "采集")
         self.mic_gain_spin = QDoubleSpinBox()
-        self.mic_gain_spin.setRange(1.0, 20.0)
-        self.mic_gain_spin.setSingleStep(0.5)
-        self.mic_gain_spin.setValue(float(getattr(self.config, "omni_mic_gain", 1.0)))
-        gain_row.addWidget(self.mic_gain_spin)
-        op.addLayout(gain_row)
-
-        # Listen 采样系数（OMNI 全双工：<1 压低 listen 逼回复，>1 增 listen；默认 0.5）
-        lps_row = QHBoxLayout()
-        lps_row.addWidget(QLabel("Listen 概率系数 (OMNI)"))
-        self.listen_prob_scale_spin = QDoubleSpinBox()
-        self.listen_prob_scale_spin.setRange(0.1, 1.0)
-        self.listen_prob_scale_spin.setSingleStep(0.05)
-        self.listen_prob_scale_spin.setValue(float(getattr(self.config, "omni_listen_prob_scale", 0.5)))
-        lps_row.addWidget(self.listen_prob_scale_spin)
-        op.addLayout(lps_row)
-
-        # 图像上行开关控制是否采集并发送画面，音频固定节拍不受影响。
-        self.video_enabled_chk = QCheckBox("图像上行（OMNI 视觉）")
-        self.video_enabled_chk.setChecked(bool(getattr(self.config, "omni_video_enabled", True)))
-        self.video_enabled_chk.setToolTip(
-            "勾选：采集并发送画面；Gateway 默认每秒最新一帧。取消：仅使用音频。")
+        self.mic_gain_spin.setRange(.1, 8.)
+        self.mic_gain_spin.setSingleStep(.1)
+        self.mic_gain_spin.setDecimals(2)
+        self.mic_gain_spin.setValue(self.config.omni_mic_gain)
+        self.mic_gain_spin.setSuffix(" ×")
+        self._field(op, "麦克风增益", self.mic_gain_spin)
+        self.mic_gain_spin.setToolTip("声音较小时逐步提高；过高会削波。")
+        self.video_enabled_chk = QCheckBox("启用摄像头")
+        self.video_enabled_chk.setChecked(self.config.omni_video_enabled)
+        self._controls.append(self.video_enabled_chk)
         op.addWidget(self.video_enabled_chk)
+        self.fps_spin = self._field(op, "相机采集帧率", self._spin(5, 10, self.config.omni_fps, " fps"),
+            "640 × 480 · 每秒上行最新 1 帧")
+        self._section(op, "会话")
+        self.session_spin = self._field(op, "会话轮换时长", self._spin(5, 240, self.config.gateway_session_seconds, " 秒"),
+            "轮换时暂停采集，恢复有限上下文。")
+        self.retry_spin = self._field(op, "异常重连次数", self._spin(0, 10, self.config.gateway_retry_limit))
+        self.advanced_btn = QPushButton("设备、连接与音色  ▾")
+        self.advanced_btn.setObjectName("quiet")
+        self.advanced_btn.setCheckable(True)
+        op.addWidget(self.advanced_btn)
+        advanced_panel = QWidget()
+        advanced = QVBoxLayout(advanced_panel)
+        advanced.setContentsMargins(0, 0, 0, 0)
+        advanced.setSpacing(10)
+        self.advanced_btn.toggled.connect(advanced_panel.setVisible)
+        advanced_panel.hide()
+        op.addWidget(advanced_panel)
+        self.input_device_combo, self.output_device_combo = QComboBox(), QComboBox()
+        for combo, device in ((self.input_device_combo, self.config.gateway_input_device),
+                              (self.output_device_combo, self.config.gateway_output_device)):
+            combo.addItem("系统默认", None)
+            if device is not None:
+                combo.addItem(f"设备 {device}", device)
+                combo.setCurrentIndex(1)
+        self._field(advanced, "麦克风", self.input_device_combo)
+        self._field(advanced, "播放设备", self.output_device_combo)
+        self.refresh_devices_btn = QPushButton("刷新音频设备")
+        self.refresh_devices_btn.setObjectName("quiet")
+        self.refresh_devices_btn.clicked.connect(self._refresh_devices)
+        self._controls.append(self.refresh_devices_btn)
+        advanced.addWidget(self.refresh_devices_btn)
+        self.camera_spin = self._field(advanced, "摄像头编号", self._spin(0, 20, self.config.gateway_camera))
+        self.url_edit = QLineEdit(self.config.gateway_url)
+        self._field(advanced, "本机 Gateway", self.url_edit)
+        self.voice_edit = QLineEdit(self.config.omni_ref_audio)
+        self._field(advanced, "参考音频", self.voice_edit)
+        self.voice_btn = QPushButton("选择参考 WAV")
+        self.voice_btn.setObjectName("quiet")
+        self.voice_btn.clicked.connect(self._choose_voice)
+        self._controls.append(self.voice_btn)
+        advanced.addWidget(self.voice_btn)
+        op.addWidget(self._label("后端请提前启动。Qwen 工具升级待接入。", "hint", True))
+        op.addStretch()
 
-        # 图像上行间隔（OMNI，P1 图像降频）：音频每段都上，图像默认 1 秒 1 帧。
-        # 此间隔只供旧后端调试；Gateway 固定每秒一帧，不使用旧调度参数。
-        vi_row = QHBoxLayout()
-        vi_row.addWidget(QLabel("图像上行间隔s (OMNI)"))
-        self.video_interval_spin = QDoubleSpinBox()
-        self.video_interval_spin.setRange(0.0, 5.0)
-        self.video_interval_spin.setSingleStep(0.5)
-        self.video_interval_spin.setValue(float(getattr(self.config, "omni_video_interval", 1.0)))
-        self.video_interval_spin.setToolTip(
-            "秒/帧，默认 1.0（即 1 帧/秒）。实测：KV 增长降约三成、上下文寿命 +约四成、"
-            "每轮省下一次图像编码；0 = 每段都带图（旧行为，仅用于对照排查）。")
-        vi_row.addWidget(self.video_interval_spin)
-        op.addLayout(vi_row)
-        # 总开关关闭时「间隔」无意义，直接灰掉避免误配（与启动/停止的禁用状态叠加）
-        self.video_enabled_chk.toggled.connect(
-            lambda on: self.video_interval_spin.setEnabled(
-                on and self.omni_backend_combo.currentData() != "gateway"))
-        self.video_interval_spin.setEnabled(self.video_enabled_chk.isChecked())
+    def _choose_voice(self):
+        """选择本地参考 WAV，只有启动后才发送至本机 Gateway。"""
+        path, _ = QFileDialog.getOpenFileName(self, "选择参考音频", self.voice_edit.text(), "WAV 音频 (*.wav)")
+        if path:
+            self.voice_edit.setText(path)
 
-        # 逐块上行诊断日志（OMNI，P0 实验第 2 项）：等价 OMNI_DEBUG=1。
-        # 用于量化「块长抖动」（水位丢帧的根因）：打印每段的间隔/块长/RMS/峰值/距上次人声。
-        self.debug_log_chk = QCheckBox("上行调试日志（OMNI_DEBUG）")
-        self.debug_log_chk.setChecked(bool(getattr(self.config, "omni_debug_log", False)))
-        self.debug_log_chk.setToolTip(
-            "打印每一帧上行的序号/间隔/块长/RMS/峰值，以及 omni 文本增量的原始内容。"
-            "用于量化块长抖动、定位令牌泄漏。会明显刷屏，排障时再开。")
-        op.addWidget(self.debug_log_chk)
+    def _refresh_devices(self):
+        """查询设备名称，不开启采集或播放流；保留失联设备编号便于排障。"""
+        import sounddevice as sd
+        try:
+            devices = sd.query_devices()
+            for combo, key in ((self.input_device_combo, "max_input_channels"),
+                               (self.output_device_combo, "max_output_channels")):
+                chosen = combo.currentData()
+                combo.clear()
+                combo.addItem("系统默认", None)
+                for index, device in enumerate(devices):
+                    if device[key] > 0:
+                        combo.addItem(f"{index} · {device['name']}", index)
+                current = combo.findData(chosen)
+                if current < 0 and chosen is not None:
+                    combo.addItem(f"{chosen} · 未找到设备", chosen)
+                    current = combo.count()-1
+                combo.setCurrentIndex(max(0, current))
+        except Exception as error:
+            self.console.appendPlainText(f"无法查询设备：{error}")
 
-        # 回声门控（OMNI）：auto 按输出设备判定，关=戴耳机可打断，开=外放防自激
-        gate_row = QHBoxLayout()
-        gate_row.addWidget(QLabel("回声门控 (OMNI)"))
-        self.echo_gate_combo = QComboBox()
-        self.echo_gate_combo.addItem("自动（按输出设备）", "auto")
-        self.echo_gate_combo.addItem("关（戴耳机，可打断）", "0")
-        self.echo_gate_combo.addItem("开（外放，防自激）", "1")
-        _cur = str(getattr(self.config, "omni_echo_gate", "auto")).strip().lower()
-        self.echo_gate_combo.setCurrentIndex({"0": 1, "off": 1, "1": 2, "on": 2}.get(_cur, 0))
-        self.echo_gate_combo.setToolTip(
-            "外放时 J.A.C. 的声音会被麦克风回采，omni 会听到自己而自言自语；"
-            "开启门控后播报期间麦克风按静音推送（代价：期间无法打断）。"
-            "戴耳机时关闭可保留随时打断能力。默认自动：检测到耳机即关、扬声器即开。")
-        gate_row.addWidget(self.echo_gate_combo)
-        op.addLayout(gate_row)
-
-        # ---- OMNI 实时诊断区（音量条 + 实时回复文字）----
-        self.omni_live = QFrame()
-        self.omni_live.setObjectName("omniLive")
-        live = QVBoxLayout(self.omni_live)
-        live.setContentsMargins(0, 0, 0, 0)
-        live.setSpacing(6)
-        live.addWidget(QLabel("麦克风音量 (OMNI)"))
-        self.mic_bar = QProgressBar()
-        self.mic_bar.setRange(0, 100)
-        self.mic_bar.setValue(0)
-        self.mic_bar.setMinimumHeight(18)     # 防被压扁导致「0%」文字被裁
-        live.addWidget(self.mic_bar)
-        live.addWidget(QLabel("OMNI 实时回复"))
-        self.omni_reply = QPlainTextEdit()
-        self.omni_reply.setReadOnly(True)
-        self.omni_reply.setMaximumHeight(150)
-        self.omni_reply.setMinimumHeight(80)  # 下限：不够就出滚动条，不压缩显示区域
-        self.omni_reply.setObjectName("omniReply")
-        live.addWidget(self.omni_reply)
-        op.addWidget(self.omni_live)
-        self._last_reply_shown = ""
-
-        op.addWidget(self._labeled_slider(
-            "判断间隔（秒）", self._make_interval_slider(), self.interval_label,
-        ))
-        op.addWidget(self._labeled_slider(
-            "判断请求超时（秒）", self._make_timeout_slider(), self.timeout_label,
-        ))
-
-        op.addStretch(1)
-        # stretch=0：面板宽度由 min/max 决定，不参与横向争抢（视频区与控制台才该是弹性的）
-        root.addWidget(self.option_panel, 0)
-
-        # 折叠后显示的细条
-        self.expand_btn = QToolButton()
-        self.expand_btn.setText("»")
-        self.expand_btn.setFixedWidth(22)
-        self.expand_btn.clicked.connect(self._toggle_panel)
-        self.expand_btn.hide()
-        root.addWidget(self.expand_btn)
-
-        self._init_status_bar()
-
-    def _init_status_bar(self):
-        """初始化状态栏"""
-        self.status_listen = QLabel("就绪")
-        self.status_listen.setObjectName("statusListen")
-        self.status_omni = QLabel("○ OMNI 未启用")
-        self.status_omni.setObjectName("statusOmni")
-        self.status_sys = QLabel("● 已停止")
-        self.status_sys.setObjectName("statusSys")
-        bar = self.statusBar()
-        bar.addWidget(self.status_listen)
-        bar.addWidget(self.status_omni)
-        bar.addPermanentWidget(self.status_sys)
-
-    def _make_interval_slider(self):
-        """生成间隔滑块"""
-        s = QSlider(Qt.Horizontal)
-        s.setRange(2, 40)              # 半秒步进 -> 1.0s ~ 20.0s
-        s.setValue(int(self.config.judgment_interval * 2))
-        self.interval_label = QLabel(f"{self.config.judgment_interval:.1f}s")
-        s.valueChanged.connect(lambda v: self.interval_label.setText(f"{v / 2:.1f}s"))
-        self.interval_slider = s
-        return s
-
-    def _make_timeout_slider(self):
-        """生成超时滑块"""
-        s = QSlider(Qt.Horizontal)
-        s.setRange(6, 120)             # 半秒步进 -> 3.0s ~ 60.0s
-        s.setValue(int(self.config.judgment_timeout * 2))
-        self.timeout_label = QLabel(f"{self.config.judgment_timeout:.1f}s")
-        s.valueChanged.connect(lambda v: self.timeout_label.setText(f"{v / 2:.1f}s"))
-        self.timeout_slider = s
-        return s
-
-    def _labeled_slider(self, title, slider, label):
-        """带标签滑块（三行：标题 / 滑条 / 数值）。
-
-        给外层容器设**最小高度**：侧栏空间不足时 QVBoxLayout 会把这种「一个 widget 装
-        三行」的块整体压扁，滑条被压成一条线甚至小方块（bo s s 2026-09-17 截图里底部
-        两个滑块就是这么变形的）。设下限后空间不够时会触发滚动条，而不是压坏比例。
-        """
-        box = QVBoxLayout()
-        box.setSpacing(4)
-        box.addWidget(QLabel(title))
-        slider.setMinimumHeight(24)          # 滑条本身也不许被压成一条线
-        box.addWidget(slider)
-        box.addWidget(label)
-        w = QWidget()
-        w.setLayout(box)
-        w.setMinimumHeight(92)               # 标题 + 滑条 + 数值三行的下限
-        return w
-
-    # ----------------------------------------------------- 计时器
     def _setup_timers(self):
+        """只在运行时绘制画面，状态低频刷新。"""
         self.frame_timer = QTimer(self)
         self.frame_timer.timeout.connect(self._pull_frame)
-        self.frame_timer.start(33)
-
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self._update_status)
         self.status_timer.start(250)
 
-    # ----------------------------------------------------- 日志重定向
     def _redirect_logging(self):
-        self.log_q = queue.Queue()
-        sys.stdout = _GuiStream(self.log_q)
-        sys.stderr = _GuiStream(self.log_q)
+        """连接日志单独展示，并保存原输出流以便退出时恢复。"""
+        self.log_q = queue.Queue(maxsize=2000)
+        self._original_streams = sys.stdout, sys.stderr
+        self._gui_stream = _GuiStream(self.log_q)
+        sys.stdout = sys.stderr = self._gui_stream
         self._log_handler = _QtLogHandler(self.log_q)
         logging.getLogger().addHandler(self._log_handler)
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self._pull_logs)
-        self.log_timer.start(50)
+        self.log_timer.start(80)
 
-    # ----------------------------------------------------- 取帧
     def _pull_frame(self):
-        """从共享上下文取标注帧并绘制到视频标签（带空帧/空 pixmap 防御）。
+        """只读取后台帧缓存，不在 Qt 线程采集或编码。"""
+        if not self.runtime.running or self._stopping:
+            return
+        client = self.runtime.omni_client
+        frame = client.get_latest_frame() if client else None
+        if frame is None or frame.ndim != 3 or frame.shape[2] != 3:
+            return
+        height, width, _ = frame.shape
+        if width <= 0 or height <= 0:
+            return
+        frame = np.ascontiguousarray(frame)
+        image = QImage(frame.data, width, height, width*3, QImage.Format_BGR888)
+        if image.isNull():
+            return
+        pix = QPixmap.fromImage(image)
+        if not pix.isNull():
+            self.video_container.set_ratio(width, height)
+            self.video_label.setPixmap(pix)
 
-        macOS Metal 后端对空 QPixmap 做 scaled() 会断言崩溃(abort)，故任何一
-        环拿到空对象都直接跳过本次绘制，绝不把空 pixmap 交出去渲染。
-        """
-        # 运行时已停止（点了「停止」或正在退出窗口）则不再绘制：避免在底层资源
-        # 释放/窗口销毁过程中仍向 Metal 渲染管线提交帧，触发断言崩溃（闪退）。
-        if not self.runtime.running:
-            return
-        # OMNI 模式：画面来自 omni 客户端的摄像头帧（传统模式来自 context 标注帧）
-        omni_client = getattr(self.runtime, "omni_client", None)
-        if getattr(self.runtime, "omni_mode", False) and omni_client is not None:
-            f = omni_client.get_latest_frame()
-        else:
-            f = self.context.get_annotated_frame()
-        if f is None:
-            return
-        try:
-            h, w, ch = f.shape
-        except Exception:
-            return
-        if h <= 0 or w <= 0 or ch <= 0:
-            return
-        # cv2 帧需内存连续，否则 QImage 绑定到错位缓冲会得到损坏/空的 pixmap
-        try:
-            _contiguous = bool(f.flags["C_CONTIGUOUS"])
-        except Exception:
-            _contiguous = False
-        if not _contiguous:
-            f = np.ascontiguousarray(f)
-        img = QImage(f.data, w, h, ch * w, QImage.Format_BGR888)
-        if img.isNull():
-            return
-        pix = QPixmap.fromImage(img)
-        if pix.isNull():
-            return
-        # 不做 scaled：缩放交给 RoundedVideoLabel.paintEvent 用 drawPixmap 等比绘制，
-        # 避免在 Metal 后端对 QPixmap 二次 scaled 触发断言崩溃(abort)。
-        self.video_label.setPixmap(pix)
+    def _insert_text(self, editor, text):
+        """流式连续插入，保持阅读位置及用户已有选区。"""
+        scrollbar = editor.verticalScrollBar()
+        follow = scrollbar.value() >= scrollbar.maximum()-2 and not editor.textCursor().hasSelection()
+        cursor = QTextCursor(editor.document())
+        cursor.movePosition(QTextCursor.End)
+        cursor.insertText(text)
+        if follow:
+            scrollbar.setValue(scrollbar.maximum())
 
-    # ----------------------------------------------------- 取日志
     def _pull_logs(self):
-        # 仅当用户已滚动到底部且未在选中文本时才自动跟随，否则保留其阅读/复制位置
-        sb = self.console.verticalScrollBar()
-        at_bottom = sb.value() >= sb.maximum() - 2
-        has_selection = self.console.textCursor().hasSelection()
-        while True:
+        """每次限定读取数量，日志洪峰不能饿死画面绘制。"""
+        parts = []
+        for _ in range(200):
             try:
-                msg = self.log_q.get_nowait()
+                parts.append(self.log_q.get_nowait().replace("\r", "\n"))
             except queue.Empty:
                 break
-            # 把 stdout 的 \r（原地覆盖）净化成换行，避免把状态行当成新行疯狂堆叠
-            clean = msg.replace("\r", "\n").rstrip("\n")
-            if clean:
-                self.console.appendPlainText(clean)
-        # 用户正在选中复制（有选区）时不打断其选型；否则在底部时自动跟随最新日志
-        if at_bottom and not has_selection:
-            self.console.moveCursor(QTextCursor.End)
+        if parts:
+            self._insert_text(self.diagnostics, "".join(parts))
 
-    # ----------------------------------------------------- 状态栏
+    @Slot(str)
+    def _append_reply(self, text):
+        """将模型增量拼成自然段，避免逐块换行割裂中文字词。"""
+        if self._stopping or self._stop_requested:
+            return
+        if not self._reply_open:
+            prefix = "\n\n" if self.console.toPlainText() else ""
+            self._insert_text(self.console, prefix + "J.A.C. · " + datetime.now().strftime("%H:%M") + "\n")
+            self._reply_open = True
+        self._insert_text(self.console, text)
+
+    @Slot()
+    def _end_reply(self):
+        """模型回到聆听时结束当前显示段落，不依赖 response.done。"""
+        self._reply_open = False
+
     def _update_status(self):
-        s = self.context.get_listening_status()
-        self.status_listen.setText(s or "就绪")
-        if getattr(self.runtime, "omni_mode", False):
-            self.status_omni.setText("● OMNI 全双工")
+        """用单个状态胶囊表达启停、重连和听说阶段。"""
+        state = getattr(self.runtime, "state", "ready" if self.runtime.running else "stopped")
+        labels = {"connecting": "连接中", "reconnecting": "重连中 · 采集暂停", "ready": "聆听中",
+                  "closed": "会话已关闭", "error": "连接异常", "stopped": "已停止"}
+        if self._stopping:
+            text = "停止中"
+        elif self._stop_error:
+            text = "停止未完成"
+        elif self._start_thread and self._start_thread.is_alive() and not self.runtime.running:
+            text = "启动中"
+        elif self.runtime.running:
+            text = labels.get(state, "聆听中")
+            if state == "ready" and self.context.is_speaking:
+                text = "正在回应"
         else:
-            self.status_omni.setText("○ OMNI 未启用")
-        self.status_sys.setText("● 运行中" if self.runtime.running else "● 已停止")
-        # OMNI 实时诊断：麦克风音量条 + 实时回复文字区（仅在 OMNI 模式且客户端就绪时刷新）
-        omni_client = getattr(self.runtime, "omni_client", None)
-        if getattr(self.runtime, "omni_mode", False) and omni_client is not None:
-            level = omni_client.get_latest_mic_level()
-            self.mic_bar.setValue(int(min(1.0, level / 0.15) * 100))
-            txt = omni_client.get_reply_text()
-            if txt != self._last_reply_shown:
-                self.omni_reply.setPlainText(txt)
-                self._last_reply_shown = txt
-        else:
-            if self.mic_bar.value() != 0:
-                self.mic_bar.setValue(0)
+            text = "连接异常" if state == "error" else "已停止"
+        self.state_pill.setText("● " + text)
+        active = self.runtime.running and state == "ready" and not self._stopping
+        if self.state_pill.property("active") != active:
+            self.state_pill.setProperty("active", active)
+            self.state_pill.style().unpolish(self.state_pill)
+            self.state_pill.style().polish(self.state_pill)
+        self.activity_label.setText(text if self.runtime.running or self._stopping else "从一句话开始")
+        client = self.runtime.omni_client
+        level = client.get_latest_mic_level() if client and active else 0
+        percent = int(min(1., max(0., level)/.15)*100)
+        self.mic_bar.setValue(percent)
+        self.mic_level_label.setText(f"{percent}%")
+        if client and hasattr(client, "stats"):
+            stats = client.stats()
+            self.session_hint.setText(f"已建立 {stats.get('sessions_started', 0)} 个会话 · 上行 {stats.get('chunks_sent', 0)} 秒")
+        elif not self.runtime.running:
+            self.session_hint.setText("尚未连接")
+        if state in {"closed", "reconnecting", "error"}:
+            self.video_label.clear()
+        self.camera_hint.setText("摄像头已关闭" if not self.video_enabled_chk.isChecked() else "画面保留原始比例 · 仅在本机处理")
 
-    # ----------------------------------------------------- 启动/停止
     def _toggle_run(self):
-        """在启动主线程申请首次摄像头权限，其余设备与模型工作交后台。"""
+        """保留主线程权限申请和后台启动，关闭完成前禁止重启。"""
         if self._stopping:
             return
         if self._stop_error:
             self._safe_stop_runtime()
             return
-        if self._start_thread is not None and self._start_thread.is_alive():
+        if self._start_thread and self._start_thread.is_alive():
             return
-        if not self.runtime.running:
-            self._stop_requested = False  # 开始新启动，清除上一次的「停止」意图
-            cfg = self._collect_config()
-            if cfg.omni_enabled and cfg.omni_backend == "gateway":
-                if not cfg.gateway_consent_devices:
-                    self.console.appendPlainText("[Gateway] 请勾选设备同意并戴好耳机后启动。")
-                    return
-                if cfg.omni_video_enabled:
-                    from src.omni.media import request_camera_permission
-                    try:
-                        request_camera_permission(cfg.gateway_camera)
-                    except RuntimeError as error:
-                        self.console.appendPlainText(f"[Gateway] {error}")
-                        return
-            # 把重活放到后台线程：摄像头/YOLO/Whisper/Qwen3-TTS/记忆加载
-            # 全在主线程同步执行会长时间阻塞事件循环，macOS 会判为「未响应」，
-            # 并在阻塞期间任何绘制请求下放大 Metal 崩溃概率。后台跑可保 GUI 流畅。
-            self.start_btn.setEnabled(False)
-            self.start_btn.setText("启动中…")
-
-            def _do_start():
-                """后台启动流水线，随后处理启动期间的停止请求。"""
-                try:
-                    self.runtime.start(cfg)
-                except Exception:
-                    # 打印完整 traceback（而非仅异常消息），便于真机验收时直接定位
-                    # 缺失依赖 / 导入错误等根因，避免反复来回。
-                    import traceback as _tb
-                    failure = "[GUI] 启动失败:\n" + "".join(_tb.format_exception(*sys.exc_info()))
-                    self._stop_runtime_requested.emit()
-                    self._startup_failed.emit(failure)
-                    return
-                # 边界：若用户在启动过程中点了「停止」，立即停掉刚拉起的运行时
-                if self._stop_requested and self.runtime.running:
-                    self._stop_runtime_requested.emit()
-                    return
-                # 成功时 _on_state_change 已把按钮置为「停止」；
-                # 失败时需在此恢复按钮可交互，否则会卡在「启动中…」。
-                if not self.runtime.running:
-                    self._startup_failed.emit(
-                        "[GUI] 启动未完成，请检查设备、后端和当前模式的依赖。")
-
-            self._start_thread = threading.Thread(target=_do_start, daemon=True, name="gui-start")
-            self._start_thread.start()
-        else:
-            # 点「停止」：只停运行时，GUI 窗口保持打开（便于查看/复制控制台日志 debug）
-            self._stop_requested = True
+        if self.runtime.running:
             self._safe_stop_runtime()
+            return
+        config = self._collect_config()
+        if not config.gateway_consent_devices:
+            self.console.appendPlainText("请先勾选设备同意，并戴好耳机。")
+            return
+        try:
+            from src.omni.realtime_protocol import gateway_url
+            gateway_url(config.gateway_url, "video")
+            from pathlib import Path
+            from src.omni.gateway_client import ROOT
+            voice = Path(config.omni_ref_audio)
+            if not (voice if voice.is_absolute() else ROOT/voice).is_file():
+                raise ValueError("参考音频文件不存在")
+            if config.omni_video_enabled:
+                from src.omni.media import request_camera_permission
+                request_camera_permission(config.gateway_camera)
+        except Exception as error:
+            self.console.appendPlainText(f"无法启动：{error}")
+            return
+        self._stop_requested = False
+        self._reply_open = False
+        self.config = config
+        self.start_btn.setEnabled(False)
+        self.start_btn.setText("启动中…")
+        self._set_options_enabled(False)
+
+        def start_runtime():
+            """后台启动出错时通过信号清理半启动设备并显示原因。"""
+            try:
+                self.runtime.start(config)
+            except Exception:
+                import traceback
+                self._stop_runtime_requested.emit()
+                self._startup_failed.emit("[GUI] 启动失败：\n" + traceback.format_exc())
+                return
+            if self._stop_requested and self.runtime.running:
+                self._stop_runtime_requested.emit()
+            elif not self.runtime.running:
+                self._startup_failed.emit("启动未完成，请检查设备和 Gateway 后端。")
+
+        self._start_thread = threading.Thread(target=start_runtime, daemon=True, name="gui-start")
+        self._start_thread.start()
 
     @Slot()
     def _safe_stop_runtime(self):
@@ -805,6 +713,10 @@ class MainWindow(QMainWindow):
             return
         if self._stopping or self._stop_error:
             return
+        if not running and self.runtime.omni_client is not None:
+            self.console.appendPlainText("连接已结束，正在清理会话；详情见连接日志。")
+            self._safe_stop_runtime()
+            return
         if running:
             if self._stop_requested:
                 return
@@ -813,6 +725,8 @@ class MainWindow(QMainWindow):
         else:
             self.frame_timer.stop()
             self.video_label.clear()
+        if not running:
+            self._end_reply()
         self.start_btn.setText("停止" if running else "启动")
         self.start_btn.setEnabled(True)  # 运行/停止两种状态都必须可点击
         self._set_options_enabled(not running)
@@ -823,148 +737,60 @@ class MainWindow(QMainWindow):
         self.console.appendPlainText(message)
         self._apply_runtime_state(False)
 
-    def _set_options_enabled(self, en):
-        """设置选项已启用"""
-        for w in (self.judge_chk, self.tts_chk, self.tools_chk, self.omni_chk,
-                  self.interval_slider, self.timeout_slider,
-                  self.video_enabled_chk, self.debug_log_chk,
-                  self.omni_backend_combo, self.gateway_consent_chk):
-            w.setEnabled(en)
-        # 图像间隔输入框：除运行状态外还要看「图像上行」总开关——关掉图像时间隔无意义
-        self.video_interval_spin.setEnabled(en and self.video_enabled_chk.isChecked())
-        # OMNI 模式下传统 judge/TTS/tools 与 omni 架构互斥，仍保持灰掉状态
-        if en and self.omni_chk.isChecked():
-            self._on_omni_toggled(True)
-        gateway = self.omni_chk.isChecked() and self.omni_backend_combo.currentData() == "gateway"
-        for control in (self.listen_prob_scale_spin, self.video_interval_spin,
-                        self.echo_gate_combo, self.debug_log_chk):
-            control.setEnabled(en and not gateway)
-        if not gateway:
-            self.video_interval_spin.setEnabled(en and self.video_enabled_chk.isChecked())
-
-    def _on_omni_toggled(self, checked):
-        """OMNI 与传统 judge/TTS/tools 架构互斥：勾选 OMNI 时灰掉三者并提示。
-
-        OMNI 模式下 omni 直接接管「看 + 听 + 说 + 判断」，传统链路（MiniCPM-v 判断引擎 /
-        Qwen3-TTS / Function Calling 工具）不生效，避免用户误以为开启。
-        """
-        for w in (self.judge_chk, self.tts_chk, self.tools_chk):
-            w.setEnabled(not checked)
-            if checked:
-                w.setToolTip("OMNI 模式下不生效（架构互斥）")
-            else:
-                w.setToolTip("")
+    def _set_options_enabled(self, enabled):
+        """锁定所有会影响下一会话的控件，避免呈现无效的实时调节。"""
+        for control in self._controls:
+            control.setEnabled(enabled)
 
     def _collect_config(self):
-        """收集配置"""
-        return Config(
-            judgment_engine_enabled=self.judge_chk.isChecked(),
-            judgment_interval=self.interval_slider.value() / 2.0,
-            judgment_timeout=self.timeout_slider.value() / 2.0,
-            use_qwen_tts=self.tts_chk.isChecked(),
-            tools_enabled=self.tools_chk.isChecked(),
-            omni_enabled=self.omni_chk.isChecked(),
-            omni_backend=self.omni_backend_combo.currentData(),
-            gateway_url=self.config.gateway_url,
-            gateway_session_seconds=self.config.gateway_session_seconds,
+        """收集真实生效的 Gateway 参数，保留未在界面暴露的配置。"""
+        return replace(self.config, omni_enabled=True, omni_backend="gateway",
             gateway_consent_devices=self.gateway_consent_chk.isChecked(),
-            gateway_input_device=self.config.gateway_input_device,
-            gateway_output_device=self.config.gateway_output_device,
-            gateway_camera=self.config.gateway_camera,
-            omni_server_url=self.config.omni_server_url,
-            omni_server_bin=self.config.omni_server_bin,
-            omni_model_dir=self.config.omni_model_dir,
-            omni_host=self.config.omni_host,
-            omni_port=self.config.omni_port,
-            omni_quant=self.config.omni_quant,
-            omni_ref_audio=self.config.omni_ref_audio,
-            omni_fps=self.config.omni_fps,
-            omni_video_interval=self.video_interval_spin.value(),
-            omni_video_enabled=self.video_enabled_chk.isChecked(),
-            omni_debug_log=self.debug_log_chk.isChecked(),
-            omni_mic_gain=self.mic_gain_spin.value(),
-            omni_listen_prob_scale=self.listen_prob_scale_spin.value(),
-            omni_echo_gate=self.echo_gate_combo.currentData(),
-            omni_duplex=self.config.omni_duplex,
-            omni_auto_launch=self.config.omni_auto_launch,
-            brain_backend=self.config.brain_backend,
-            awake_timeout=self.config.awake_timeout,
-            memory_enabled=self.config.memory_enabled,
-            memory_capture_person_id=self.config.memory_capture_person_id,
-            judgment_model_name=self.config.judgment_model_name,
-            wake_words=self.config.wake_words,
-            camera_width=self.config.camera_width,
-            camera_height=self.config.camera_height,
-        )
+            gateway_input_device=self.input_device_combo.currentData(),
+            gateway_output_device=self.output_device_combo.currentData(),
+            gateway_camera=self.camera_spin.value(), gateway_url=self.url_edit.text().strip(),
+            gateway_session_seconds=self.session_spin.value(), gateway_retry_limit=self.retry_spin.value(),
+            omni_mic_gain=self.mic_gain_spin.value(), omni_fps=self.fps_spin.value(),
+            omni_video_enabled=self.video_enabled_chk.isChecked(), omni_ref_audio=self.voice_edit.text().strip())
 
-    # ----------------------------------------------------- 手动发送
-    def _send(self):
-        txt = self.input_box.toPlainText().strip()
-        if not txt:
-            return
-        self.runtime.manual_input(txt)
-        self.input_box.clear()
+    def _toggle_panel(self, visible):
+        """隐藏设置后将空间交给画面与对话记录。"""
+        self.option_panel.setVisible(visible)
 
-    # ----------------------------------------------------- 分辨率/缩放（仅显示）
-    def _apply_resolution(self, text):
-        if text == "自适应":
-            self.showMaximized()
-        else:
-            self.showNormal()
-            try:
-                w, h = text.split("×")
-                self.resize(int(w), int(h))
-            except Exception:
-                pass
-
-    def _apply_zoom(self, value):
-        """应用缩放"""
-        self.zoom_label.setText(f"{value}%")
-        z = value / 100.0
-        # 改变视频面板的最小尺寸，让画面整体放大/缩小（不影响采集/模型）
-        self.video_label.setMinimumSize(int(640 * z), int(360 * z))
-
-    # ----------------------------------------------------- 折叠面板
-    def _toggle_panel(self):
-        self.panel_collapsed = not self.panel_collapsed
-        if self.panel_collapsed:
-            self.option_panel.hide()
-            self.expand_btn.show()
-        else:
-            self.option_panel.show()
-            self.expand_btn.hide()
-
-    # ----------------------------------------------------- 关闭
     def closeEvent(self, event):
-        """关闭窗口同样等待后台清理，避免程序退出打断 Gateway 关闭握手。"""
+        """退出先等待会话关闭，然后恢复日志流并释放 Qt 定时器。"""
         starter_alive = self._start_thread is not None and self._start_thread.is_alive()
         if (self._stopping or self._stop_error or self.runtime.running
-                or getattr(self.runtime, "omni_client", None) is not None or starter_alive):
+                or self.runtime.omni_client is not None or starter_alive):
             self._close_after_stop = True
             event.ignore()
             self._safe_stop_runtime()
             return
-        self.frame_timer.stop()
+        for timer in (self.frame_timer, self.status_timer, self.log_timer):
+            timer.stop()
         self.video_label.clear()
+        self._pull_logs()
+        logging.getLogger().removeHandler(self._log_handler)
+        if sys.stdout is self._gui_stream:
+            sys.stdout = self._original_streams[0]
+        if sys.stderr is self._gui_stream:
+            sys.stderr = self._original_streams[1]
         super().closeEvent(event)
 
 
-# ----------------------------- 入口 -----------------------------
-def run_gui(config: Config):
-    # 高 DPI（必须在 QApplication 实例化之前设置）
-    QApplication.setHighDpiScaleFactorRoundingPolicy(
-        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
-    )
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
-
-    app = QApplication(sys.argv)
+def run_gui(config):
+    """采用系统中文字体和高 DPI，启动玻璃风格 Gateway 工作台。"""
+    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
-    app.setStyleSheet(DARK_QSS)
-
-    w = MainWindow(config)
-    w.show()
-    sys.exit(app.exec())
+    font = QFont()
+    font.setFamilies(["PingFang SC", "SF Pro Text", "Microsoft YaHei", "Noto Sans CJK SC", "sans-serif"])
+    font.setPointSize(11)
+    app.setFont(font)
+    window = MainWindow(config)
+    window.show()
+    return app.exec()
 
 
 if __name__ == "__main__":
-    run_gui(Config.load())
+    raise SystemExit(run_gui(Config.load()))

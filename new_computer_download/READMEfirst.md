@@ -4,7 +4,7 @@
 
 ## English
 
-Option B was approved on 2026-10-06. M0 has been accepted by the user with the 30-minute soak explicitly waived. This guide provisions the isolated M0/M1 backend, probes and production Gateway CLI/GUI. `setup_new_computer.py --only gateway` (compatible alias: `--only m0`) installs Python 3.11 dependencies including PySide6 and verifies client/GUI imports without opening devices. Other stages retain legacy dependencies.
+Option B was approved on 2026-10-06. M0 has been accepted by the user with the 30-minute soak explicitly waived. This guide provisions the isolated M0/M1 backend, probes and production Gateway CLI/GUI. `setup_new_computer.py --only gateway` (compatible alias: `--only m0`) installs Python 3.11 dependencies including PySide6 and verifies client/GUI imports without opening devices. The installer defaults to Gateway; all/pip/verify also use this current dependency set. Old MiniCPM runtime modes are removed.
 
 M0 requires Python 3.11, CMake, Xcode Command Line Tools, an external GGUF model directory and the two repositories pinned in [backend.lock.json](../backend.lock.json). It uses C++ Metal for inference and a Python Gateway / Worker for orchestration. No NVIDIA machine or speaker-embedding extraction is needed.
 
@@ -18,7 +18,7 @@ The file probe proves protocol and native-audio transport only. The pinned Gatew
 
 The 40-second live run, ten rapid lifecycle cycles and two 225-second live sessions passed. The user confirmed satisfactory interaction and accepted M0 without the remaining soak. Original reports retain `soak_30min_verified=false` because that duration was not measured; it no longer blocks migration.
 
-After starting the pinned backend, run `main.py --gateway --gui` in the Python 3.11 environment. Explicit device consent and headphones are required before capture starts. `main.py --gateway --consent-devices` runs the console client. The Gateway GUI imports no legacy torch/PyAudio/Whisper/YOLO; legacy modes require their existing dependencies.
+After starting the pinned backend, run `main.py --gateway --gui` in the Python 3.11 environment. Explicit device consent and headphones are required before capture starts. `main.py --gateway --consent-devices` runs the console client. The Gateway GUI imports no torch/PyAudio/Whisper/YOLO. All runtime entries use Gateway; --gateway remains a compatible optional flag.
 
 `verify_soak_duplex.py --consent-devices` measures 1,800 input seconds across eight 225-second video sessions while keeping the same backend running. It samples local health endpoints and process RSS, and saves aggregate/per-session counts even on failure. Devices restart between sessions; cross-session context restoration is not tested.
 
@@ -28,7 +28,7 @@ Publishing policy: the template `voices/silverwalf_voice.wav` is authorized for 
 
 发布边界：模板 `voices/silverwalf_voice.wav` 已获准推送；模型、实际测试录音录像和本机 `brainstorming_projectPLAN/` 架构目录不提交、不推送。架构目录只在本机维护，克隆 GitHub 仓库不会取得该目录。
 
-方案 B 已于 2026-10-06 确认。M0 已由 bo s s 接受并免做 30 分钟长测，当前进入 M1。独立 Python 3.11 环境已支持后端、探针及生产 Gateway CLI/GUI；`requirements-m0.txt` 新增已验证的 PySide6 6.11.2，安装器推荐 `--only gateway`（兼容 `--only m0`），安装后自检客户端、GUI 与后端控制依赖，不打开设备。现有 `.venv`、生产依赖和其他安装阶段保留旧模式兼容。
+方案 B 已于 2026-10-06 确认。M0 已由 bo s s 接受并免做 30 分钟长测，当前进入 M1。独立 Python 3.11 环境已支持后端、探针及生产 Gateway CLI/GUI；`requirements-m0.txt` 新增已验证的 PySide6 6.11.2，安装器推荐 `--only gateway`（兼容 `--only m0`），安装后自检客户端、GUI 与后端控制依赖，不打开设备。现有 `.venv` 保留但不用于当前主程序；默认安装 Gateway，根依赖清单共用固定版本，旧 MiniCPM 运行模式已移除。
 
 ### 1 安装 Python 3.11
 
@@ -210,7 +210,7 @@ M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo 
 .cache/m0/venv/bin/python main.py --gateway --gui
 ```
 
-选择「方案 B Gateway」，勾选设备同意并戴好耳机后点击启动。新入口复用原界面的画面预览、音量条、参数和实时文本；旧 Listen/回声门控/图像间隔参数在 Gateway 下禁用，图像固定每秒最新一帧。不带 `--gateway` 的终端入口仍运行传统实现；在新 GUI 选择旧模式时，需要完整旧依赖。
+界面为 Qt 绘制的浅色玻璃风格，摄像头保持真实比例且无黑边，对话区连续显示回复，顶部单个状态提示，连接日志单独折叠。勾选设备同意并戴好耳机后点击启动。右侧仅保留有效 Gateway 参数：设备、相机编号、麦克风增益、5–10fps 采集、5–240 秒会话轮换、重连次数、本机 Gateway 与参考 WAV，启动前调整、运行中锁定。分辨率固定 640×480、每秒上行最新 1 帧。旧 MiniCPM 与传统入口已删除；`main.py --gui` / `python -m src.omni --gui` 同样可用。
 
 如果仅需终端中的语音交流：
 
@@ -229,4 +229,4 @@ M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo 
 - queue_done 超时：检查 Worker 已注册、三个健康接口正常，以及 output/m0 下的日志。
 - 无 audio 增量：原生 TTS 验收尚未通过，检查全部 Token2Wav / TTS 模块和参考音。
 - 中文字体异常：DOCX 使用显式东亚字体；如 Windows 缺少字体，安装对应字体后再检查页面渲染。Python 和 Markdown 文件统一 UTF-8。
-- 依赖冲突：使用独立 M0 环境，不把 websockets 16 直接装进旧主程序环境。
+- 依赖冲突：当前运行环境为 Python 3.11 `.cache/m0/venv`；根 `requirements.txt` 直接引用 `requirements-m0.txt`，`requirements_fixed.txt` 是历史组件快照。玻璃风格没有新增依赖，无需重装。安装器默认 Gateway，原 `.venv` 保留但不作为主程序环境。

@@ -1,4 +1,4 @@
-# 方案 B 的独立 M0 环境，Python 3.11；不替换旧主程序的 requirements.txt。
+# 当前主程序与固定后端的共同依赖，Python 3.11；根 requirements.txt 引用本清单。
 # Gateway / Worker / 探针均不加载 torch 模型。
 numpy==2.2.6
 soundfile==0.13.1
@@ -18,4 +18,4 @@ Pygments==2.19.2
 pytest==8.4.2
 pytest-cov==7.0.0
 pytest-timeout==2.4.0
-PySide6==6.11.2  # 已验证的 M1 Gateway GUI；生产 requirements.txt 已包含同一桌面依赖
+PySide6==6.11.2  # Gateway 语音工作台；玻璃风格使用 Qt 绘制，无新增 GUI 依赖

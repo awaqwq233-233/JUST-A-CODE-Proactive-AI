@@ -73,7 +73,7 @@ def window(monkeypatch):
     handlers = list(logging.getLogger().handlers)
     monkeypatch.setattr(gui, "DesktopRuntime", FakeRuntime)
     instance = gui.MainWindow(Config())
-    instance.setStyleSheet(gui.DARK_QSS)
+    instance.setStyleSheet(gui.GLASS_QSS)
     try:
         yield instance
     finally:
@@ -189,7 +189,7 @@ def test_preview_clear_erases_entire_painted_widget(window):
     image = window.video_label.grab().toImage()
     for x in (8, image.width() // 2, image.width() - 9):
         color = image.pixelColor(x, image.height() // 2)
-        assert color.red() == color.green() == color.blue() == 0, "停止后仍有旧画面残留"
+        assert color.blue() > 150 and color.red() > 150, "停止后仍有旧合成帧残留"
 
 
 def test_slow_stop_keeps_qt_responsive_and_blocks_restart(window, monkeypatch):
@@ -284,3 +284,111 @@ def test_stop_failure_requires_retry_before_start(window, monkeypatch):
     wait_gui(lambda: not window._stopping)
     assert not window._stop_error and window.runtime.starts == 1
     assert window.start_btn.text() == "启动"
+
+
+def test_camera_geometry_preserves_full_frame_without_black_bars(window):
+    """用整控件像素验证 4:3 和宽画面不裁切、不拉伸、不留黑边。"""
+    from PySide6.QtGui import QPixmap, QColor
+    window.show()
+    for width, height in ((640, 480), (960, 540)):
+        window.video_container.set_ratio(width, height)
+        pix = QPixmap(width, height)
+        pix.fill(QColor("#f08060"))
+        window.video_label.setPixmap(pix)
+        QTest.qWait(30)
+        label = window.video_label
+        assert abs(label.width()/label.height() - width/height) < .01
+        image = label.grab().toImage()
+        for x, y in ((20, image.height()//2), (image.width()-21, image.height()//2),
+                     (image.width()//2, 20), (image.width()//2, image.height()-21)):
+            assert image.pixelColor(x, y).name() == "#f08060"
+
+
+def test_all_gateway_settings_are_collected_and_locked_while_running(window):
+    """验证新参数均被收集，运行中不可修改，收起面板仍保留值。"""
+    window.mic_gain_spin.setValue(2.5)
+    window.fps_spin.setValue(8)
+    window.session_spin.setValue(60)
+    window.retry_spin.setValue(2)
+    window.camera_spin.setValue(1)
+    window.video_enabled_chk.setChecked(False)
+    window.input_device_combo.addItem("测试麦克风", 4)
+    window.input_device_combo.setCurrentIndex(1)
+    window.output_device_combo.addItem("测试耳机", 6)
+    window.output_device_combo.setCurrentIndex(1)
+    config = window._collect_config()
+    assert (config.omni_mic_gain, config.omni_fps, config.gateway_session_seconds, config.gateway_retry_limit) == (2.5, 8, 60, 2)
+    assert (config.gateway_camera, config.gateway_input_device, config.gateway_output_device) == (1, 4, 6)
+    assert not config.omni_video_enabled
+    window.runtime.start()
+    QTest.qWait(50)
+    assert all(not control.isEnabled() for control in window._controls)
+    window._safe_stop_runtime()
+    wait_gui(lambda: not window._stopping)
+    assert all(control.isEnabled() for control in window._controls)
+    assert window._collect_config() == config
+
+
+def test_reply_fragments_remain_continuous_and_logs_are_separate(window):
+    """回复分片不能插入多余换行；连接日志独立且不丢失。"""
+    window._append_reply("你好，")
+    window._append_reply("bo s s。")
+    assert "你好，bo s s。" in window.console.toPlainText()
+    window._end_reply()
+    window._append_reply("下一句。")
+    assert window.console.toPlainText().count("J.A.C. ·") == 2
+    window.log_q.put("[Gateway] connecting\n")
+    window._pull_logs()
+    assert "connecting" not in window.console.toPlainText()
+    assert "connecting" in window.diagnostics.toPlainText()
+
+
+def test_refresh_devices_preserves_selection_without_starting_streams(window, monkeypatch):
+    """设备刷新只查询名称，输入输出分别过滤并保留选择。"""
+    import sounddevice as sd
+    monkeypatch.setattr(sd, "query_devices", lambda: [
+        {"name": "麦克风", "max_input_channels": 1, "max_output_channels": 0},
+        {"name": "耳机", "max_input_channels": 0, "max_output_channels": 2},
+    ])
+    window.output_device_combo.addItem("已选择耳机", 1)
+    window.output_device_combo.setCurrentIndex(1)
+    window._refresh_devices()
+    assert window.input_device_combo.count() == 2
+    assert window.output_device_combo.currentData() == 1
+    assert "耳机" in window.output_device_combo.currentText()
+    assert not window.runtime.running
+
+
+def test_compact_window_and_collapsed_settings_keep_readable_layout(window):
+    """最小窗口下保持可读对话区，收起设置后内容获得额外空间。"""
+    window.resize(1100, 700)
+    window.show()
+    QTest.qWait(30)
+    assert window.console.width() >= 240
+    assert window.video_label.width() >= 280
+    previous = window.content_splitter.width()
+    window.settings_btn.setChecked(False)
+    QTest.qWait(30)
+    assert window.content_splitter.width() > previous
+    assert not window.option_panel.isVisible()
+
+
+def test_log_streams_are_restored_after_close(window):
+    """结束 GUI 不遗留标准输出重定向或后台日志处理器。"""
+    original = window._original_streams
+    window.close()
+    assert (sys.stdout, sys.stderr) == original
+    assert window._log_handler not in logging.getLogger().handlers
+
+
+def test_failed_connection_cleans_residual_client_before_restart(window):
+    """连接异常提前清除 running 标志后，GUI 先回收残留客户端再恢复启动。"""
+    window.runtime.start()
+    QTest.qWait(50)
+    window.runtime.running = False
+    window.runtime.state = "error"
+    window._on_state_change(False)
+    wait_gui(lambda: window.runtime.omni_client is None and not window._stopping)
+    assert window.start_btn.text() == "启动" and window.start_btn.isEnabled()
+    assert not window.frame_timer.isActive()
+    assert "清理会话" in window.console.toPlainText()

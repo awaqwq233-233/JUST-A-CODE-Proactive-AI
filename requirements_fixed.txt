@@ -1,3 +1,4 @@
+# 历史依赖快照，仅供未迁移组件参考；当前运行请用 requirements.txt。
 altgraph==0.17.5
 annotated-doc==0.0.4
 annotated-types==0.7.0
