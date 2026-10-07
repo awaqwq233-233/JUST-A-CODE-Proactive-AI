@@ -18,4 +18,4 @@ Pygments==2.19.2
 pytest==8.4.2
 pytest-cov==7.0.0
 pytest-timeout==2.4.0
-PySide6==6.11.2  # Gateway 语音工作台；玻璃风格使用 Qt 绘制，无新增 GUI 依赖
+PySide6==6.11.2  # Gateway 语音工作台；科技风格与 QProcess 后端管理使用现有 Qt，无新增依赖

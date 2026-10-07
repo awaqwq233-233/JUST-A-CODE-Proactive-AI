@@ -12,6 +12,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
 from PySide6.QtTest import QTest
+from PySide6.QtCore import QCoreApplication, QEvent
 
 import gui
 from src.utils.config import Config
@@ -72,13 +73,25 @@ def window(monkeypatch):
     streams = sys.stdout, sys.stderr
     handlers = list(logging.getLogger().handlers)
     monkeypatch.setattr(gui, "DesktopRuntime", FakeRuntime)
+    controller_class = gui.BackendController
+
+    def external_backend(parent):
+        """已有后端模拟仅服务于客户端启停测试，不做网络探测。"""
+        controller = controller_class(parent, auto_probe=False)
+        controller.state = 'external'
+        return controller
+
+    monkeypatch.setattr(gui, 'BackendController', external_backend)
     instance = gui.MainWindow(Config())
-    instance.setStyleSheet(gui.GLASS_QSS)
+    instance.setStyleSheet(gui.TECH_QSS)
     try:
         yield instance
     finally:
         instance.close()
         wait_gui(lambda: not instance._stopping)
+        app.processEvents()
+        instance.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
         app.processEvents()
         sys.stdout, sys.stderr = streams
         for handler in list(logging.getLogger().handlers):
@@ -112,7 +125,7 @@ def test_preview_returns_after_stop_and_restart(window):
         window._safe_stop_runtime()
         wait_gui(lambda: not window._stopping)
         assert not window.frame_timer.isActive()
-        assert window.start_btn.text() == "启动"
+        assert window.start_btn.text() == "启动语音"
 
 
 def test_worker_ready_notification_updates_preview_on_qt_thread(window):
@@ -128,7 +141,7 @@ def test_worker_ready_notification_updates_preview_on_qt_thread(window):
     QTest.qWait(100)
     assert window.frame_timer.isActive()
     assert window.runtime.omni_client.frame_reads > 0
-    assert window.start_btn.text() == "停止"
+    assert window.start_btn.text() == "停止语音"
 
 
 def test_stale_stop_notification_does_not_hide_new_session(window):
@@ -138,7 +151,7 @@ def test_stale_stop_notification_does_not_hide_new_session(window):
     window._on_state_change(False)
     QTest.qWait(30)
     assert window.runtime.running and window.frame_timer.isActive()
-    assert window.start_btn.text() == "停止"
+    assert window.start_btn.text() == "停止语音"
 
 
 def test_worker_startup_failure_restores_controls_on_qt_thread(window):
@@ -151,7 +164,7 @@ def test_worker_startup_failure_restores_controls_on_qt_thread(window):
     assert not worker.is_alive()
     assert not window.start_btn.isEnabled()
     QTest.qWait(80)
-    assert window.start_btn.isEnabled() and window.start_btn.text() == "启动"
+    assert window.start_btn.isEnabled() and window.start_btn.text() == "启动语音"
     assert not window.frame_timer.isActive()
     assert "模拟启动失败" in window.console.toPlainText()
 
@@ -175,7 +188,7 @@ def test_startup_exception_cleans_partially_started_runtime(window, monkeypatch)
             break
     assert not window.runtime.running
     assert not window.frame_timer.isActive()
-    assert window.start_btn.isEnabled() and window.start_btn.text() == "启动"
+    assert window.start_btn.isEnabled() and window.start_btn.text() == "启动语音"
     assert "模拟初始化异常" in window.console.toPlainText()
 
 
@@ -189,7 +202,7 @@ def test_preview_clear_erases_entire_painted_widget(window):
     image = window.video_label.grab().toImage()
     for x in (8, image.width() // 2, image.width() - 9):
         color = image.pixelColor(x, image.height() // 2)
-        assert color.blue() > 150 and color.red() > 150, "停止后仍有旧合成帧残留"
+        assert color.name() == "#0a1e34", "停止后仍有旧合成帧残留"
 
 
 def test_slow_stop_keeps_qt_responsive_and_blocks_restart(window, monkeypatch):
@@ -220,11 +233,11 @@ def test_slow_stop_keeps_qt_responsive_and_blocks_restart(window, monkeypatch):
     finally:
         release.set()
         wait_gui(lambda: not window._stopping)
-    assert window.start_btn.isEnabled() and window.start_btn.text() == "启动"
+    assert window.start_btn.isEnabled() and window.start_btn.text() == "启动语音"
     window.gateway_consent_chk.setChecked(True)
     window.video_enabled_chk.setChecked(False)
     window._toggle_run()
-    wait_gui(lambda: window.runtime.starts == 2 and window.start_btn.text() == "停止")
+    wait_gui(lambda: window.runtime.starts == 2 and window.start_btn.text() == "停止语音")
 
 
 def test_stop_cleans_client_even_if_running_flag_is_false(window):
@@ -283,7 +296,7 @@ def test_stop_failure_requires_retry_before_start(window, monkeypatch):
     window._toggle_run()
     wait_gui(lambda: not window._stopping)
     assert not window._stop_error and window.runtime.starts == 1
-    assert window.start_btn.text() == "启动"
+    assert window.start_btn.text() == "启动语音"
 
 
 def test_camera_geometry_preserves_full_frame_without_black_bars(window):
@@ -389,6 +402,85 @@ def test_failed_connection_cleans_residual_client_before_restart(window):
     window.runtime.state = "error"
     window._on_state_change(False)
     wait_gui(lambda: window.runtime.omni_client is None and not window._stopping)
-    assert window.start_btn.text() == "启动" and window.start_btn.isEnabled()
+    assert window.start_btn.text() == "启动语音" and window.start_btn.isEnabled()
     assert not window.frame_timer.isActive()
     assert "清理会话" in window.console.toPlainText()
+
+
+def attach_test_backend(window, tmp_path):
+    """为 GUI 安装真实 Qt 子进程，替代模型后端而保留控制生命周期。"""
+    from src.omni.backend_control import BackendController
+    script = tmp_path / 'gui_launcher.py'
+    script.write_text("import json,signal,sys,time\n"
+        "def stop(signum,frame):\n    time.sleep(.15)\n    raise SystemExit(0)\n"
+        "signal.signal(signal.SIGTERM,stop)\n"
+        "print(json.dumps({'event':'jac.backend','state':'ready'}),flush=True)\n"
+        "while True:\n    time.sleep(.1)\n", encoding='utf-8')
+    window.backend.close()
+    window.backend = BackendController(window, auto_probe=False, launcher=script)
+    window.backend.changed.connect(window._on_backend_change)
+    window.backend.log.connect(window._backend_log)
+    window.backend_profile = {key: str(tmp_path) for key in ('demo_dir', 'engine_dir', 'model_dir')}
+    return window.backend
+
+
+def test_gui_backend_button_starts_and_stops_real_subprocess(window, tmp_path):
+    """后端按钮真正启动和回收进程，文字随机器状态改变。"""
+    backend = attach_test_backend(window, tmp_path)
+    window._toggle_backend()
+    wait_gui(lambda: backend.state == 'ready')
+    assert window.backend_btn.text() == '停止后端' and backend.owned
+    window._toggle_backend()
+    wait_gui(lambda: backend.state == 'stopped' and not backend.owned)
+    assert window.backend_btn.text() == '启动后端'
+
+
+def test_stopping_backend_waits_for_media_session_cleanup(window, tmp_path, monkeypatch):
+    """媒体尚未退出时保持后端存活，清理成功后才终止三进程启动器。"""
+    backend = attach_test_backend(window, tmp_path)
+    window._toggle_backend()
+    wait_gui(lambda: backend.state == 'ready')
+    release = threading.Event()
+    original = window.runtime.stop
+
+    def slow_media_stop():
+        """模拟真实 Gateway 关闭握手尚在等待。"""
+        assert release.wait(3)
+        original()
+
+    monkeypatch.setattr(window.runtime, 'stop', slow_media_stop)
+    window.runtime.start()
+    QTest.qWait(40)
+    try:
+        window._toggle_backend()
+        QTest.qWait(40)
+        assert window._stopping and backend.state == 'ready' and backend.owned
+    finally:
+        release.set()
+        wait_gui(lambda: not window._stopping and not backend.owned)
+    assert backend.state == 'stopped' and not window.runtime.running
+
+
+def test_close_window_waits_for_owned_backend_process(window, tmp_path):
+    """关闭 GUI 后等启动器完成温和回收，不能直接退出遗留模型进程。"""
+    backend = attach_test_backend(window, tmp_path)
+    window.show()
+    window._toggle_backend()
+    wait_gui(lambda: backend.state == 'ready')
+    window.close()
+    assert window.isVisible() and backend.owned
+    wait_gui(lambda: not backend.owned and not window.isVisible())
+
+
+def test_voice_start_requires_ready_backend_without_opening_devices(window, monkeypatch):
+    """后端未就绪时不发起客户端启动或首次摄像头权限请求。"""
+    window.backend.state = 'stopped'
+    window.gateway_consent_chk.setChecked(True)
+    def forbidden(*args):
+        """没有后端时任何设备权限调用都是错误。"""
+        pytest.fail('后端未就绪时访问了设备')
+    import src.omni.media as media
+    monkeypatch.setattr(media, 'request_camera_permission', forbidden)
+    window._toggle_run()
+    assert not window.runtime.running and window.runtime.starts == 0
+    assert '先启动后端' in window.console.toPlainText()

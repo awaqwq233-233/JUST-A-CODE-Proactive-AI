@@ -1,4 +1,4 @@
-"""Gateway 专用语音工作台；Qt 绘制通透玻璃风格，保留异步启停。"""
+"""Gateway 语音工作台；深蓝渐变科技风格，异步管理客户端与固定后端。"""
 import logging
 import queue
 import sys
@@ -13,92 +13,104 @@ from PySide6.QtGui import (QColor, QFont, QImage, QPixmap, QPainter, QPainterPat
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout,
     QVBoxLayout, QLabel, QPlainTextEdit, QPushButton, QFrame, QComboBox,
     QSizePolicy, QCheckBox, QProgressBar, QDoubleSpinBox, QSpinBox,
-    QScrollArea, QLineEdit, QFileDialog, QSplitter)
+    QScrollArea, QLineEdit, QFileDialog, QSplitter, QDialog, QDialogButtonBox)
 
 from src.utils.config import Config
 from src.omni.desktop_runtime import DesktopRuntime
+from src.omni.backend_control import BackendController, load_profile, save_profile
 from src.utils.context import SharedContext
 
-GLASS_QSS = """
-QWidget { color: #25314b; font-size: 13px; background: transparent; }
+TECH_QSS = """
+QWidget { color: #e0ecff; font-size: 13px; background: transparent; }
 QLabel { border: none; }
-QLabel#brand { font-size: 25px; font-weight: 700; letter-spacing: 2px; }
-QLabel#subtitle, QLabel#hint { color: #6c7892; font-size: 12px; }
-QLabel#sectionTitle { font-size: 16px; font-weight: 600; }
-QLabel#eyebrow { color: #79859e; font-size: 11px; letter-spacing: 2px; }
+QLabel#brand { font-size: 25px; font-weight: 700; letter-spacing: 3px; color: #f1f7ff; }
+QLabel#subtitle, QLabel#hint { color: #92adc9; font-size: 12px; }
+QLabel#sectionTitle { font-size: 16px; font-weight: 600; color: #dceeff; }
+QLabel#eyebrow { color: #50c6e4; font-size: 11px; letter-spacing: 2px; }
 QLabel#logo { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
-    stop:0 #677ff2, stop:1 #a086df); color: white; border-radius: 17px; font-size: 22px; }
-QLabel#statePill { border: 1px solid rgba(255,255,255,220); border-radius: 17px;
-    background: rgba(255,255,255,155); padding: 8px 16px; color: #63708a; }
-QLabel#statePill[active="true"] { color: #137e68; background: rgba(218,248,237,200); }
-QPushButton { border: 1px solid rgba(255,255,255,230); border-radius: 15px;
-    background: rgba(255,255,255,135); padding: 9px 16px; }
-QPushButton:hover { background: rgba(255,255,255,225); border-color: #b9c8f9; }
-QPushButton:pressed { background: #dce4fb; }
-QPushButton:disabled { color: #a5adc0; background: rgba(255,255,255,65); }
-QPushButton#primary { background: #647be4; color: white; border-color: #758bec;
-    font-weight: 600; padding: 10px 28px; }
-QPushButton#primary:hover { background: #526bd7; }
-QPushButton#primary:disabled { background: #a9b5e7; border-color: #a9b5e7; }
-QPushButton#quiet { padding: 5px 10px; border-radius: 11px; font-size: 12px; }
-QPlainTextEdit { border: none; background: transparent; padding: 4px; selection-background-color: #cad6fb; }
+    stop:0 #0b7197, stop:1 #224582); color: #8be8ff; border: 1px solid #2aa4c8;
+    border-radius: 14px; font-size: 22px; }
+QLabel#statePill { border: 1px solid #264d73; border-radius: 17px;
+    background: rgba(9,29,53,200); padding: 8px 16px; color: #8da9c5; }
+QLabel#statePill[active="true"] { color: #6df2d6; background: rgba(11,69,72,180); border-color: #218b87; }
+QPushButton { border: 1px solid #2b527a; border-radius: 12px;
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 #183e66,stop:1 #102a4a); padding: 9px 16px; }
+QPushButton:hover { background: #20517b; border-color: #48bdda; }
+QPushButton:pressed { background: #113958; }
+QPushButton:disabled { color: #576f89; border-color: #213951; background: #11233a; }
+QPushButton#primary { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,
+    stop:0 #148eac,stop:1 #2464b6); color: #f5ffff; border-color: #3bb2da;
+    font-weight: 600; padding: 10px 24px; }
+QPushButton#primary:hover { background: #178eaf; border-color: #8cecff; }
+QPushButton#primary:disabled { background: #22496a; border-color: #315472; color: #8ba7bc; }
+QPushButton#backend { color: #a7e5ff; border-color: #3178a4; }
+QPushButton#quiet { padding: 5px 10px; border-radius: 9px; font-size: 12px; }
+QPlainTextEdit { border: none; background: transparent; padding: 4px; selection-background-color: #245982; }
 QPlainTextEdit#console { font-size: 15px; }
-QPlainTextEdit#diagnostics { background: rgba(243,246,253,165); border-radius: 14px; font-size: 11px; padding: 10px; }
-QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { background: rgba(255,255,255,175);
-    border: 1px solid rgba(195,207,230,160); border-radius: 10px; padding: 7px; min-height: 20px; }
-QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QLineEdit:disabled { color: #99a3b7; background: rgba(255,255,255,75); }
+QPlainTextEdit#diagnostics { background: #071a2e; border: 1px solid #1a3d5d;
+    border-radius: 12px; font-size: 11px; padding: 10px; color: #8dbcd3; }
+QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit { background: #0a203a;
+    border: 1px solid #284b6d; border-radius: 9px; padding: 7px; min-height: 20px; }
+QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus { border-color: #37b5d5; }
+QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QLineEdit:disabled { color: #57728e; background: #102338; }
 QComboBox::drop-down { border: none; width: 24px; }
-QComboBox QAbstractItemView { background: #f3f6fd; color: #25314b; selection-background-color: #dce5ff; }
+QComboBox QAbstractItemView { background: #102a45; color: #e0ecff; selection-background-color: #205276; }
 QCheckBox { spacing: 9px; padding: 4px 0; }
-QCheckBox::indicator { width: 17px; height: 17px; border-radius: 6px;
-    border: 1px solid #b9c6de; background: rgba(255,255,255,195); }
-QCheckBox::indicator:checked { background: #647be4; border-color: #647be4; }
-QCheckBox:disabled { color: #99a3b7; }
-QProgressBar { border: none; border-radius: 4px; background: rgba(170,186,211,70); min-height: 8px; max-height: 8px; }
-QProgressBar::chunk { border-radius: 4px; background: #7396d8; }
+QCheckBox::indicator { width: 17px; height: 17px; border-radius: 5px;
+    border: 1px solid #3b6384; background: #102b44; }
+QCheckBox::indicator:checked { background: #23a8c8; border-color: #73d9eb; }
+QCheckBox:disabled { color: #57728e; }
+QProgressBar { border: none; border-radius: 4px; background: #193853; min-height: 8px; max-height: 8px; }
+QProgressBar::chunk { border-radius: 4px; background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #227dbc,stop:1 #5fe0db); }
 QScrollArea { border: none; background: transparent; }
 QScrollBar:vertical { background: transparent; width: 6px; margin: 0; }
-QScrollBar::handle:vertical { background: rgba(132,151,186,100); border-radius: 3px; min-height: 32px; }
+QScrollBar::handle:vertical { background: #2d5371; border-radius: 3px; min-height: 32px; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
 QSplitter::handle { background: transparent; width: 12px; }
-QLabel#separator { background: rgba(154,173,209,45); min-height: 1px; max-height: 1px; }
+QLabel#separator { background: #203f5c; min-height: 1px; max-height: 1px; }
+QDialog { background: #0c223b; }
 """
 
 
-class AuroraBackground(QWidget):
-    """低成本绘制静态柔光背景，避免实时模糊影响音视频性能。"""
+class TechBackground(QWidget):
+    """静态深海蓝渐变与细网格背景，不增加实时媒体工作。"""
 
     def paintEvent(self, event):
-        """用径向渐变营造玻璃背后的淡蓝、紫色和暖色光。"""
+        """绘制深蓝渐变、青色柔光与低对比科技网格。"""
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#edf2fa"))
-        for x, y, radius, color in ((0.12, 0.12, .7, "#cddcff"),
-                                   (.72, .14, .65, "#e6ddfa"),
-                                   (.4, .95, .6, "#d4e9ef"),
-                                   (1., .9, .45, "#f8e3df")):
+        painter.fillRect(self.rect(), QColor("#061224"))
+        for x, y, radius, color in ((0.12, 0.12, .7, "#0d365a"),
+                                   (.72, .14, .65, "#152d5e"),
+                                   (.4, .95, .6, "#072f43"),
+                                   (1., .9, .45, "#0a2140")):
             gradient = QRadialGradient(self.width()*x, self.height()*y, self.width()*radius)
             gradient.setColorAt(0, QColor(color))
             transparent = QColor(color)
             transparent.setAlpha(0)
             gradient.setColorAt(1, transparent)
             painter.fillRect(self.rect(), gradient)
+        painter.setPen(QPen(QColor(75, 157, 206, 12), 1))
+        for x in range(0, self.width(), 48):
+            painter.drawLine(x, 0, x, self.height())
+        for y in range(0, self.height(), 48):
+            painter.drawLine(0, y, self.width(), y)
 
 
-class GlassPanel(QFrame):
-    """自绘半透明渐变和高光边缘；跨平台保持同一可读性。"""
+class TechPanel(QFrame):
+    """深蓝面板与青色边缘高光；跨平台保持相同布局。"""
 
     def paintEvent(self, event):
-        """玻璃表面不复制或模糊视频，降低持续采集时的绘制开销。"""
+        """面板绘制静态渐变，不复制或模糊视频内容。"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        gradient.setColorAt(0, QColor(255, 255, 255, 185))
-        gradient.setColorAt(.55, QColor(255, 255, 255, 105))
-        gradient.setColorAt(1, QColor(248, 250, 255, 150))
+        gradient.setColorAt(0, QColor(20, 48, 80, 235))
+        gradient.setColorAt(.55, QColor(11, 32, 58, 225))
+        gradient.setColorAt(1, QColor(11, 28, 51, 242))
         painter.setBrush(gradient)
-        painter.setPen(QPen(QColor(255, 255, 255, 220), 1.2))
+        painter.setPen(QPen(QColor(64, 132, 176, 130), 1.2))
         painter.drawRoundedRect(rect, 24, 24)
 
 
@@ -112,12 +124,12 @@ class RoundedVideoLabel(QLabel):
         path = QPainterPath()
         path.addRoundedRect(QRectF(self.rect()), 18, 18)
         painter.setClipPath(path)
-        painter.fillRect(self.rect(), QColor("#e1e8f5"))
+        painter.fillRect(self.rect(), QColor("#0a1e34"))
         pix = self.pixmap()
         if pix is not None and not pix.isNull():
             painter.drawPixmap(self.rect(), pix)
         else:
-            painter.setPen(QColor("#7888a6"))
+            painter.setPen(QColor("#6789a8"))
             painter.drawText(self.rect(), Qt.AlignCenter, self.text() or "摄像头已暂停")
 
 
@@ -202,7 +214,7 @@ class MainWindow(QMainWindow):
     _reply_finished = Signal()
 
     def __init__(self, config):
-        """建立仅 Gateway 的工作台，初始化不打开摄像头或麦克风。"""
+        """建立 Gateway 工作台，初始化仅探测本机后端，不打开用户设备。"""
         super().__init__()
         self.config, self.context = config, SharedContext()
         self._runtime_state_changed.connect(self._apply_runtime_state, Qt.QueuedConnection)
@@ -217,14 +229,19 @@ class MainWindow(QMainWindow):
         self._stop_requested = self._stopping = self._close_after_stop = False
         self._stop_error, self._start_thread = "", None
         self._reply_open = False
+        self._stop_backend_after_client = False
+        self.backend_profile = load_profile()
         self._controls = []
         self.setWindowTitle("J.A.C. · 本地语音工作台")
         self.resize(1440, 880)
         self.setMinimumSize(1100, 700)
-        self.setStyleSheet(GLASS_QSS)
+        self.setStyleSheet(TECH_QSS)
         self._build_ui()
         self._setup_timers()
         self._redirect_logging()
+        self.backend = BackendController(self)
+        self.backend.changed.connect(self._on_backend_change)
+        self.backend.log.connect(self._backend_log)
         self._update_status()
 
     def _label(self, text, name="", wrap=False):
@@ -235,7 +252,7 @@ class MainWindow(QMainWindow):
         return label
 
     def _panel_layout(self, panel, margin=20):
-        """设置玻璃面板留白和控件间距。"""
+        """设置科技面板留白和控件间距。"""
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(margin, margin, margin, margin)
         layout.setSpacing(14)
@@ -243,7 +260,7 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self):
         """布局为原比例相机、完整对话记录和可折叠调试设置。"""
-        central = AuroraBackground()
+        central = TechBackground()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
         root.setContentsMargins(24, 22, 24, 24)
@@ -261,8 +278,13 @@ class MainWindow(QMainWindow):
         header.addStretch()
         self.state_pill = self._label("● 已停止", "statePill")
         header.addWidget(self.state_pill)
-        self.start_btn = QPushButton("启动")
+        self.backend_btn = QPushButton("启动后端")
+        self.backend_btn.setObjectName("backend")
+        self.backend_btn.clicked.connect(self._toggle_backend)
+        header.addWidget(self.backend_btn)
+        self.start_btn = QPushButton("启动语音")
         self.start_btn.setObjectName("primary")
+        self.start_btn.setToolTip("开启已同意的摄像头、麦克风和语音播放")
         self.start_btn.clicked.connect(self._toggle_run)
         header.addWidget(self.start_btn)
         self.settings_btn = QPushButton("调节参数")
@@ -281,7 +303,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(16)
-        camera_panel = GlassPanel()
+        camera_panel = TechPanel()
         camera_layout = self._panel_layout(camera_panel)
         title = QHBoxLayout()
         title.addWidget(self._label("实时画面", "sectionTitle"))
@@ -296,7 +318,7 @@ class MainWindow(QMainWindow):
         camera_layout.addWidget(self.camera_hint)
         left_layout.addWidget(camera_panel, 1)
 
-        activity_panel = GlassPanel()
+        activity_panel = TechPanel()
         activity = self._panel_layout(activity_panel)
         activity.addWidget(self._label("VOICE / LOCAL", "eyebrow"))
         self.activity_label = self._label("从一句话开始", "sectionTitle")
@@ -316,7 +338,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(activity_panel)
         self.content_splitter.addWidget(left)
 
-        conversation_panel = GlassPanel()
+        conversation_panel = TechPanel()
         conversation = self._panel_layout(conversation_panel)
         title = QHBoxLayout()
         title.addWidget(self._label("对话记录", "sectionTitle"))
@@ -349,7 +371,7 @@ class MainWindow(QMainWindow):
         self.content_splitter.setStretchFactor(0, 5)
         self.content_splitter.setStretchFactor(1, 4)
 
-        self.option_panel = GlassPanel()
+        self.option_panel = TechPanel()
         self.option_panel.setFixedWidth(300)
         options = self._panel_layout(self.option_panel, 18)
         options.addWidget(self._label("调节参数", "sectionTitle"))
@@ -450,8 +472,105 @@ class MainWindow(QMainWindow):
         self.voice_btn.clicked.connect(self._choose_voice)
         self._controls.append(self.voice_btn)
         advanced.addWidget(self.voice_btn)
-        op.addWidget(self._label("后端请提前启动。Qwen 工具升级待接入。", "hint", True))
+        self.backend_config_btn = QPushButton("后端路径设置")
+        self.backend_config_btn.setObjectName("quiet")
+        self.backend_config_btn.clicked.connect(self._edit_backend_profile)
+        advanced.addWidget(self.backend_config_btn)
+        op.addWidget(self._label("先启动后端，再启动语音。", "hint", True))
         op.addStretch()
+
+    def _backend_log(self, text):
+        """在连接日志中显示后端启动信息，并保留独立的对话区域。"""
+        self._insert_text(self.diagnostics, text)
+
+    def _on_backend_change(self, state, detail):
+        """同步后端按钮；后端异常退出时先关闭正在运行的媒体会话。"""
+        labels = {'starting': '取消后端启动', 'ready': '停止后端',
+                  'stopping': '后端停止中…', 'external': '外部后端已就绪'}
+        label = labels.get(state, '重试停止后端' if self.backend.owned else '启动后端')
+        self.backend_btn.setText(label)
+        self.backend_btn.setEnabled(state not in {'stopping', 'external'})
+        self.backend_btn.setToolTip(detail)
+        self.backend_config_btn.setEnabled(not self.backend.owned and not self.runtime.running)
+        if state == 'error':
+            self.console.appendPlainText(detail)
+            self.diagnostics_btn.setChecked(True)
+            if not self.backend.owned and self.runtime.running:
+                self._safe_stop_runtime()
+        if (self._close_after_stop and not self.backend.owned and not self._stopping
+                and not self.runtime.running and self.runtime.omni_client is None):
+            self.close()
+        self._update_status()
+
+    def _toggle_backend(self):
+        """启动或停止本窗口拥有的后端，停止先完成媒体会话清理。"""
+        if self.backend.owned:
+            starter = self._start_thread and self._start_thread.is_alive()
+            if self.runtime.running or self.runtime.omni_client is not None or starter or self._stopping:
+                self._stop_backend_after_client = True
+                self._safe_stop_runtime()
+            else:
+                self.backend.stop()
+            return
+        if self.backend.state == 'external':
+            return
+        if not all(self.backend_profile.get(key) for key in ('demo_dir', 'engine_dir', 'model_dir')):
+            if not self._edit_backend_profile():
+                return
+        try:
+            self.diagnostics_btn.setChecked(True)
+            self.backend.start(self.backend_profile)
+        except (ValueError, RuntimeError) as error:
+            self.console.appendPlainText(str(error))
+
+    def _edit_backend_profile(self):
+        """用目录选择器设置本机固定后端路径，不在公开仓库保存机器路径。"""
+        if self.backend.owned:
+            return False
+        dialog = QDialog(self)
+        dialog.setWindowTitle('后端路径设置')
+        dialog.resize(700, 370)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+        layout.addWidget(self._label('选择固定版本后端与仓库外模型目录', 'sectionTitle'))
+        fields = {}
+        for key, title in (('demo_dir', 'MiniCPM-o-Demo 目录'),
+                           ('engine_dir', 'llama.cpp-omni 引擎目录'), ('model_dir', 'GGUF 模型目录')):
+            layout.addWidget(self._label(title, 'hint'))
+            row = QHBoxLayout()
+            edit = QLineEdit(str(self.backend_profile.get(key, '')))
+            fields[key] = edit
+            row.addWidget(edit, 1)
+            button = QPushButton('选择目录')
+            button.clicked.connect(lambda checked=False, field=edit: self._choose_backend_directory(field))
+            row.addWidget(button)
+            layout.addLayout(row)
+        verify = QCheckBox('启动时校验模型 SHA256')
+        verify.setChecked(self.backend_profile.get('verify_sha', True))
+        layout.addWidget(verify)
+        layout.addWidget(self._label('启动器会检查固定版本、完整模型和端口占用。', 'hint'))
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return False
+        profile = {key: edit.text().strip() for key, edit in fields.items()}
+        profile['verify_sha'] = verify.isChecked()
+        try:
+            save_profile(profile)
+        except OSError as error:
+            self.console.appendPlainText(f'保存后端设置失败：{error}')
+            return False
+        self.backend_profile = profile
+        return True
+
+    def _choose_backend_directory(self, field):
+        """使用本地目录选择器填写一项路径。"""
+        path = QFileDialog.getExistingDirectory(self, '选择后端目录', field.text())
+        if path:
+            field.setText(path)
 
     def _choose_voice(self):
         """选择本地参考 WAV，只有启动后才发送至本机 Gateway。"""
@@ -573,7 +692,15 @@ class MainWindow(QMainWindow):
             if state == "ready" and self.context.is_speaking:
                 text = "正在回应"
         else:
-            text = "连接异常" if state == "error" else "已停止"
+            text = "连接异常" if state == "error" else "语音已停止"
+            backend = getattr(self, 'backend', None)
+            if backend and backend.state == 'starting':
+                text = '后端启动中'
+            elif backend and backend.state == 'stopping':
+                text = '后端停止中'
+            elif backend and backend.state in {'ready', 'external'}:
+                text = '后端就绪'
+
         self.state_pill.setText("● " + text)
         active = self.runtime.running and state == "ready" and not self._stopping
         if self.state_pill.property("active") != active:
@@ -606,6 +733,9 @@ class MainWindow(QMainWindow):
             return
         if self.runtime.running:
             self._safe_stop_runtime()
+            return
+        if self.backend.state not in {'ready', 'external'}:
+            self.console.appendPlainText('请先启动后端，并等待就绪后再启动语音。')
             return
         config = self._collect_config()
         if not config.gateway_consent_devices:
@@ -698,6 +828,11 @@ class MainWindow(QMainWindow):
             self.start_btn.setEnabled(True)
             return
         self._apply_runtime_state(False)
+        if self._stop_backend_after_client:
+            self._stop_backend_after_client = False
+            self.backend.stop()
+            if self.backend.owned:
+                return
         if self._close_after_stop:
             self.close()
 
@@ -727,7 +862,7 @@ class MainWindow(QMainWindow):
             self.video_label.clear()
         if not running:
             self._end_reply()
-        self.start_btn.setText("停止" if running else "启动")
+        self.start_btn.setText("停止语音" if running else "启动语音")
         self.start_btn.setEnabled(True)  # 运行/停止两种状态都必须可点击
         self._set_options_enabled(not running)
 
@@ -741,6 +876,8 @@ class MainWindow(QMainWindow):
         """锁定所有会影响下一会话的控件，避免呈现无效的实时调节。"""
         for control in self._controls:
             control.setEnabled(enabled)
+        if hasattr(self, 'backend'):
+            self.backend_config_btn.setEnabled(enabled and not self.backend.owned)
 
     def _collect_config(self):
         """收集真实生效的 Gateway 参数，保留未在界面暴露的配置。"""
@@ -766,6 +903,13 @@ class MainWindow(QMainWindow):
             event.ignore()
             self._safe_stop_runtime()
             return
+        if self.backend.owned:
+            self._close_after_stop = True
+            event.ignore()
+            if self.backend.state != 'stopping':
+                self.backend.stop()
+            return
+        self.backend.close()
         for timer in (self.frame_timer, self.status_timer, self.log_timer):
             timer.stop()
         self.video_label.clear()
@@ -779,7 +923,7 @@ class MainWindow(QMainWindow):
 
 
 def run_gui(config):
-    """采用系统中文字体和高 DPI，启动玻璃风格 Gateway 工作台。"""
+    """采用系统中文字体和高 DPI，启动科技风格 Gateway 工作台。"""
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")

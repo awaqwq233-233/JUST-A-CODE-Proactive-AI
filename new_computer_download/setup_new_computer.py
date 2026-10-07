@@ -538,7 +538,8 @@ def step_m0(args):
         return False
     verification = run_cmd(
         [m0_python, "-c", "import sys; from src.omni import GatewayClient; "
-         "from PySide6.QtWidgets import QApplication; import gui, main; import httpx, fastapi, uvicorn; "
+         "from PySide6.QtWidgets import QApplication; import gui, main; "
+         "from src.omni.backend_control import BackendController; import httpx, fastapi, uvicorn; "
          "assert 'torch' not in sys.modules and 'pyaudio' not in sys.modules; "
          "assert 'src.omni.client' not in sys.modules and 'src.judgment.judge' not in sys.modules; "
          "print('Gateway client, GUI and backend dependencies verified')"],

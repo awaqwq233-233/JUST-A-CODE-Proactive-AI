@@ -82,7 +82,7 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 ### 七、GUI
 
-配置 **Gateway 专用语音 GUI**：Qt 绘制的浅色通透玻璃风格（非 AppKit 原生 Liquid Glass），原比例无黑边摄像头、连续回复文本、折叠连接日志、顶部单状态提示。无文字输入/发送、显示分辨率/缩放或旧模型开关。右侧仅显示已支持的 Gateway 设备/增益/采集帧率/会话/连接/音色参数；启动前调整、运行中锁定。
+配置 **Gateway 专用语音 GUI**：Qt 绘制的深蓝渐变科技风格（青色高光与细网格），原比例无黑边摄像头、连续回复文本、折叠连接日志、顶部单状态提示。无文字输入/发送、显示分辨率/缩放或旧模型开关。右侧仅显示已支持的 Gateway 设备/增益/采集帧率/会话/连接/音色参数；启动前调整、运行中锁定。顶部提供「启动后端」与「启动语音」，后端路径通过图形目录选择器保存到忽略的 `.cache/gui/backend.json`；仅回收本窗口拥有的后端，不接管外部服务。
 
 ### 八、DLC（未来可选）
 
@@ -133,7 +133,8 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 > **M0 已通过且 30 分钟长测免测；M1 基础听看说、GUI 和手动启停已由 bo s s 真机验收。** 下一步接入 Qwen 大脑升级与工具闭环；旧 MiniCPM 及传统运行入口已删除，云端和记忆尚未迁移。
 
-- **M1 Gateway 入口**：`main.py --gateway`（终端）、`main.py --gateway --gui`（GUI），使用 Python 3.11 独立环境；后端须先由固定版本启动器启动，客户端不接管现有后端进程。GUI 仅使用 Gateway，不依赖旧 torch/PyAudio/Voicebox/YOLO。`omni_backend` 只接受 `gateway`；`legacy` 会明确报错。`main.py --gui` 与 `python -m src.omni --gui` 同样进入 Gateway，`--gateway` 保留兼容。
+- **M1 Gateway 入口**：`main.py --gateway`（终端）、`main.py --gateway --gui`（GUI），使用 Python 3.11 独立环境；GUI 可异步调用固定启动器启动/回收自己拥有的后端；外部已运行服务只探测与复用，不接管。收到启动器就绪事件后才开放语音，停止后端/关闭窗口先等待音视频会话清理，再回收所属后端。GUI 仅使用 Gateway，不依赖旧 torch/PyAudio/Voicebox/YOLO。`omni_backend` 只接受 `gateway`；`legacy` 会明确报错。`main.py --gui` 与 `python -m src.omni --gui` 同样进入 Gateway，`--gateway` 保留兼容。
+- **GUI 后端控制**：`src/omni/backend_control.py` 使用 QProcess 与启动器 `--events-json` 事件管理固定三进程，健康检查在后台且只访问本机；启动/停止/取消/异常均反馈至 GUI，窗口退出等待清理。设置不改变固定版本、端口、模型清单和构建参数。
 - **M0 文件**：`backend.lock.json`、`verify_duplex.py`、`new_computer_download/start_m0_backend.py`、`new_computer_download/requirements-m0.txt`。后端源码、模型和测试运行产物不提交到 Git。
 - **M0 已通过（用户验收）**：文件协议、40 秒真机、10 次启停和后续两段各 225 秒通过；累计上行 450 秒、P95 679/891ms、原生音频收播合计 176.2 秒，异常为零。bo s s 明确认可短测效果并免做 30 分钟长测，不再以该项阻塞迁移；原始报告保留 `soak_30min_verified=false`，不伪造未执行的测量。
 - **M1 会话重建**：默认每 240 秒上行后受控关闭、释放设备和重连；重新注入参考音、已确认上下文、有界助手历史。段间采集暂停并显示状态；未转写的用户语音不能完整恢复，不声称无缝或无限单会话。启动保护通过 `force_listen` 保留真实音频，不把用户输入换成静音。
@@ -159,7 +160,7 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 - `src/tools/`：Function Calling 工具层（装手）——新架构中归属大脑层 `qwen/qwen3.6-35b-a3b` 的 Tool Use / Agentic Coding。
 - `src/judgment/` 与 `src/runtime.py`：已删除，旧 MiniCPM 判断轮询与传统运行编排不再启动。
 - `src/memory/`：旧架构记忆子系统（fastembed + 自研 MemoryStore）——**新架构改 ChromaDB + BGE-Small-ZH-v1.5，此目录待重写**。
-- `src/omni/`：Gateway 客户端/协议/设备/桌面运行时；旧 `client.py` / `server_launcher.py` / Voicebox 桥接 / 回灌 / 令牌过滤已删除。保留未接入的 Qwen 路由草案，不宣称升级可用。
+- `src/omni/`：Gateway 客户端/协议/设备/桌面运行时和 GUI 后端控制器；旧 `client.py` / `server_launcher.py` / Voicebox 桥接 / 回灌 / 令牌过滤已删除。保留未接入的 Qwen 路由草案，不宣称升级可用。
 - `voices/silverwalf_voice.wav`：方案 B 原生音色参考 WAV，启动会话时编码发送给本机 Gateway。
 - `backend.lock.json`：后端与模型精确版本、SHA256、端口及协议配置。
 - `verify_duplex.py`：独立 M0 协议/媒体文件探针，不调用生产运行时，也不打开麦克风或摄像头。
@@ -194,7 +195,7 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 ## 设置与运行
 
-完整步骤见 **`new_computer_download/READMEfirst.md`**。安装器默认 `gateway`（兼容 `--only gateway` / `--only m0`）建立 `.cache/m0/venv` Python 3.11，安装 `requirements-m0.txt`（已含 Qt GUI）并执行导入自检，保留现有 `.venv`。先用 `start_m0_backend.py` 启动后端，再运行 `main.py --gateway --gui` 或经设备同意的终端入口。不带 `--gateway` 同样进入 Gateway；所有旧 MiniCPM 入口已移除。
+完整步骤见 **`new_computer_download/READMEfirst.md`**。安装器默认 `gateway`（兼容 `--only gateway` / `--only m0`）建立 `.cache/m0/venv` Python 3.11，安装 `requirements-m0.txt`（已含 Qt GUI）并执行导入自检，保留现有 `.venv`。运行 `main.py --gateway --gui` 后可点「启动后端」，再启动语音；独立后端与经设备同意的终端入口仍支持。不带 `--gateway` 同样进入 Gateway；所有旧 MiniCPM 入口已移除。
 
 VS Code 本机调试配置为忽略的 `.vscode/launch.json`「J.A.C. · Gateway GUI」，显式指定 `.cache/m0/venv/bin/python`、`--gateway --gui` 和项目工作目录。新工作区须选择项目解释器，已缓存系统解释器时手动切换；编辑器直接运行文件不会应用 F5 配置参数。`.vscode/` 不提交，安装步骤见 READMEfirst 第 10 节。
 

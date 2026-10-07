@@ -18,7 +18,7 @@ The file probe proves protocol and native-audio transport only. The pinned Gatew
 
 The 40-second live run, ten rapid lifecycle cycles and two 225-second live sessions passed. The user confirmed satisfactory interaction and accepted M0 without the remaining soak. Original reports retain `soak_30min_verified=false` because that duration was not measured; it no longer blocks migration.
 
-After starting the pinned backend, run `main.py --gateway --gui` in the Python 3.11 environment. Explicit device consent and headphones are required before capture starts. `main.py --gateway --consent-devices` runs the console client. The Gateway GUI imports no torch/PyAudio/Whisper/YOLO. All runtime entries use Gateway; --gateway remains a compatible optional flag.
+Run `main.py --gateway --gui`, click Start Backend and wait for readiness, then start voice. Alternatively, start the pinned backend separately and run `main.py --gateway --gui` in the Python 3.11 environment. Explicit device consent and headphones are required before capture starts. `main.py --gateway --consent-devices` runs the console client. The Gateway GUI imports no torch/PyAudio/Whisper/YOLO. All runtime entries use Gateway; --gateway remains a compatible optional flag.
 
 `verify_soak_duplex.py --consent-devices` measures 1,800 input seconds across eight 225-second video sessions while keeping the same backend running. It samples local health endpoints and process RSS, and saves aggregate/per-session counts even on failure. Devices restart between sessions; cross-session context restoration is not tested.
 
@@ -204,13 +204,13 @@ M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo 
 
 ### 9 M1 生产入口
 
-固定版本后端启动后，在独立 Python 3.11 环境打开轻量 Gateway GUI：
+在独立 Python 3.11 环境打开 Gateway GUI，可直接在界面中启动后端：
 
 ```bash
 .cache/m0/venv/bin/python main.py --gateway --gui
 ```
 
-界面为 Qt 绘制的浅色玻璃风格，摄像头保持真实比例且无黑边，对话区连续显示回复，顶部单个状态提示，连接日志单独折叠。勾选设备同意并戴好耳机后点击启动。右侧仅保留有效 Gateway 参数：设备、相机编号、麦克风增益、5–10fps 采集、5–240 秒会话轮换、重连次数、本机 Gateway 与参考 WAV，启动前调整、运行中锁定。分辨率固定 640×480、每秒上行最新 1 帧。旧 MiniCPM 与传统入口已删除；`main.py --gui` / `python -m src.omni --gui` 同样可用。
+界面为 Qt 绘制的深蓝渐变科技风格，摄像头保持真实比例且无黑边，对话区连续显示回复，顶部单个状态提示，连接日志单独折叠。点击顶部「启动后端」，等待后端就绪，再勾选设备同意、戴好耳机并点「启动语音」。首次需要通过高级区「后端路径设置」选择固定 Demo、已编译引擎和仓库外模型目录，可启用模型 SHA256 校验；本机已有有效路径已保存到忽略的 `.cache/gui/backend.json`，新机器需自己选择，也可设置 `JAC_DEMO_DIR` / `JAC_ENGINE_DIR` / `JAC_MODEL_DIR`。启动期间可取消，停止后端会先结束音视频会话再回收所属三进程，退出窗口同样等待。外部已运行后端显示为「外部后端已就绪」，可直接启动语音，GUI 不会停止该服务。右侧仅保留有效 Gateway 参数：设备、相机编号、麦克风增益、5–10fps 采集、5–240 秒会话轮换、重连次数、本机 Gateway 与参考 WAV，启动前调整、运行中锁定。分辨率固定 640×480、每秒上行最新 1 帧。旧 MiniCPM 与传统入口已删除；`main.py --gui` / `python -m src.omni --gui` 同样可用。
 
 如果仅需终端中的语音交流：
 
@@ -226,7 +226,7 @@ M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo 
 
 打开 J.A.C. 项目文件夹。按 `Cmd+Shift+P` → `Python: Select Interpreter` → `Enter interpreter path`，选择项目内 `.cache/m0/venv/bin/python`，不要选择系统 `/opt/homebrew/bin/python3.11` 或旧 `.venv`。已选择过解释器的工作区需要手动切换一次，单改 `python.defaultInterpreterPath` 不会替换已缓存的选择。
 
-本机已在忽略的 `.vscode/launch.json` 配置「J.A.C. · Gateway GUI」：明确指定项目解释器、`main.py`、`--gateway --gui`、工作目录与集成终端。在「运行和调试」中选择该配置，按 F5 启动；GUI 内勾选设备同意并戴好耳机后开始采集。固定后端仍需提前启动。
+本机已在忽略的 `.vscode/launch.json` 配置「J.A.C. · Gateway GUI」：明确指定项目解释器、`main.py`、`--gateway --gui`、工作目录与集成终端。在「运行和调试」中选择该配置，按 F5 启动；GUI 内勾选设备同意并戴好耳机后开始采集。固定后端可通过 GUI 的「启动后端」按钮启动，也可独立运行。
 
 新机器的 `.vscode/` 不随 Git 分发，可按上述解释器选择后使用第 9 节的 GUI 命令；如自行创建调试配置，类型用 `debugpy`，显式设置 `python` 为项目环境并添加 `--gui`。编辑器右上角「运行 Python 文件」不会自动使用 launch.json 的参数，直接运行不带 `--gui` 的 main.py 会进入终端模式。系统 Python 报缺少 numpy 时，先切换解释器，无需在系统环境重复安装依赖。
 
@@ -237,4 +237,4 @@ M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo 
 - queue_done 超时：检查 Worker 已注册、三个健康接口正常，以及 output/m0 下的日志。
 - 无 audio 增量：原生 TTS 验收尚未通过，检查全部 Token2Wav / TTS 模块和参考音。
 - 中文字体异常：DOCX 使用显式东亚字体；如 Windows 缺少字体，安装对应字体后再检查页面渲染。Python 和 Markdown 文件统一 UTF-8。
-- 依赖冲突：当前运行环境为 Python 3.11 `.cache/m0/venv`；根 `requirements.txt` 直接引用 `requirements-m0.txt`，`requirements_fixed.txt` 是历史组件快照。玻璃风格没有新增依赖，无需重装。安装器默认 Gateway，原 `.venv` 保留但不作为主程序环境。
+- 依赖冲突：当前运行环境为 Python 3.11 `.cache/m0/venv`；根 `requirements.txt` 直接引用 `requirements-m0.txt`，`requirements_fixed.txt` 是历史组件快照。科技主题与 GUI 后端管理没有新增依赖，无需重装。安装器默认 Gateway，原 `.venv` 保留但不作为主程序环境。
