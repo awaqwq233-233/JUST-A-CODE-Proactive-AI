@@ -5,6 +5,15 @@
 
 ---
 
+## 2026-10-07 — 配置 VS Code 使用正确的 Gateway 解释器与 GUI 启动参数
+
+- bo s s 在 VS Code 运行 main.py 时使用系统 `/opt/homebrew/bin/python3.11`，因该解释器没有项目依赖而报 `ModuleNotFoundError: numpy`。现场确认 `.cache/m0/venv/bin/python` 为 Python 3.11.17，NumPy 2.2.6 / PySide6 6.11.2 已可导入，无需在系统 Python 重装。
+- 本机 `.vscode/settings.json` 移除项目强制 system 环境设置，默认解释器指向现有 Gateway 环境，开启终端环境激活。新增 `.vscode/launch.json`「J.A.C. · Gateway GUI」，F5 明确使用项目解释器、`--gateway --gui` 和工作目录；已缓存的编辑器解释器仍需用户手动切换一次。
+- `.vscode/` 按既有规则忽略，仅在本机保留；同步双语 README、AGENTS 与安装指南第 10 节，说明 F5 和编辑器直接运行文件的参数区别。
+- 本轮未改生产代码、依赖或目标架构；已检查 requirements.txt、requirements-m0.txt、requirements_fixed.txt 和安装器，无需调整安装阶段或权威 DOCX。JSON 配置解析、路径/参数校验、项目环境导入与 Gateway 帮助验证通过；未运行设备或重新执行无关回归。
+
+---
+
 ## 2026-10-07 — 删除旧 MiniCPM 运行方案，重构 Gateway 玻璃风格 GUI
 
 - 按 bo s s 本轮决定，移除旧 `:9060/backend` MiniCPM 客户端/启动器、Voicebox 桥接/回灌、旧令牌过滤、`src/judgment/` 轮询判断模型和传统 `src/runtime.py` 编排，删除仅验证该废弃协议的测试。`main.py` 与 `python -m src.omni` 统一进入固定 Gateway，保留 `--gateway` 启动参数兼容；`legacy` 配置明确失败，不回落旧模型。仓库外模型与已有环境未删除。

@@ -222,6 +222,14 @@ M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo 
 
 无需设备的文件回放可使用 `--input-file`、可选 `--image-file`、`--session-seconds` 和 `--sessions`；每个会话回放同一测试文件，先补 4 秒启动静音，不将接收到的原生音频播放出来。文件验证不能替代新生产 GUI 的真机听感验收。
 
+### 10 在 VS Code 中启动 GUI
+
+打开 J.A.C. 项目文件夹。按 `Cmd+Shift+P` → `Python: Select Interpreter` → `Enter interpreter path`，选择项目内 `.cache/m0/venv/bin/python`，不要选择系统 `/opt/homebrew/bin/python3.11` 或旧 `.venv`。已选择过解释器的工作区需要手动切换一次，单改 `python.defaultInterpreterPath` 不会替换已缓存的选择。
+
+本机已在忽略的 `.vscode/launch.json` 配置「J.A.C. · Gateway GUI」：明确指定项目解释器、`main.py`、`--gateway --gui`、工作目录与集成终端。在「运行和调试」中选择该配置，按 F5 启动；GUI 内勾选设备同意并戴好耳机后开始采集。固定后端仍需提前启动。
+
+新机器的 `.vscode/` 不随 Git 分发，可按上述解释器选择后使用第 9 节的 GUI 命令；如自行创建调试配置，类型用 `debugpy`，显式设置 `python` 为项目环境并添加 `--gui`。编辑器右上角「运行 Python 文件」不会自动使用 launch.json 的参数，直接运行不带 `--gui` 的 main.py 会进入终端模式。系统 Python 报缺少 numpy 时，先切换解释器，无需在系统环境重复安装依赖。
+
 ### 故障排查
 
 - 停止后画面两侧残留、第二次启动报 RuntimeError / session_failed：2026-10-07 已完善整控件清屏与关闭握手，bo s s 已确认真实 GUI 恢复正常。旧客户端会过早断链；固定版本上游还会在 C++ 清理完成前报告关闭。手动停止现先停采集、保留 8 秒接收尾窗，等待关闭确认与连接关闭，再冷却 1 秒；GUI 显示「停止中…」并禁用启动，约 9 秒后恢复，超时则提供「重试停止」。退出窗口同样等待清理，不强制结束进程。旧版本升级时须先重启已受影响的后端，再按第 9 节重开 GUI；无需重装依赖或模型。该收尾窗口是固定版本兼容处理，不代表上游竞争或长期稳定性已验证。

@@ -196,6 +196,8 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 完整步骤见 **`new_computer_download/READMEfirst.md`**。安装器默认 `gateway`（兼容 `--only gateway` / `--only m0`）建立 `.cache/m0/venv` Python 3.11，安装 `requirements-m0.txt`（已含 Qt GUI）并执行导入自检，保留现有 `.venv`。先用 `start_m0_backend.py` 启动后端，再运行 `main.py --gateway --gui` 或经设备同意的终端入口。不带 `--gateway` 同样进入 Gateway；所有旧 MiniCPM 入口已移除。
 
+VS Code 本机调试配置为忽略的 `.vscode/launch.json`「J.A.C. · Gateway GUI」，显式指定 `.cache/m0/venv/bin/python`、`--gateway --gui` 和项目工作目录。新工作区须选择项目解释器，已缓存系统解释器时手动切换；编辑器直接运行文件不会应用 F5 配置参数。`.vscode/` 不提交，安装步骤见 READMEfirst 第 10 节。
+
 ### 运行前置条件
 
 - **MiniCPM-o-4_5 后端**：固定版本 Gateway / Worker / C++ Metal；M0 所有服务绑定 loopback，禁用上游会话录制。

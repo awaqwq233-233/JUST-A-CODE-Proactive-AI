@@ -51,6 +51,8 @@ The user confirmed live listening, vision and replies work. Restart retesting on
 
 The Gateway GUI now uses a light glass appearance drawn in Qt, following [Apple material design guidance](https://developer.apple.com/design/human-interface-guidelines/materials); it is not the native AppKit Liquid Glass material. It has an original-aspect camera preview without black bars, a larger continuous reply transcript, separate collapsible connection logs, and a single status indicator at the top. Text input, send, display-resolution/zoom controls and obsolete model toggles are removed. Before starting, adjust microphone gain, camera capture fps (5–10), session rotation (5–240 seconds), reconnect attempts, audio devices, camera index, local Gateway URL and reference WAV. Settings lock during operation. Image upload remains fixed at one latest frame per second. Qwen controls will appear when that integration exists. `main.py --gui` and `python -m src.omni --gui` use the same Gateway path; `--gateway` remains compatible. No new GUI dependency is required. The current 138-test suite was verified in batches (the first full run had 136 passes and one test writing to the real home directory; its fixture was isolated and passed, alongside one newly added cleanup test). Synthetic screenshots were checked at 1440×880 and 1100×700 without accessing devices.
 
+For VS Code, select the project interpreter `.cache/m0/venv/bin/python` and launch with `--gui`. This machine has an ignored F5 configuration named “J.A.C. · Gateway GUI” with an explicit interpreter; the editor’s Run Python File button does not apply launch.json arguments. See the setup guide, section 10.
+
 ### Documentation
 
 - [AGENTS.md](AGENTS.md): architecture, engineering contract and migration status.
@@ -105,6 +107,8 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 用户已确认真机听看说正常。2026-10-07 重启复验暴露了残影和过早断链导致 Worker/C++ 后端仍忙的问题：预览现完整重绘并清除上一帧，停止在后台执行，清理完成前禁止重启。手动停止与会话轮换使用相同的 8 秒接收尾窗，等待 `session.closed` 和连接关闭后再冷却 1 秒，通常约 9 秒；GUI 保持响应。真实后端合成帧/静音三次启停通过后，bo s s 又确认真实 GUI「这次完全正常」。这些是客户端兼容处理，不声称上游底层竞争已由源码修复。已受旧版本影响的后端先重启一次，再关闭重开 GUI 加载修复，无需重装依赖。
 
 GUI 已改为 Qt 绘制的浅色通透玻璃风格，参考 [Apple 材质设计规范](https://developer.apple.com/design/human-interface-guidelines/materials)，并非 AppKit 原生 Liquid Glass 材质。摄像头按真实比例完整嵌入且无黑边；对话区域扩大、流式文本连续拼接，连接日志可单独折叠，顶部只保留一个状态提示。移除文字输入/发送、显示分辨率/缩放和旧模型开关。启动前可调麦克风增益、采集帧率（5–10fps）、会话轮换（5–240 秒）、异常重连次数、音频设备、相机编号、本机 Gateway 与参考 WAV，运行中锁定。图像仍固定每秒上行最新一帧；Qwen 未接入，因此不提供假开关。`main.py --gui` 与 `python -m src.omni --gui` 使用同一 Gateway 路径，`--gateway` 参数仍兼容，无需新增 GUI 依赖。当前测试共 138 项已分批验证通过（初次全套 136 通过，1 项写真实主目录的旧测试改为隔离目录后通过，再新增 1 项异常清理回归通过）；1440×880 与 1100×700 合成帧预览已检查，未新增真机听感验收。
+
+VS Code 请选择项目解释器 `.cache/m0/venv/bin/python`，并带 `--gui` 启动。本机已配置忽略的 F5 项「J.A.C. · Gateway GUI」；右上角「运行 Python 文件」不使用 launch.json 的参数，系统 Python 缺少 numpy 时应切换环境。完整步骤见安装指南第 10 节。
 
 ### 文档与未来终端
 
