@@ -91,9 +91,11 @@ class GatewayRuntime:
     def stop(self):
         """关闭客户端和设备，保留外部 Gateway/Worker/Metal 后端。"""
         self.running = self.omni_mode = False
-        if self.omni_client:
-            self.omni_client.stop()
-            self.omni_client = None
+        client = self.omni_client
+        if client:
+            client.stop()
+            if self.omni_client is client:
+                self.omni_client = None
         self.notify(False)
 
     def manual_input(self, text):

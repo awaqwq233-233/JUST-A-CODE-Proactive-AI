@@ -26,7 +26,7 @@ The target capture pipeline uses SoundDevice and background OpenCV capture at 64
 
 Target memory uses JSON as the structured source of truth, ChromaDB as a rebuildable index, and BGE-Small-ZH-v1.5 ONNX INT8 embeddings. Summaries are batch-written every five records or on session end. Retrieval runs at session initialization and completed user utterances, using parallel local transcription where needed.
 
-**M0 is accepted by the user; the 30-minute soak was explicitly waived. Migration is now at M1.** The production Gateway SDK, SoundDevice capture/native playback and background 640×480 OpenCV capture are available through `main.py --gateway`, with a lightweight GUI via `--gui`. Legacy modes remain available; Qwen tool escalation, ChromaDB and OpenClaw migration are still pending.
+**M0 is accepted with the 30-minute soak explicitly waived. M1 live listening/vision/speech, GUI preview and manual restart were accepted by the user on 2026-10-07.** The production Gateway SDK, SoundDevice capture/native playback and background 640×480 OpenCV capture are available through `main.py --gateway`, with a lightweight GUI via `--gui`. Next is Qwen brain/tool escalation; parallel transcription, ChromaDB and OpenClaw migration are still pending. This acceptance does not establish unlimited sessions or long-term stability.
 
 The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds. M1 rotates video sessions after 240 input seconds, closes/releases devices and reconnects with the reference voice and bounded assistant history plus supplied confirmed context. Capture visibly pauses during reconnection. It does not reconstruct untranscribed user speech or provide seamless audio across the gap.
 
@@ -47,7 +47,7 @@ The 40-second live probe and ten rapid device/WebSocket lifecycle cycles passed 
 
 Start the pinned backend first, then use the Python 3.11 environment to run `main.py --gateway --gui`, or `main.py --gateway --consent-devices` for the console. The GUI requires explicit device consent and headphones before capture starts. It loads without PyAudio, torch, Whisper or YOLO; selecting legacy mode requires the legacy dependencies.
 
-The user confirmed live listening, vision and replies work. The reported black preview after stop/start was traced to a stopped GUI refresh timer; restart now resumes it on the Qt main thread. Offline restart regressions pass; close and reopen the GUI after updating code to verify the fix on hardware.
+The user confirmed live listening, vision and replies work. Restart retesting on 2026-10-07 exposed residual preview pixels and early shutdown leaving the Worker/C++ backend busy. The preview now repaints its entire background; stopping runs in the background and disables restart until cleanup finishes. Manual shutdown uses the same eight-second receive tail as session rotation, waits for `session.closed` and transport closure, then allows a one-second cooldown. Expect roughly nine seconds of shutdown, with a responsive GUI. Three real-backend restart cycles using synthetic frames and silence passed without accessing devices; the user subsequently confirmed the real GUI now works normally. These are client-side compatibility measures, not a source-level repair of upstream races. Restart an already affected backend once and reopen the GUI to load the fix; no dependency reinstall is needed.
 
 ### Documentation
 
@@ -81,7 +81,7 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 
 ### 当前实现状态
 
-**M0 已由用户确认通过，30 分钟长测明确免测；现已进入 M1。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。旧模式保留兼容入口；Qwen 工具升级、ChromaDB 和 OpenClaw 尚未迁移。
+**M0 已通过且 30 分钟长测免测；M1 听看说、GUI 预览与手动启停已于 2026-10-07 获用户真机验收。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。下一步接入 Qwen 大脑/工具升级；并行转写、ChromaDB 和 OpenClaw 尚未迁移，旧模式保留兼容入口。当前验收不等于无限会话或长期稳定性验证。
 
 固定版本 Gateway 的视频会话限 300 秒、音频会话限 600 秒。M1 默认每 240 秒上行后关闭并重建视频会话，重新注入参考音、已确认上下文和有界助手历史；重连时明确暂停采集，未转写的用户原话不会凭空恢复，目前存在采集间隙。
 
@@ -100,7 +100,7 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 
 先用固定版本启动器启动后端，再使用 Python 3.11 环境运行 `main.py --gateway --gui` 或 `main.py --gateway --consent-devices`。GUI 启动设备前须明确勾选同意并戴好耳机；Gateway 路径不加载旧 PyAudio/torch/Whisper/YOLO，选择旧模式才需要旧依赖。
 
-用户已确认真机听看说正常。停止再启动后预览黑屏的问题已定位并修复：重启时在 Qt 主线程恢复画面刷新定时器，离屏启停回归通过。更新代码后须关闭并重新打开 GUI，再复验实际画面。
+用户已确认真机听看说正常。2026-10-07 重启复验暴露了残影和过早断链导致 Worker/C++ 后端仍忙的问题：预览现完整重绘黑色背景，停止在后台执行，清理完成前禁止重启。手动停止与会话轮换使用相同的 8 秒接收尾窗，等待 `session.closed` 和连接关闭后再冷却 1 秒，通常约 9 秒；GUI 保持响应。真实后端合成帧/静音三次启停通过后，bo s s 又确认真实 GUI「这次完全正常」。这些是客户端兼容处理，不声称上游底层竞争已由源码修复。已受旧版本影响的后端先重启一次，再关闭重开 GUI 加载修复，无需重装依赖。
 
 ### 文档与未来终端
 

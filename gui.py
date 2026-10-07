@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QPlainTextEdit, QPushButton, QFrame, QSplitter,
     QToolButton, QComboBox, QSlider, QSizePolicy, QCheckBox,
-    QProgressBar, QDoubleSpinBox, QScrollArea,
+    QProgressBar, QDoubleSpinBox, QScrollArea, QStyle, QStyleOption,
 )
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
@@ -138,11 +138,15 @@ class RoundedVideoLabel(QLabel):
         调用 scaled() 会打印 "QPixmap::scaled: Pixmap is a null pixmap" 并触发 macOS
         Metal 后端断言崩溃(abort)。因此必须同时判 None 与 isNull()。
         """
+        painter = QPainter(self)
+        # 自绘 QLabel 不依赖基类的局部清屏；每次覆盖整个控件，含留白两侧。
+        painter.fillRect(self.rect(), Qt.black)
+        option = QStyleOption()
+        option.initFrom(self)
+        self.style().drawPrimitive(QStyle.PE_Widget, option, painter, self)
         pix = self.pixmap()
         if pix is None or pix.isNull():
-            super().paintEvent(event)
             return
-        painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         r = 14
         path = QPainterPath()
@@ -153,7 +157,6 @@ class RoundedVideoLabel(QLabel):
         pw, ph = pix.width(), pix.height()
         lw, lh = self.width(), self.height()
         if pw <= 0 or ph <= 0:
-            super().paintEvent(event)
             return
         scale = min(lw / pw, lh / ph)
         dw, dh = int(pw * scale), int(ph * scale)
@@ -220,6 +223,7 @@ class MainWindow(QMainWindow):
     _runtime_state_changed = Signal(bool)
     _stop_runtime_requested = Signal()
     _startup_failed = Signal(str)
+    _shutdown_finished = Signal(str)
 
     def __init__(self, config: Config):
         """初始化实例"""
@@ -229,6 +233,7 @@ class MainWindow(QMainWindow):
         self._runtime_state_changed.connect(self._apply_runtime_state, Qt.QueuedConnection)
         self._stop_runtime_requested.connect(self._safe_stop_runtime, Qt.QueuedConnection)
         self._startup_failed.connect(self._handle_startup_failure, Qt.QueuedConnection)
+        self._shutdown_finished.connect(self._finish_stop_runtime, Qt.QueuedConnection)
         self.runtime = DesktopRuntime(
             context=self.context,
             on_state_change=self._on_state_change,
@@ -236,6 +241,10 @@ class MainWindow(QMainWindow):
         self.panel_collapsed = False
         self.zoom = 1.0
         self._stop_requested = False  # 启动过程中若用户点「停止」，用于中止刚拉起的运行时
+        self._stopping = False
+        self._stop_error = ""
+        self._start_thread = None
+        self._close_after_stop = False
 
         self.setWindowTitle("J.A.C.Prototype")
         self.resize(1280, 720)
@@ -676,6 +685,13 @@ class MainWindow(QMainWindow):
     # ----------------------------------------------------- 启动/停止
     def _toggle_run(self):
         """在启动主线程申请首次摄像头权限，其余设备与模型工作交后台。"""
+        if self._stopping:
+            return
+        if self._stop_error:
+            self._safe_stop_runtime()
+            return
+        if self._start_thread is not None and self._start_thread.is_alive():
+            return
         if not self.runtime.running:
             self._stop_requested = False  # 开始新启动，清除上一次的「停止」意图
             cfg = self._collect_config()
@@ -718,7 +734,8 @@ class MainWindow(QMainWindow):
                     self._startup_failed.emit(
                         "[GUI] 启动未完成，请检查设备、后端和当前模式的依赖。")
 
-            threading.Thread(target=_do_start, daemon=True, name="gui-start").start()
+            self._start_thread = threading.Thread(target=_do_start, daemon=True, name="gui-start")
+            self._start_thread.start()
         else:
             # 点「停止」：只停运行时，GUI 窗口保持打开（便于查看/复制控制台日志 debug）
             self._stop_requested = True
@@ -734,15 +751,47 @@ class MainWindow(QMainWindow):
         保留，便于调试（debug）。
         """
         self._stop_requested = True
-        if not self.runtime.running:
+        self.frame_timer.stop()
+        self.video_label.clear()
+        self.video_label.update()
+        if self._stopping:
             return
-        try:
-            self.frame_timer.stop()       # 停止视频绘制，避免 Metal 崩溃
-            self.video_label.clear()      # 清空画面 pixmap，释放渲染资源
-            self.runtime.stop()           # 释放摄像头/线程等底层资源
-        except Exception as e:
-            print(f"[GUI] 停止运行时异常（已忽略）: {e}")
-        # 状态回调 _on_state_change(False) 已把按钮恢复为「启动」并解锁选项
+        self._stopping = True
+        self.start_btn.setEnabled(False)
+        self.start_btn.setText("停止中…")
+        self._set_options_enabled(False)
+
+        def _do_stop():
+            """在后台等待会话和设备释放，结束前不允许 GUI 再次启动。"""
+            failure = ""
+            try:
+                self.runtime.stop()
+                # 启动异常/关闭窗口可能与启动线程相交，确保它退出后不遗留新设备。
+                starter = self._start_thread
+                if starter is not None and starter is not threading.current_thread():
+                    starter.join(timeout=5)
+                    if starter.is_alive():
+                        raise RuntimeError("启动线程仍在退出，请稍后重试停止")
+                self.runtime.stop()
+            except Exception as error:
+                failure = f"{type(error).__name__}: {error}"
+            self._shutdown_finished.emit(failure)
+
+        threading.Thread(target=_do_stop, daemon=True, name="gui-stop").start()
+
+    @Slot(str)
+    def _finish_stop_runtime(self, failure):
+        """仅在后台清理完成后恢复启动；清理超时则提供重试，禁止重叠会话。"""
+        self._stopping = False
+        self._stop_error = failure
+        if failure:
+            self.console.appendPlainText(f"[GUI] 停止未完成：{failure}")
+            self.start_btn.setText("重试停止")
+            self.start_btn.setEnabled(True)
+            return
+        self._apply_runtime_state(False)
+        if self._close_after_stop:
+            self.close()
 
     def _on_state_change(self, running):
         """将任意工作线程的状态通知排队交给 Qt 主线程，不直接修改控件。"""
@@ -753,6 +802,8 @@ class MainWindow(QMainWindow):
         """在 Qt 主线程更新状态，并在每次成功启动后恢复持续预览刷新。"""
         # 上一轮停止通知可能晚于下一轮启动到达，避免旧通知停掉新预览。
         if bool(running) != bool(self.runtime.running):
+            return
+        if self._stopping or self._stop_error:
             return
         if running:
             if self._stop_requested:
@@ -885,13 +936,17 @@ class MainWindow(QMainWindow):
 
     # ----------------------------------------------------- 关闭
     def closeEvent(self, event):
-        # 点窗口 X：真正退出程序。先安全停止运行时（停帧定时器 + 清空画面防 Metal
-        # 崩溃），再无论如何都关闭窗口。用 try/finally 兜底：即使停止过程抛异常，
-        # 窗口也能正常关闭，不会闪退。
-        try:
+        """关闭窗口同样等待后台清理，避免程序退出打断 Gateway 关闭握手。"""
+        starter_alive = self._start_thread is not None and self._start_thread.is_alive()
+        if (self._stopping or self._stop_error or self.runtime.running
+                or getattr(self.runtime, "omni_client", None) is not None or starter_alive):
+            self._close_after_stop = True
+            event.ignore()
             self._safe_stop_runtime()
-        finally:
-            super().closeEvent(event)
+            return
+        self.frame_timer.stop()
+        self.video_label.clear()
+        super().closeEvent(event)
 
 
 # ----------------------------- 入口 -----------------------------

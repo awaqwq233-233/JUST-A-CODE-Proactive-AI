@@ -73,15 +73,25 @@ def window(monkeypatch):
     handlers = list(logging.getLogger().handlers)
     monkeypatch.setattr(gui, "DesktopRuntime", FakeRuntime)
     instance = gui.MainWindow(Config())
+    instance.setStyleSheet(gui.DARK_QSS)
     try:
         yield instance
     finally:
         instance.close()
+        wait_gui(lambda: not instance._stopping)
         app.processEvents()
         sys.stdout, sys.stderr = streams
         for handler in list(logging.getLogger().handlers):
             if handler not in handlers:
                 logging.getLogger().removeHandler(handler)
+
+
+def wait_gui(predicate, timeout=3):
+    """持续处理 Qt 事件直到后台启停结束，避免用固定短等待掩盖线程调度。"""
+    deadline = time.monotonic() + timeout
+    while not predicate() and time.monotonic() < deadline:
+        QTest.qWait(20)
+    assert predicate(), "后台 GUI 操作未在预期时间内完成"
 
 
 def test_preview_returns_after_stop_and_restart(window):
@@ -100,7 +110,7 @@ def test_preview_returns_after_stop_and_restart(window):
         QTest.qWait(80)
         assert client.frame_reads > previous_reads, "画面只刷新一次，没有持续更新"
         window._safe_stop_runtime()
-        QTest.qWait(30)
+        wait_gui(lambda: not window._stopping)
         assert not window.frame_timer.isActive()
         assert window.start_btn.text() == "启动"
 
@@ -160,10 +170,117 @@ def test_startup_exception_cleans_partially_started_runtime(window, monkeypatch)
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
         QTest.qWait(20)
-        if (not window.runtime.running and window.start_btn.isEnabled()
+        if (not window._stopping and not window.runtime.running and window.start_btn.isEnabled()
                 and "模拟初始化异常" in window.console.toPlainText()):
             break
     assert not window.runtime.running
     assert not window.frame_timer.isActive()
     assert window.start_btn.isEnabled() and window.start_btn.text() == "启动"
     assert "模拟初始化异常" in window.console.toPlainText()
+
+
+def test_preview_clear_erases_entire_painted_widget(window):
+    """检查控件实际像素而非空 pixmap，停止后两侧不得残留上一帧。"""
+    window.show()
+    window.runtime.start()
+    QTest.qWait(100)
+    window._safe_stop_runtime()
+    wait_gui(lambda: not window._stopping)
+    image = window.video_label.grab().toImage()
+    for x in (8, image.width() // 2, image.width() - 9):
+        color = image.pixelColor(x, image.height() // 2)
+        assert color.red() == color.green() == color.blue() == 0, "停止后仍有旧画面残留"
+
+
+def test_slow_stop_keeps_qt_responsive_and_blocks_restart(window, monkeypatch):
+    """延迟设备清理时立即清屏，Qt 不阻塞且完成前不能再次启动。"""
+    from PySide6.QtCore import QTimer
+    release = threading.Event()
+    original_stop = window.runtime.stop
+
+    def slow_stop():
+        """模拟 Worker 关闭耗时，不接触真实设备。"""
+        assert release.wait(3)
+        original_stop()
+
+    monkeypatch.setattr(window.runtime, "stop", slow_stop)
+    window.runtime.start()
+    QTest.qWait(60)
+    processed = []
+    try:
+        window._safe_stop_runtime()
+        assert window._stopping and not window.start_btn.isEnabled()
+        assert window.start_btn.text() == "停止中…"
+        assert window.video_label.pixmap().isNull()
+        window._toggle_run()
+        assert window.runtime.starts == 1
+        QTimer.singleShot(0, lambda: processed.append(True))
+        QTest.qWait(40)
+        assert processed, "停止等待阻塞了 Qt 主线程"
+    finally:
+        release.set()
+        wait_gui(lambda: not window._stopping)
+    assert window.start_btn.isEnabled() and window.start_btn.text() == "启动"
+    window.gateway_consent_chk.setChecked(True)
+    window.video_enabled_chk.setChecked(False)
+    window._toggle_run()
+    wait_gui(lambda: window.runtime.starts == 2 and window.start_btn.text() == "停止")
+
+
+def test_stop_cleans_client_even_if_running_flag_is_false(window):
+    """异常提前关闭 running 标志后，停止仍须清理残留客户端和画面。"""
+    window.runtime.start()
+    QTest.qWait(60)
+    window.runtime.running = False
+    assert window.runtime.omni_client is not None
+    window._safe_stop_runtime()
+    wait_gui(lambda: not window._stopping)
+    assert window.runtime.omni_client is None
+    assert window.video_label.pixmap().isNull()
+
+
+def test_close_window_waits_for_shutdown(window, monkeypatch):
+    """退出窗口必须等待关闭握手完成，不能直接终止 daemon 会话线程。"""
+    release = threading.Event()
+    original_stop = window.runtime.stop
+
+    def slow_stop():
+        """模拟仍在关闭的会话。"""
+        assert release.wait(3)
+        original_stop()
+
+    monkeypatch.setattr(window.runtime, "stop", slow_stop)
+    window.show()
+    window.runtime.start()
+    QTest.qWait(60)
+    try:
+        window.close()
+        QTest.qWait(30)
+        assert window.isVisible() and window._stopping
+    finally:
+        release.set()
+        wait_gui(lambda: not window._stopping)
+    assert not window.isVisible()
+
+
+def test_stop_failure_requires_retry_before_start(window, monkeypatch):
+    """停止超时不得伪装可启动；重试成功后才解锁下一次启动。"""
+    original_stop = window.runtime.stop
+
+    def failed_stop():
+        """模拟尚未完成设备释放。"""
+        raise RuntimeError("模拟停止超时")
+
+    window.runtime.start()
+    QTest.qWait(60)
+    monkeypatch.setattr(window.runtime, "stop", failed_stop)
+    window._safe_stop_runtime()
+    wait_gui(lambda: not window._stopping)
+    assert window.start_btn.text() == "重试停止"
+    assert "模拟停止超时" in window.console.toPlainText()
+    assert window._stop_error
+    monkeypatch.setattr(window.runtime, "stop", original_stop)
+    window._toggle_run()
+    wait_gui(lambda: not window._stopping)
+    assert not window._stop_error and window.runtime.starts == 1
+    assert window.start_btn.text() == "启动"

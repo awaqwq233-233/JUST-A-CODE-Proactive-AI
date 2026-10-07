@@ -102,7 +102,11 @@ def check_event(message: str | bytes) -> dict:
         raise ValueError("服务端事件必须是包含 type 的 JSON 对象")
     if event["type"] == "error":
         error = event.get("error") or {}
-        raise RuntimeError(f"服务端错误: {error.get('code', 'unknown')}")
+        code = error.get("code", "unknown") if isinstance(error, dict) else "unknown"
+        if (not isinstance(code, str) or len(code) > 64 or not code.isascii()
+                or not code.replace("_", "").replace("-", "").isalnum()):
+            code = "unknown"
+        raise RuntimeError(f"服务端错误: {code}")
     return event
 
 
