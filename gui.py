@@ -7,9 +7,9 @@ from dataclasses import replace
 from datetime import datetime
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer, Signal, Slot, QRectF
+from PySide6.QtCore import Qt, QTimer, Signal, Slot, QRectF, QUrl
 from PySide6.QtGui import (QColor, QFont, QImage, QPixmap, QPainter, QPainterPath,
-                          QLinearGradient, QRadialGradient, QPen, QTextCursor)
+                          QLinearGradient, QRadialGradient, QPen, QTextCursor, QDesktopServices)
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout,
     QVBoxLayout, QLabel, QPlainTextEdit, QPushButton, QFrame, QComboBox,
     QSizePolicy, QCheckBox, QProgressBar, QDoubleSpinBox, QSpinBox,
@@ -216,6 +216,8 @@ class MainWindow(QMainWindow):
     _shutdown_finished = Signal(str)
     _reply_received = Signal(str)
     _reply_finished = Signal()
+    _transcript_received = Signal(str)
+    _task_received = Signal(str, object)
 
     def __init__(self, config):
         """建立 Gateway 工作台，初始化仅探测本机后端，不打开用户设备。"""
@@ -227,9 +229,14 @@ class MainWindow(QMainWindow):
         self._shutdown_finished.connect(self._finish_stop_runtime, Qt.QueuedConnection)
         self._reply_received.connect(self._append_reply, Qt.QueuedConnection)
         self._reply_finished.connect(self._end_reply, Qt.QueuedConnection)
+        self._transcript_received.connect(self._append_transcript, Qt.QueuedConnection)
+        self._task_received.connect(self._append_task, Qt.QueuedConnection)
         self.runtime = DesktopRuntime(context=self.context, on_state_change=self._on_state_change)
         self.runtime.text_callback = self._reply_received.emit
         self.runtime.reply_finished_callback = self._reply_finished.emit
+        self.runtime.transcript_callback = self._transcript_received.emit
+        self.runtime.task_callback = self._task_received.emit
+        self._latest_report = None
         self._stop_requested = self._stopping = self._close_after_stop = False
         self._stop_error, self._start_thread = "", None
         self._reply_open = False
@@ -354,7 +361,12 @@ class MainWindow(QMainWindow):
         self.diagnostics_btn.setCheckable(True)
         title.addWidget(self.diagnostics_btn)
         conversation.addLayout(title)
-        conversation.addWidget(self._label("语音交流 · 回复实时显示", "hint"))
+        conversation.addWidget(self._label("语音交流 · 用户转写与回复实时显示", "hint"))
+        self.open_report_btn = QPushButton("打开最新报告")
+        self.open_report_btn.setObjectName("quiet")
+        self.open_report_btn.setEnabled(False)
+        self.open_report_btn.clicked.connect(self._open_report)
+        conversation.addWidget(self.open_report_btn)
         self.console = QPlainTextEdit()
         self.console.setObjectName("console")
         self.console.setReadOnly(True)
@@ -438,6 +450,11 @@ class MainWindow(QMainWindow):
         self.session_spin = self._field(op, "会话轮换时长", self._spin(5, 240, self.config.gateway_session_seconds, " 秒"),
             "轮换时暂停采集，恢复有限上下文。")
         self.retry_spin = self._field(op, "异常重连次数", self._spin(0, 10, self.config.gateway_retry_limit))
+        self.transcription_chk = QCheckBox("本地转写与系统任务")
+        self.transcription_chk.setChecked(self.config.gateway_transcription_enabled)
+        self.transcription_chk.setToolTip("CPU 转写；明确查询时间、电池、CPU、内存或生成系统报告。结果为文字/文件。")
+        self._controls.append(self.transcription_chk)
+        op.addWidget(self.transcription_chk)
         self.advanced_btn = QPushButton("设备、连接与音色  ▾")
         self.advanced_btn.setObjectName("quiet")
         self.advanced_btn.setCheckable(True)
@@ -449,6 +466,12 @@ class MainWindow(QMainWindow):
         self.advanced_btn.toggled.connect(advanced_panel.setVisible)
         advanced_panel.hide()
         op.addWidget(advanced_panel)
+        self.whisper_dir_edit = self._field(advanced, "本地 Whisper 目录", QLineEdit(self.config.whisper_model_dir))
+        self.whisper_choose_btn = QPushButton("选择 Whisper 目录")
+        self.whisper_choose_btn.clicked.connect(self._choose_whisper_directory)
+        self._controls.append(self.whisper_choose_btn)
+        advanced.addWidget(self.whisper_choose_btn)
+        self.brain_url_edit = self._field(advanced, "本地大脑地址", QLineEdit(self.config.gateway_brain_url))
         self.input_device_combo, self.output_device_combo = QComboBox(), QComboBox()
         for combo, device in ((self.input_device_combo, self.config.gateway_input_device),
                               (self.output_device_combo, self.config.gateway_output_device)):
@@ -579,6 +602,47 @@ class MainWindow(QMainWindow):
         if path:
             self.voice_edit.setText(path)
 
+    def _choose_whisper_directory(self):
+        """选择仓库外锁定转写模型，校验在后台启动时完成。"""
+        path = QFileDialog.getExistingDirectory(self, "选择本地 Whisper 目录", self.whisper_dir_edit.text())
+        if path:
+            self.whisper_dir_edit.setText(path)
+
+    @Slot(str)
+    def _append_transcript(self, text):
+        """独立显示用户原话，禁止将转写文本拼到助手增量中。"""
+        if self._stopping or self._stop_requested:
+            return
+        self._end_reply()
+        self._insert_text(self.console, "\n\nbo s s · " + datetime.now().strftime("%H:%M") + "\n" + text)
+
+    @Slot(str, object)
+    def _append_task(self, state, detail):
+        """主线程显示任务状态，完成后才开放真实报告文件入口。"""
+        if self._stopping or self._stop_requested:
+            return
+        labels = {"running": "大脑正在查询", "completed": "报告已生成", "error": "任务暂停或失败", "rejected": "任务未执行", "cancelled": "任务已取消"}
+        reasons = {"brain_busy": "大脑忙，请完成后再说", "unclear_speech": "没有听清，请重复", "brain_failed": "大脑不可用或任务失败",
+                   "audio_overflow": "转写积压，请停止后重启", "utterance_overflow": "转写积压，请停止后重启",
+                   "whisper_error": "转写异常，请停止后重启", "vad_error": "切句异常，请停止后重启",
+                   "session_changed": "会话重连，请重新发出指令"}
+        message = labels.get(state, state)
+        if detail.get("code"):
+            message += "：" + reasons.get(detail["code"], "请查看连接状态")
+        self._end_reply()
+        self._insert_text(self.console, "\n\n大脑 · " + message)
+        if state == "completed":
+            from pathlib import Path
+            self._latest_report = Path(detail["path"])
+            self.open_report_btn.setEnabled(self._latest_report.is_file())
+            self.open_report_btn.setToolTip(str(self._latest_report))
+            self._insert_text(self.console, "\n" + detail["answer"] + "\n文件：" + self._latest_report.name)
+
+    def _open_report(self):
+        """仅用户点击后打开已经生成的本机报告，不执行模型给出的链接。"""
+        if self._latest_report is not None and self._latest_report.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._latest_report)))
+
     def _refresh_devices(self):
         """查询设备名称，不开启采集或播放流；保留失联设备编号便于排障。"""
         import sounddevice as sd
@@ -692,6 +756,8 @@ class MainWindow(QMainWindow):
             text = labels.get(state, "聆听中")
             if state == "ready" and self.context.is_speaking:
                 text = "正在回应"
+            if state == "ready" and self.context.is_thinking:
+                text = "大脑正在处理"
         else:
             text = "连接异常" if state == "error" else "语音已停止"
             backend = getattr(self, 'backend', None)
@@ -886,7 +952,9 @@ class MainWindow(QMainWindow):
             gateway_camera=self.camera_spin.value(), gateway_url=self.url_edit.text().strip(),
             gateway_session_seconds=self.session_spin.value(), gateway_retry_limit=self.retry_spin.value(),
             omni_mic_gain=self.mic_gain_spin.value(), omni_fps=self.fps_spin.value(),
-            omni_video_enabled=self.video_enabled_chk.isChecked(), omni_ref_audio=self.voice_edit.text().strip())
+            omni_video_enabled=self.video_enabled_chk.isChecked(), omni_ref_audio=self.voice_edit.text().strip(),
+            gateway_transcription_enabled=self.transcription_chk.isChecked(),
+            whisper_model_dir=self.whisper_dir_edit.text().strip(), gateway_brain_url=self.brain_url_edit.text().strip())
 
     def _toggle_panel(self, visible):
         """隐藏设置后将空间交给画面与对话记录。"""

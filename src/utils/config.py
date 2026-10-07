@@ -21,6 +21,9 @@ class Config:
     omni_fps: int = 5
     omni_video_enabled: bool = True
     omni_mic_gain: float = 1.0
+    gateway_transcription_enabled: bool = True
+    whisper_model_dir: str = os.path.expanduser("~/.cache/jac/models/whisper-small")
+    gateway_brain_url: str = "http://127.0.0.1:12345"
 
     @classmethod
     def load(cls):
@@ -38,4 +41,7 @@ class Config:
             omni_fps=int(os.environ.get("OMNI_FPS", "5")),
             omni_video_enabled=os.environ.get("OMNI_VIDEO_ENABLED", "1").lower() not in {"0", "false", "no", "off"},
             omni_mic_gain=float(os.environ.get("OMNI_MIC_GAIN", "1.0")),
+            gateway_transcription_enabled=os.environ.get("JAC_TRANSCRIPTION_ENABLED", "1").lower() not in {"0", "false", "no", "off"},
+            whisper_model_dir=os.environ.get("JAC_WHISPER_MODEL_DIR", os.path.expanduser("~/.cache/jac/models/whisper-small")),
+            gateway_brain_url=os.environ.get("JAC_BRAIN_URL", "http://127.0.0.1:12345"),
         )

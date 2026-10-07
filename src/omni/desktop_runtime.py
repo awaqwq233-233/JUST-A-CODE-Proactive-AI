@@ -50,6 +50,23 @@ class DesktopCallbacks(GatewayCallbacks):
         """打印不含原始媒体的异常类型。"""
         print(f"[Gateway] 错误：{error}")
 
+    def on_user_transcript(self, text):
+        """仅缓存确认的用户原话，独立投递至 GUI，不混入助手增量。"""
+        self.runtime.context.push_transcription(text)
+        if self.runtime.transcript_callback:
+            self.runtime.transcript_callback(text)
+        else:
+            print(f"\n[bo s s] {text}", flush=True)
+
+    def on_task_event(self, state, detail):
+        """同步大脑进度和真实报告；错误不宣称任务已完成。"""
+        if state != "rejected":
+            self.runtime.context.is_thinking = state == "running"
+        if self.runtime.task_callback:
+            self.runtime.task_callback(state, detail)
+        else:
+            print(f"\n[大脑] {state}" + (f"：{detail['path']}" if state == "completed" else ""), flush=True)
+
 
 class GatewayRuntime:
     """独立 Gateway 桌面适配器，生命周期由 GUI 控制。"""
@@ -59,6 +76,7 @@ class GatewayRuntime:
         self.context, self.on_state_change = context or SharedContext(), on_state_change
         self.state = "stopped"
         self.text_callback = self.reply_finished_callback = None
+        self.transcript_callback = self.task_callback = None
         self.running = self.omni_mode = False
         self.omni_client = None
 
@@ -91,6 +109,8 @@ class GatewayRuntime:
                 video_enabled=config.omni_video_enabled, mic_gain=config.omni_mic_gain,
                 session_seconds=config.gateway_session_seconds, retry_limit=config.gateway_retry_limit,
                 context_provider=lambda: self.context.get_recent_transcriptions(window=300),
+                transcription_enabled=config.gateway_transcription_enabled,
+                whisper_model_dir=config.whisper_model_dir, brain_url=config.gateway_brain_url,
             )
             self.running = self.omni_mode = True
             if not self.omni_client.start(timeout=180):
@@ -111,7 +131,7 @@ class GatewayRuntime:
             if self.omni_client is client:
                 self.omni_client = None
         self.state = "stopped"
-        self.context.is_listening = self.context.is_speaking = False
+        self.context.is_listening = self.context.is_speaking = self.context.is_thinking = False
         self.notify(False)
 
     def finish_reply(self):

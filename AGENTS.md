@@ -18,7 +18,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 
 ## 新架构（2026-10-01 定案，2026-10-06 方案 B 修订）
 
-> bo s s 已确认方案 B：保留三层模型架构，第一层使用固定版本官方 MiniCPM-o-Demo Gateway / Worker 与 `tc-mb/llama.cpp-omni` Metal。权威 DOCX 为 `brainstorming_projectPLAN/10月1日新架构.docx`，精确版本、模型 SHA256 和协议参数记录在 `backend.lock.json`。**M0 经用户确认通过并免做 30 分钟长测；M1 生产听看说、GUI 与启停已获用户验收，M2a 独立 Qwen 只读调用/文件输出已验证；语音升级与其余模块待迁移。**
+> bo s s 已确认方案 B：保留三层模型架构，第一层使用固定版本官方 MiniCPM-o-Demo Gateway / Worker 与 `tc-mb/llama.cpp-omni` Metal。权威 DOCX 为 `brainstorming_projectPLAN/10月1日新架构.docx`，精确版本、模型 SHA256 和协议参数记录在 `backend.lock.json`。**M0 经用户确认通过并免做 30 分钟长测；M1 生产听看说、GUI 与启停已获用户验收，M2a 独立 Qwen 只读调用/文件输出已验证；M2b 已接入语音转写/只读路由，原生结果播报与其余模块待迁移。**
 
 ### 一、三层模型架构
 
@@ -104,8 +104,8 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 | 上下文/参数 | 起始 `-c 4096 -t 8 -ngl 99` | 固定方案 B 参数 | 后续性能优化需实测 |
 | 语音输出 | 参考 WAV Base64 + 原生 24k float32 PCM | 原生音色条件已接入 C++ Metal；会话核对已应用的参考音哈希 | 技术接线/重连/切换通过；听感待用户确认 |
 | 记忆 | **ChromaDB** + BGE-Small-ZH-v1.5（ONNX INT8） + JSON | fastembed + paraphrase-multilingual-MiniLM + 自研 MemoryStore | 重写 `src/memory/` |
-| 模型层数 | 三层（o-4_5 + qwen + 云端 OpenClaw） | 第一层 Gateway 已运行；M2a Qwen 独立只读/文件任务通过，语音升级未接线，OpenClaw 未接入 | 接入 Qwen 升级与云端通道 |
-| 音频输入 | SoundDevice + 16k float32 mono + 固定 1 秒块 | Gateway 已接入；旧运行入口已移除 | 并行 VAD/Whisper 转写待接入 |
+| 模型层数 | 三层（o-4_5 + qwen + 云端 OpenClaw） | 第一层 Gateway 已运行；M2a Qwen 独立只读/文件任务通过，M2b 语音转写/只读路由已接线，OpenClaw 未接入 | 扩展工具、原生任务播报与云端通道 |
+| 音频输入 | SoundDevice + 16k float32 mono + 固定 1 秒块 | Gateway 已接入；旧运行入口已移除 | M2b CPU Whisper small / WebRTC VAD 已旁路接入 |
 | 视频输入 | 独立线程 640×480、采集 5~10fps、默认每秒上行最新 1 帧 | Gateway 使用线程采集与独立 GUI 帧缓冲；无旧采集入口 | 新界面真机使用确认与后续性能验证 |
 | 运行环境 | Python 3.11 | Gateway CLI/GUI 已使用 `.cache/m0/venv` 3.11；旧 `.venv` 3.13 保留 | 已有旧环境保留，不再用于主程序 |
 | 判断引擎 | 由 MiniCPM-o-4_5 全双工承担（不再单独轮询） | 轮询 judge 与传统运行时已删除 | 已退役 |
@@ -133,9 +133,10 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 ## 当前开发状态（2026-10-07 更新）
 
-> **M0 已通过且 30 分钟长测免测；M1 基础听看说、GUI 和手动启停已由 bo s s 真机验收。** M2a Qwen 独立只读工具/文件闭环已验证；下一步接入并行转写与 Gateway 升级。旧 MiniCPM 及传统运行入口已删除，云端和记忆尚未迁移。
+> **M0 已通过且 30 分钟长测免测；M1 基础听看说、GUI 和手动启停已由 bo s s 真机验收。** M2a Qwen 独立只读工具/文件闭环已验证；M2b 已接入并行转写与 Gateway 只读任务路由，真实设备听感待复验。旧 MiniCPM 及传统运行入口已删除，云端和记忆尚未迁移。
 
-- **M2a 独立 Qwen**：`verify_toolcall.py` 使用同一 Python 3.11 环境与已有 httpx，只开放 `get_system_info`；`--task` 是独立终端显式任务，不是生产语音入口。`src/brain/lm_studio.py` 核对 `/api/v1/models` 的精确已加载实例及能力，要求 LM Studio 0.4.8+，请求使用 `reasoning_effort="none"`，不移除参数后默默重试、不恢复思考尾段、不自动加载或回退其他模型。`BrainTaskRunner` 将真实证据和最终回答原子发布到忽略的 `output/m2/qwen/`；错误/取消不发布未完成文件。单次 HTTP 90 秒、整个任务 120 秒、最多 4 轮；等待中每 100ms 检查取消，各工具执行前再检查。已开始的只读系统查询有自身超时，不能声称任意工具可抢占终止。普通聊天 SSE 保留，agent 最终回答不再额外生成一次。三项真实只读验证通过；尚未验证与 MiniCPM 同跑的资源竞争。语音来源校验、GUI 路由、原生结果播报均待接入。
+- **M2b 并行转写/任务**：`src/omni/task_pipeline.py` 与 `transcription_worker.py` 在同一份重采样 PCM 上旁路 VAD → Whisper → Qwen，只在后台工作；麦克风回调仍只复制至主队列。WebRTC 30ms、300ms 预留、600ms 句末，至少 300ms 有声段，12 秒长句拒绝。Whisper small 在独立解释器 CPU INT8/2 线程运行，主进程不导入 faster-whisper/CTranslate2/PyAV；UTF-8 管道有界，无 PCM 文件、torch/MPS 或运行期下载。资源与独立 SHA256 见 `transcription.lock.json`，默认仓库外 `~/.cache/jac/models/whisper-small`。仅通过置信度校验的完整、无播放重叠的用户指令进入显式白名单，转写原话显示与下一会话上下文同步；不依赖助手输出或旧 CALL_QWEN 令牌。只开放系统状态查询/报告，尚无通用电脑控制/云端工具。句子代次/ID 去重，15 秒过期、忙碌不排队；重连/停止取消旧 HTTP/任务/文件发布，原子发布与代次共锁。旁路故障明确暂停任务且保留感知上行。GUI/真实 CLI 默认开启，SDK opt-in、文件验证显式 `--transcription`，可用 `--no-transcription` 保留基础交互。GUI 显示用户转写、任务进度和真实报告入口，任务文本/证据仅写到本机报告，统计不含正文，原生结果播报待接入。真实后端 60 秒合成文件闭环通过：唯一转写/任务/报告，关闭确认与清理成功；没有打开真实设备。VAD/置信度不等于说话人识别或绝对准确，真机识别/听感与长时稳定性不从合成文件推定。
+- **M2a 独立 Qwen**：`verify_toolcall.py` 使用同一 Python 3.11 环境与已有 httpx，只开放 `get_system_info`；`--task` 是独立终端显式任务，不是生产语音入口。`src/brain/lm_studio.py` 核对 `/api/v1/models` 的精确已加载实例及能力，要求 LM Studio 0.4.8+，请求使用 `reasoning_effort="none"`，不移除参数后默默重试、不恢复思考尾段、不自动加载或回退其他模型。`BrainTaskRunner` 将真实证据和最终回答原子发布到忽略的 `output/m2/qwen/`；错误/取消不发布未完成文件。单次 HTTP 90 秒、整个任务 120 秒、最多 4 轮；等待中每 100ms 检查取消，各工具执行前再检查。已开始的只读系统查询有自身超时，不能声称任意工具可抢占终止。普通聊天 SSE 保留，agent 最终回答不再额外生成一次。三项独立真实只读验证通过；M2b 合成文件验证已与 MiniCPM/CPU Whisper 同跑并交付系统报告，仅代表这段测量，不推定真机或长时性能。M2b 已在语音旁路接入来源校验与 GUI 只读路由；原生结果播报仍待接入。
 - **M1 Gateway 入口**：`main.py --gateway`（终端）、`main.py --gateway --gui`（GUI），使用 Python 3.11 独立环境；GUI 可异步调用固定启动器启动/回收自己拥有的后端；外部已运行服务只探测与复用，不接管。收到启动器就绪事件后才开放语音，停止后端/关闭窗口先等待音视频会话清理，再回收所属后端。GUI 仅使用 Gateway，不依赖旧 torch/PyAudio/Voicebox/YOLO。`omni_backend` 只接受 `gateway`；`legacy` 会明确报错。`main.py --gui` 与 `python -m src.omni --gui` 同样进入 Gateway，`--gateway` 保留兼容。
 - **GUI 后端控制**：`src/omni/backend_control.py` 使用 QProcess 与启动器 `--events-json` 事件管理固定三进程，健康检查在后台且只访问本机；启动/停止/取消/异常均反馈至 GUI，窗口退出等待清理。设置不改变固定版本、端口、模型清单和构建参数。
 - **M0 文件**：`backend.lock.json`、`verify_duplex.py`、`new_computer_download/start_m0_backend.py`、`new_computer_download/requirements-m0.txt`。后端源码、模型和测试运行产物不提交到 Git。
@@ -148,7 +149,7 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
   1. **视觉分辨率仅 grid 1x1 / 64 视觉 token**（服务端日志 `image encoded ... grid: 1x1`），细节视觉问答不可行（真机曾把 boss 本人误判成"电脑桌面"）。
   2. **音频理解（ASR）质量差**：内建麦离嘴远、人声 RMS 仅 0.03~0.065，模型听不清寒暄，会从 prompt 示例里"捡"输出。
   3. **"说/听切换"不稳**：`listen_prob_scale` 1.0 偏沉默、0.8 偏抢话，无稳定工作点；它是开口意愿旋钮（`listen_bias=(scale-1.0)*2.0`），不是 VAD、不影响听清。
-- **旧架构已定位但未修的 bug**（待新架构落地时一并处理或作废）：①旧 qwen 思考参数无效（M2a 独立 HTTP 已改用 `reasoning_effort="none"` 并实测通过，生产语音升级尚未接入）；②「真提问被自己拦截」——护栏判据失准（P2）；③无 WebRTC AEC（旧方案见已删除的 `docs/webrtc_aec_plan.md`；新架构戴耳机规避回声，AEC 需求重新评估）。
+- **旧架构已定位但未修的 bug**（待新架构落地时一并处理或作废）：①旧 qwen 思考参数无效（M2a 独立 HTTP 已改用 `reasoning_effort="none"` 并实测通过，M2b 语音只读升级已接线）；②「真提问被自己拦截」——护栏判据失准（P2）；③无 WebRTC AEC（旧方案见已删除的 `docs/webrtc_aec_plan.md`；新架构戴耳机规避回声，AEC 需求重新评估）。
 - ⚠️ **口径提醒**：`CHANGELOG.md` 附 A 中「视觉 token 吃爆 KV → 每 30s 清空 → 复读示例」的旧假设，已被 2026-09-28 的 A1 实验（全程 `--no-video` 零视频帧，幻觉依旧）**证伪**，勿再据此修 bug。
 
 ## 重要文件与目录
@@ -163,9 +164,11 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 - `src/tools/`：Function Calling 工具层（装手）——新架构中归属大脑层 `qwen/qwen3.6-35b-a3b` 的 Tool Use / Agentic Coding。
 - `src/judgment/` 与 `src/runtime.py`：已删除，旧 MiniCPM 判断轮询与传统运行编排不再启动。
 - `src/memory/`：旧架构记忆子系统（fastembed + 自研 MemoryStore）——**新架构改 ChromaDB + BGE-Small-ZH-v1.5，此目录待重写**。
-- `src/omni/`：Gateway 客户端/协议/设备/桌面运行时和 GUI 后端控制器；旧 `client.py` / `server_launcher.py` / Voicebox 桥接 / 回灌 / 令牌过滤已删除。保留未接入的 Qwen 路由草案（只读白名单、取消已前移），不宣称语音升级可用。
+- `src/omni/`：Gateway 客户端/协议/设备/桌面运行时和 GUI 后端控制器；旧 `client.py` / `server_launcher.py` / Voicebox 桥接 / 回灌 / 令牌过滤已删除。旧 router.py 仅保留草案；M2b 的生产路由由 TaskPipeline + BrainTaskRunner 承担，仅只读任务，不宣称通用 agent 可用。
 - `voices/silverwalf_voice.wav`：方案 B 原生音色参考 WAV，启动会话时编码发送给本机 Gateway。
 - `backend.lock.json`：后端与模型精确版本、SHA256、端口及协议配置。
+- `verify_gateway_tasks.py`：M2b 固定 Gateway 文件探针，真实 VAD/Whisper/Qwen，仅保存统计与报告文件名，不打开设备。
+- `transcription.lock.json` / `new_computer_download/prepare_transcription.py`：仓库外 Whisper small 资源锁与 HTTPS 下载/CPU 自检。
 - `verify_toolcall.py`：M2a 独立精确 Qwen 只读工具/文件验收；不启动设备或 Gateway。
 - `src/brain/lm_studio.py` / `task_runner.py`：本机严格大脑契约与独立报告文件交付。
 - `verify_duplex.py`：独立 M0 协议/媒体文件探针，不调用生产运行时，也不打开麦克风或摄像头。
@@ -200,7 +203,7 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 ## 设置与运行
 
-完整步骤见 **`new_computer_download/READMEfirst.md`**。安装器默认 `gateway`（兼容 `--only gateway` / `--only m0`）建立 `.cache/m0/venv` Python 3.11，安装 `requirements-m0.txt`（已含 Qt GUI 与独立 Qwen 所需 httpx）并执行无网络/设备的导入自检，保留现有 `.venv`。运行 `main.py --gateway --gui` 后可点「启动后端」，再启动语音；独立后端与经设备同意的终端入口仍支持。不带 `--gateway` 同样进入 Gateway；所有旧 MiniCPM 入口已移除。
+完整步骤见 **`new_computer_download/READMEfirst.md`**。安装器默认 `gateway`（兼容 `--only gateway` / `--only m0`）建立 `.cache/m0/venv` Python 3.11，安装 `requirements-m0.txt`（已含 Qt GUI、httpx 与 CPU 转写依赖），执行导入自检并默认准备仓库外 Whisper 资源/CPU 自检（可用 --skip-transcription-model 跳过资源），保留现有 `.venv`。运行 `main.py --gateway --gui` 后可点「启动后端」，再启动语音；独立后端与经设备同意的终端入口仍支持。不带 `--gateway` 同样进入 Gateway；所有旧 MiniCPM 入口已移除。
 
 VS Code 本机调试配置为忽略的 `.vscode/launch.json`「J.A.C. · Gateway GUI」，显式指定 `.cache/m0/venv/bin/python`、`--gateway --gui` 和项目工作目录。新工作区须选择项目解释器，已缓存系统解释器时手动切换；编辑器直接运行文件不会应用 F5 配置参数。`.vscode/` 不提交，安装步骤见 READMEfirst 第 10 节。
 
@@ -226,10 +229,10 @@ VS Code 本机调试配置为忽略的 `.vscode/launch.json`「J.A.C. · Gateway
 
 ## 已知限制（当前代码，待新架构落地后重新评估）
 
-- Gateway 已接入听看说与新 GUI；旧 `:9060`、轮询判断模型和传统运行入口已删除。M1 尚未接入 Qwen 工具升级、并行转写、ChromaDB 或 OpenClaw。未迁移通用音频/记忆/检测组件保留，无生产入口。
+- Gateway 已接入听看说与新 GUI；旧 `:9060`、轮询判断模型和传统运行入口已删除。M2b 已接入并行转写和 Qwen 明确只读任务；通用工具/原生结果播报、ChromaDB 和 OpenClaw 尚未接入。未迁移通用音频/记忆/检测组件保留，无生产入口。
 - 运行依赖外部软件（LM Studio / 固定版本 Gateway、Worker、llama-omni-server / 可选云端 OpenClaw）。
 - M0 基于已有真机验证与 bo s s 明确验收通过；30 分钟稳定性免测，不作为阻塞项。M1 文件回放不等于新增生产 GUI/设备的真机听感验收。
-- 并行 Whisper 转写尚未接入，GUI 目前显示助手回复，不能展示或恢复未经转写的用户原话。
+- M2b 已展示确认的 Whisper 用户转写，并注入后续会话的有界上下文；被拒绝或未经转写的语音不恢复，重连仍有采集间隙。
 - 无 WebRTC AEC（新架构以戴耳机规避回声，AEC 需求待重新评估）。
 - 无云端 OpenClaw 集成（新架构新增项，代码未落地）。
 - 原生音色克隆接线已修复，但不保证与参考 WAV 完全一致；技术加载确认与用户听感验收分别记录。CPU 前端冷启动/条件加载会增加会话初始化时间，不阻塞已建立会话的音视频回调。

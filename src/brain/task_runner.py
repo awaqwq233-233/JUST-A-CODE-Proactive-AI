@@ -1,6 +1,7 @@
 """M2 独立只读大脑任务：真实工具证据与中文 Markdown 文件交付。"""
 
 import copy
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -35,7 +36,7 @@ class TaskResult:
     elapsed_seconds: float
 
 
-def atomic_write(path, content, should_stop=None):
+def atomic_write(path, content, should_stop=None, publication_lock=None):
     """UTF-8 临时文件落盘后检查取消，再原子发布；异常清理临时文件。"""
     path = Path(path)
     check_cancelled(should_stop)
@@ -48,8 +49,9 @@ def atomic_write(path, content, should_stop=None):
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        check_cancelled(should_stop)
-        os.replace(temporary, path)
+        with publication_lock if publication_lock is not None else nullcontext():
+            check_cancelled(should_stop)
+            os.replace(temporary, path)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -63,7 +65,7 @@ class BrainTaskRunner:
         self.brain = brain if brain is not None else LocalBrain(backend="lm_studio")
         self.output_dir = Path(output_dir or ROOT / "output/m2/qwen").resolve()
 
-    def run(self, task, should_stop=None, info_types=None):
+    def run(self, task, should_stop=None, info_types=None, publication_lock=None):
         """执行显式文本任务；错误、取消或无真实工具证据均不发布文件。"""
         if not isinstance(task, str) or not task.strip() or len(task) > 4000:
             raise ValueError("任务文字须为 1–4000 字")
@@ -104,5 +106,5 @@ class BrainTaskRunner:
                    f"## 实际工具返回\n\n{evidence}\n\n"
                    "数据仅代表查询时刻。内存数值为活跃与有线页合计，不代表完整内存占用。\n")
         path = self.output_dir / f"system-status-{task_id}.md"
-        atomic_write(path, content, should_stop)
+        atomic_write(path, content, should_stop, publication_lock)
         return TaskResult(task_id, path, answer, trace, time.monotonic() - started)

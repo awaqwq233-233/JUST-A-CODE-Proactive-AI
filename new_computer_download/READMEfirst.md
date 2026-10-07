@@ -214,7 +214,7 @@ M0 已根据真实模型/设备验证与 bo s s 明确确认标记通过，30 �
 
 固定 Gateway 视频会话 300 秒、音频会话 600 秒。后续客户端必须实现受控重连、重新注入记忆和上下文；旧 /ws/duplex 页面不作为当前客户端协议依据。
 
-M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo s s 真机验收，反馈为「这次完全正常」。专项回归 57 项通过；这不增加未测的长测时长或循环次数。下一步接入 Qwen 大脑/工具升级，之后推进并行转写、ChromaDB 和 OpenClaw。Qwen 继续使用 LM Studio 127.0.0.1:12345；基础听看说无需加载 Qwen 或启动云端。
+M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo s s 真机验收，反馈为「这次完全正常」。专项回归 57 项通过；这不增加未测的长测时长或循环次数。M2b 已接入并行 VAD/Whisper 与 Gateway 明确系统任务，见第 12 节；原生结果播报、ChromaDB 和 OpenClaw 仍待接入。Qwen 继续使用 LM Studio 127.0.0.1:12345；基础听看说无需加载 Qwen 或启动云端。
 
 ### 9 M1 生产入口
 
@@ -280,3 +280,55 @@ Windows 的独立大脑入口使用其项目解释器（不代表 Metal 后端�
 成功以退出码 0 和 `verification.json` 的 `passed=true` 为准；失败退出码 2，失败报告保留，不能只看模型回复。默认三项还核对回答保留真实工具数值；自定义 `--task` 只证明执行/交付，数值核对标为未做。Ctrl+C 取消在途 HTTP 与后续工具/文件发布，已开始的只读系统查询按自身超时返回。单次 HTTP 上限 90 秒，整个任务 120 秒，最多 4 轮。日志/报告不加入 Git，未请求任何模型或测试媒体上传。
 
 普通聊天 SSE 与独立 agent 文件输出分别处理；不把思考正文当答案、截断输出当成功，也不重复生成已经完成的回答。下一阶段才接并行转写、用户任务来源校验及 GUI/Gateway 升级；当前不能直接对语音助手使用这项能力。固定后端、音色补丁、原模型哈希和权威目标架构不变。
+
+### 12 M2b：并行转写与 Gateway 系统任务
+
+The default Gateway install now prepares the pinned multilingual Whisper small resources outside the repository and runs a CPU process self-check. Runtime transcription is offline. CPU VAD/Whisper and Qwen run beside the existing audio stream; the CLI/GUI open no second microphone. Native speech feedback for task results remains pending.
+
+当前安装器默认安装 CPU 转写依赖，并下载锁定的 Whisper small 四项资源（约 487MB，仓库外 `~/.cache/jac/models/whisper-small`），逐文件 SHA256 和纯 CPU 自检通过才报成功。运行期不下载，不发送云端。下载采用 HTTPS 镜像/官方回退，持续过慢会切源，失败保留明确结果。根依赖和固定独立清单已同步，历史 requirements_fixed 不用于主程序。
+
+从项目根更新安装并自检：
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/setup_new_computer.py --only gateway
+```
+
+仅安装依赖、暂不准备模型时：
+
+```bash
+python3.11 new_computer_download/setup_new_computer.py --only gateway --skip-transcription-model
+```
+
+只准备或修复转写资源时：
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/prepare_transcription.py --download-models --self-test
+```
+
+新机器可指定仓库外目录，GUI 参数中填写同一目录，或设置 JAC_WHISPER_MODEL_DIR。默认 GUI 已启用“本地转写与系统任务”；缺少/损坏模型明确拒绝开始采集，可先关闭该项运行基础听看说。LM Studio 要按第 11 节加载精确 Qwen，默认本机 12345；大脑不可用时任务明确失败，感知继续运行。运行中设置锁定，下次启动生效。
+
+启动 GUI：
+
+```bash
+.cache/m0/venv/bin/python main.py --gateway --gui
+```
+
+GUI 内先启动后端再启动语音，戴耳机。第一轮使用明确短句：“查询电脑状态”“查一下电池电量”“查询本机当前时间”“生成一份系统状态报告”。界面应出现独立用户转写、大脑任务状态和可打开的真实报告。报告含该条任务转写及实际工具证据，仅在本机 output/m2/qwen/；一般转写只在内存，音视频不落盘。目前任务结果不会从原生音色播报，不能把界面文件交付当成播报验收。
+
+仅基础听看说的完整命令：
+
+```bash
+.cache/m0/venv/bin/python main.py --gateway --gui --no-transcription
+```
+
+终端设备入口仍需显式授权：
+
+```bash
+.cache/m0/venv/bin/python main.py --gateway --consent-devices --transcription
+```
+
+Windows 使用 .cache\m0\venv\Scripts\python.exe 替换解释器；CPU 子进程强制 UTF-8 管道，Qt 保留中文字体回退。但本轮仍只在 Apple Silicon 实跑，不宣称 Windows Metal 后端已验收。
+
+本机安装器已实跑通过：依赖/主进程隔离检查、四项资源 SHA256 与 CPU 就绪自检。真实固定后端 60 秒合成文件联调交付唯一系统报告，设备未打开；这不代表真机识别质量或长时性能已验收。
+
+VAD 在线程以 30ms 判定，至少 300ms 有声和 600ms 句末静音；12 秒长句不会截成多个指令。低置信度、播放期间讲话、过期结果、否定/转述或未支持的复合任务不执行；忙碌时不排队旧任务。停止/重连会取消待完成任务，请会话恢复后重新说；旁路积压/异常提示重启，持续上行不会靠丢弃用户语音追赶。

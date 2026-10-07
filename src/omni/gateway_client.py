@@ -22,6 +22,12 @@ DEFAULT_PROMPT = (
     "根据实时画面如实描述环境。没听清就请用户重复，不编造任务或已执行的操作。"
     "当前阶段只提供听、看和语音交流，电脑工具及云端任务尚未接入。"
 )
+TASK_PROMPT = (
+    "本地大脑已支持查询本机时间、电池、CPU、内存并生成系统报告。"
+    "这些明确指令由本地转写旁路交给大脑执行。遇到此类请求请简短说明交给大脑处理，"
+    "不要猜测状态数字，不声称已经完成。结果以界面的实际任务状态和文件为准。"
+    "不要输出内部控制令牌。其他问题自然回应。"
+)
 
 
 class GatewayCallbacks:
@@ -42,6 +48,12 @@ class GatewayCallbacks:
     def on_error(self, error):
         """接收异常类型或经校验的协议错误。"""
 
+    def on_user_transcript(self, text):
+        """接收完整、通过置信度校验且没有播放重叠的用户转写。"""
+
+    def on_task_event(self, state, detail):
+        """接收大脑任务状态；完成事件含真实本机报告路径。"""
+
 
 class GatewayClient:
     """支持 asyncio 或线程启动；重连期间明确暂停设备并恢复有限上下文。"""
@@ -50,7 +62,9 @@ class GatewayClient:
                  system_prompt=DEFAULT_PROMPT, callbacks=None, consent_devices=False,
                  input_device=None, output_device=None, camera=0, video_fps=5,
                  video_enabled=True, mic_gain=1.0, session_seconds=240,
-                 context_provider=None, device_factory=LiveDevices, retry_limit=3, drain_seconds=8):
+                 context_provider=None, device_factory=LiveDevices, retry_limit=3, drain_seconds=8,
+                 transcription_enabled=False, whisper_model_dir=None,
+                 brain_url="http://127.0.0.1:12345", pipeline_factory=None):
         """仅配置客户端，不打开设备；默认在视频会话上限前 60 秒主动重建。"""
         self.url = protocol.gateway_url(url, "video")
         if not 5 <= session_seconds <= 240 or retry_limit < 0:
@@ -59,6 +73,12 @@ class GatewayClient:
             raise ValueError("尾部接收窗口须为 0–10 秒")
         self.ref_audio_path = Path(ref_audio_path or ROOT / "voices/silverwalf_voice.wav")
         self.system_prompt, self.context_provider = system_prompt, context_provider
+        if transcription_enabled and system_prompt == DEFAULT_PROMPT:
+            self.system_prompt = DEFAULT_PROMPT.replace(
+                "当前阶段只提供听、看和语音交流，电脑工具及云端任务尚未接入。", TASK_PROMPT)
+        self.transcription_enabled, self.whisper_model_dir = transcription_enabled, whisper_model_dir
+        self.brain_url, self.pipeline_factory = brain_url, pipeline_factory
+        self._pipeline = None
         self.callbacks = callbacks or GatewayCallbacks()
         self.consent_devices = consent_devices
         self.device_kwargs = dict(input_device=input_device, output_device=output_device,
@@ -167,6 +187,9 @@ class GatewayClient:
                     if created.get("mode") != "full_duplex" or not created.get("session_id"):
                         raise ValueError("Gateway 未创建有效全双工会话")
                     protocol.require_voice_condition(created, init)
+                    if self._pipeline is not None:
+                        self._pipeline.begin_session()
+                        devices.audio_tap = self._pipeline.offer_audio
                     startup = asyncio.create_task(asyncio.to_thread(devices.start))
                     try:
                         await asyncio.shield(startup)
@@ -188,6 +211,8 @@ class GatewayClient:
                         if stream_start is None:
                             stream_start = time.monotonic()
                         await asyncio.sleep(max(0, stream_start + index - time.monotonic()))
+                        if getattr(devices, "tap_on_send", False) and self._pipeline is not None:
+                            self._pipeline.offer_audio(chunk, False)
                         if devices.error:
                             raise RuntimeError(devices.error)
                         if receiver.done():
@@ -205,6 +230,8 @@ class GatewayClient:
                             self._stats["send_lateness_max_ms"] = max(
                                 self._stats["send_lateness_max_ms"],
                                 (time.monotonic() - stream_start - index) * 1000)
+                    if self._pipeline is not None:
+                        self._pipeline.invalidate()
                     self.callbacks.on_state("reconnecting", {"capture_paused": True})
                     await asyncio.to_thread(devices.finish_input)
                     if not receiver.done():
@@ -220,6 +247,8 @@ class GatewayClient:
                     with self._lock:
                         self._stats["sessions_completed"] += 1
                 finally:
+                    if self._pipeline is not None:
+                        self._pipeline.invalidate()
                     try:
                         if initialized and not closed:
                             # 即使停在 init/设备启动阶段，也必须走关闭握手。
@@ -241,6 +270,8 @@ class GatewayClient:
                                 receiver.cancel()
                             await asyncio.gather(receiver, return_exceptions=True)
         finally:
+            if self._pipeline is not None:
+                self._pipeline.invalidate()
             cleaned = await asyncio.to_thread(devices.stop)
             self._remember_text()
             with self._lock:
@@ -257,6 +288,34 @@ class GatewayClient:
                 raise RuntimeError("采集线程未完整退出")
 
     async def run(self, *, max_sessions=None) -> None:
+        """拥有旁路完整生命周期；CPU 就绪后才允许开启生产采集。"""
+        if not self.consent_devices:
+            raise ValueError("须明确同意使用摄像头、麦克风并戴好耳机")
+        pending = None
+        try:
+            if self.transcription_enabled:
+                from .task_pipeline import TaskPipeline, DEFAULT_MODEL_DIR
+                factory = self.pipeline_factory or TaskPipeline
+                self._pipeline = factory(self.callbacks, self.whisper_model_dir or DEFAULT_MODEL_DIR, self.brain_url)
+                pending = asyncio.create_task(asyncio.to_thread(self._pipeline.start))
+                try:
+                    await asyncio.shield(pending)
+                except asyncio.CancelledError:
+                    self._pipeline.request_stop()
+                    await asyncio.gather(pending, return_exceptions=True)
+                    raise
+            await self._run_sessions(max_sessions=max_sessions)
+        finally:
+            if self._pipeline is not None:
+                self._pipeline.request_stop()
+                await asyncio.to_thread(self._pipeline.stop)
+                counters = self._pipeline.stats()
+                with self._lock:
+                    for key, value in counters.items():
+                        self._stats["task_" + key] += value
+                self._pipeline = None
+
+    async def _run_sessions(self, *, max_sessions=None) -> None:
         """运行固定协议会话，仅对网络错误限次退避重试，停止请求不会重连。"""
         if not self.consent_devices:
             raise ValueError("须明确同意使用摄像头、麦克风并戴好耳机")
@@ -322,6 +381,8 @@ class GatewayClient:
         with self._lifecycle_lock:
             stopping = self._stop.is_set()
             self._stop.set()
+            if self._pipeline is not None:
+                self._pipeline.request_stop()
             loop, task, worker = self._loop, self._task, self._thread
             if not stopping and loop is not None and task is not None:
                 try:
@@ -357,4 +418,7 @@ class GatewayClient:
         with self._lock:
             result = dict(self._stats)
             result["processing_p95_ms"] = float(np.percentile(self._costs, 95)) if self._costs else None
-            return result
+        pipeline = self._pipeline
+        if pipeline is not None:
+            result.update({"task_" + key: value for key, value in pipeline.stats().items()})
+        return result

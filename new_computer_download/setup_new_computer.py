@@ -521,7 +521,9 @@ def step_m0(args):
     if args.dry_run:
         log(f"[dry-run] Python 3.11 创建独立环境: {m0_root}")
         log(f"[dry-run] 安装依赖: {requirements}; index={index}")
-        log("[dry-run] 保留现有 .venv，不下载模型，不启动服务。")
+        log("[dry-run] 保留现有 .venv，不启动服务。")
+        if not args.skip_transcription_model:
+            log(f"[dry-run] 准备仓库外锁定 Whisper 资源及 CPU 自检：{args.whisper_model_dir}")
         return True
     if not os.path.exists(m0_python):
         run_cmd([interpreter, "-m", "venv", m0_root])
@@ -543,6 +545,10 @@ def step_m0(args):
          "import onnxruntime, kaldi_native_fbank; from src.omni.voice_conditioning import prepare_voice; "
          "from src.brain.lm_studio import LMStudioClient; from src.brain.task_runner import BrainTaskRunner; "
          "import verify_toolcall; "
+         "import webrtcvad; from src.omni.task_pipeline import TaskPipeline; "
+         "from importlib.metadata import version; "
+         "assert version('faster-whisper') == '1.2.1' and version('ctranslate2') == '4.8.2'; "
+         "assert 'faster_whisper' not in sys.modules and 'ctranslate2' not in sys.modules; "
          "assert 'torch' not in sys.modules and 'pyaudio' not in sys.modules; "
          "assert 'requests' not in sys.modules and 'llama_cpp' not in sys.modules; "
          "assert 'src.omni.client' not in sys.modules and 'src.judgment.judge' not in sys.modules; "
@@ -558,6 +564,15 @@ def step_m0(args):
     log("仍须按 READMEfirst.md 配置仓库外模型并启动固定版本后端。")
     log("音色前端资源安装：prepare_native_voice.py --model-dir <GGUF目录>/voice-frontend --download-models --self-test")
     log(f"Qwen 独立只读验证：{m0_python} {os.path.join(PROJECT_ROOT, 'verify_toolcall.py')}")
+    if not args.skip_transcription_model:
+        prepared = run_cmd([m0_python, os.path.join(SCRIPT_DIR, "prepare_transcription.py"),
+                            "--model-dir", args.whisper_model_dir, "--download-models", "--self-test"],
+                           check=False, cwd=PROJECT_ROOT)
+        if prepared.returncode:
+            log("[失败] Whisper 资源/CPU 自检未通过，未将转写标为就绪。")
+            return False
+    else:
+        log("[跳过] Whisper 资源；GUI 启动前须关闭本地转写或自行完成资源安装。")
     return True
 
 
@@ -577,6 +592,9 @@ def parse_args():
     p.add_argument("--no-mirror", action="store_true", help="pip 不使用镜像")
     p.add_argument("--insecure", action="store_true", help="联网下载关闭 SSL 校验（仅可信内网，有中间人风险）")
     p.add_argument("--dry-run", action="store_true", help="只打印将做什么，不改动")
+    p.add_argument("--skip-transcription-model", action="store_true", help="跳过仓库外 Whisper 资源，仍安装转写依赖")
+    p.add_argument("--whisper-model-dir", default=os.environ.get("JAC_WHISPER_MODEL_DIR", os.path.expanduser("~/.cache/jac/models/whisper-small")),
+                   help="锁定 Whisper 模型的仓库外目录")
     return p.parse_args()
 
 

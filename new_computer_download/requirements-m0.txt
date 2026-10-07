@@ -21,3 +21,9 @@ pytest==8.4.2
 pytest-cov==7.0.0
 pytest-timeout==2.4.0
 PySide6==6.11.2  # Gateway 语音工作台；科技风格与 QProcess 后端管理使用现有 Qt，无新增依赖
+faster-whisper==1.2.1  # 仅 CPU 子进程转写，不加载 torch/MPS
+ctranslate2==4.8.2
+webrtcvad-wheels==2.0.14.post1
+av==18.1.0
+tokenizers==0.23.2
+huggingface-hub==1.33.0  # 运行期 offline；模型由锁定资源安装器下载

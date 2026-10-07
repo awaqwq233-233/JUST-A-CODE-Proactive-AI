@@ -1,3 +1,3 @@
 # 当前主程序仅运行固定 Gateway，Python 3.11。
-# 共用版本锁；独立 Qwen 只读任务已可验证，语音升级/记忆仍待接入。
+# 共用版本锁；Gateway 已接并行 CPU 转写/只读任务，原生结果播报与记忆仍待接入。
 -r new_computer_download/requirements-m0.txt

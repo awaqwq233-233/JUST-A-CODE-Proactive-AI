@@ -28,6 +28,14 @@ class ConsoleCallbacks(GatewayCallbacks):
         """把模型回复显示在终端，不写入统计报告。"""
         print(text, end="", flush=True)
 
+    def on_user_transcript(self, text):
+        """只在当前终端显示用户原话，不写入运行统计。"""
+        print(f"\n[bo s s] {text}", flush=True)
+
+    def on_task_event(self, state, detail):
+        """显示任务状态与实际文件，不模拟原生播报。"""
+        print(f"\n[大脑] {state}" + (f"：{detail['path']}" if state == "completed" else f"：{detail.get('code', '')}"), flush=True)
+
 
 class ReplayDevices:
     """只发送指定的本地文件样本，接收音频但不播放，也不打开摄像头。"""
@@ -46,6 +54,8 @@ class ReplayDevices:
         self.audio_queue_max = self.playback_queue_max = 0
         self.captured_frames = int(jpeg is not None)
         self.mic_rms_current = 0.0
+        self.audio_tap = None
+        self.tap_on_send = True
 
     def get(self, *args):
         """顺序回放文件并补尾部静音，固定一秒节拍由客户端管理。"""
@@ -97,6 +107,14 @@ def main(argv=None) -> int:
     parser.add_argument("--image-file", type=Path)
     parser.add_argument("--voice", type=Path, default=ROOT / "voices/silverwalf_voice.wav")
     parser.add_argument("--report", type=Path, default=ROOT / "output/m1/gateway.json")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--transcription", dest="transcription", action="store_true", help="开启本地转写/只读任务，文件验证需显式开启")
+    group.add_argument("--no-transcription", dest="transcription", action="store_false", help="仅听看说，关闭转写/任务")
+    parser.set_defaults(transcription=None)
+    from .transcription_worker import DEFAULT_MODEL_DIR
+    import os
+    parser.add_argument("--whisper-model-dir", type=Path, default=Path(os.environ.get("JAC_WHISPER_MODEL_DIR", str(DEFAULT_MODEL_DIR))))
+    parser.add_argument("--brain-url", default=os.environ.get("JAC_BRAIN_URL", "http://127.0.0.1:12345"))
     args = parser.parse_args(argv)
     if sys.version_info[:2] != (3, 11):
         parser.error("方案 B Gateway 入口必须使用 Python 3.11")
@@ -123,6 +141,10 @@ def main(argv=None) -> int:
         config.gateway_camera = args.camera
         config.omni_video_enabled = not args.no_video
         config.omni_ref_audio = str(args.voice)
+        if args.transcription is not None:
+            config.gateway_transcription_enabled = args.transcription
+        config.whisper_model_dir = str(args.whisper_model_dir)
+        config.gateway_brain_url = args.brain_url
         run_gui(config)
         return 0
     if args.sessions is not None and args.sessions <= 0:
@@ -152,7 +174,10 @@ def main(argv=None) -> int:
                            consent_devices=True, input_device=args.input_device,
                            output_device=args.output_device, camera=args.camera,
                            video_enabled=video_enabled, session_seconds=args.session_seconds,
-                           video_fps=args.fps, mic_gain=args.mic_gain, retry_limit=args.retry_limit, **kwargs)
+                           video_fps=args.fps, mic_gain=args.mic_gain, retry_limit=args.retry_limit,
+                           transcription_enabled=args.transcription if args.transcription is not None else (
+                               args.input_file is None and os.environ.get("JAC_TRANSCRIPTION_ENABLED", "1").lower() not in {"0", "false", "no", "off"}),
+                           whisper_model_dir=args.whisper_model_dir, brain_url=args.brain_url, **kwargs)
     outcome, error_type = "completed", None
     try:
         asyncio.run(client.run(max_sessions=args.sessions))
