@@ -47,7 +47,7 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 - **引擎**：`tc-mb/llama.cpp-omni` master，commit `873056743b74e1a4ce5dcf7290e2298428e214db`。
 - **模型**：`openbmb/MiniCPM-o-4_5-gguf`，revision `db25077c33951fe163b42986fba0132e279872a2`。除 `MiniCPM-o-4_5-Q4_K_M.gguf` 外，必须包含 audio、vision、tts、token2wav-gguf；逐文件 SHA256 见 `backend.lock.json`。
 - **链路**：J.A.C. → Gateway `127.0.0.1:8006` → Worker `127.0.0.1:22400` → `llama-omni-server` `127.0.0.1:22500`。Worker 注册接口为本机 `:8007`。
-- **构建**：CMake Release、`GGML_METAL=ON`、`LLAMA_OPENSSL=OFF`，构建目标 `llama-omni-server` / `llama-omni-cli`。固定 commit 加上已记录的 `new_computer_download/patches/engine-loopback.patch`，使内部后端遵守 `--host`；启动器只接受这份补丁，不接受其他源码漂移。
+- **构建**：CMake Release、`GGML_METAL=ON`、`LLAMA_OPENSSL=OFF`，构建目标 `llama-omni-server` / `llama-omni-cli`。固定 commit 加上 `new_computer_download/patches/engine-loopback-native-voice.patch`：包含遵守 `--host` 的本机监听修复及 bo s s 2026-10-07 明确批准的原生音色条件接线；启动器只接受这份组合补丁，不接受其他源码漂移。
 - **起始参数**：`-ngl 99 -c 4096 -t 8`。其他参数依据该固定版本的 `--help` 与 M0 结果确定，不照搬旧 `llama-server` 命令。
 - **生命周期**：等待 `session.queue_done` → 发送 `session.init {payload: ...}` → 收到 `session.created` → 固定节拍 `input.append {input: ...}` → 接收 `response.output.delta` → `session.close / session.closed`。
 - **输出**：`kind=listen/text/audio`；音频是 **24kHz mono float32 PCM Base64**，独立于文本流。视频双工不用 `response.done` 作为每轮结束信号。
@@ -59,7 +59,8 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 - 参考音为 `voices/silverwalf_voice.wav`，客户端读取后转成 **16kHz mono float32 PCM Base64**。
 - 在 `session.init.payload.voice.ref_audio_base64` 与 `tts_ref_audio_base64` 发送，不再离线提取 `.pt`，也不使用 `--tts-speaker-emb` 或 `voice_id`。
 - 下行原生 24kHz PCM 直接通过 SoundDevice 输出流播放；运行时不将参考音发送给云端推理服务。bo s s 已明确允许将模板 `voices/silverwalf_voice.wav` 推送到本项目的公开 GitHub 仓库；此授权不包含实际测试录音。
-- **2026-10-07 实现核查**：固定 C++ 版本的 `tts_ref_audio_b64` 只被解析，未接入 Token2Wav；合成仍加载官方 `prompt_cache.gguf` 的声纹。收到参考 WAV / 原生音频不等于指定音色克隆成功。`realtime_protocol.build_init()` 现针对该版本将 `system_prompt` 编为 `<|audio_end|>…<|im_end|>` 后缀，以兼容上游把该字段覆盖到 `omni_assistant_prompt` 的行为；不能把此兼容编码直接用于其他后端。完整克隆修复涉及扩展已锁定的引擎补丁及本地音色条件生成，实施范围待 bo s s 确认，详见 CHANGELOG 附 A4。
+- **2026-10-07 原生接线修复**：bo s s 已批准扩展锁定补丁，现以 CPU ONNX 前端生成 192 维 CAMPPlus 声纹、S3 参考 token 与 24k mel 条件，并通过现有 native PromptBundle 接口加载到 C++ Token2Wav。`backend.lock.json.voice_frontend` 独立锁定两个官方 ONNX，存放在仓库外 GGUF 目录的 `voice-frontend/`；官方 10 个 GGUF 与 SHA256 不改、不覆盖默认缓存。派生条件按规范化 16k PCM 内容哈希隔离至忽略的 `.cache/voices/`，重连复用、换参考重建，损坏/静音/缺失前端明确失败。
+- **会话确认**：`session.created.voice_conditioning` 返回 applied 与参考 PCM SHA256；GUI/CLI 和文件/设备探针核对确认后才开启采集，旧后端没有确认时拒绝启动，不默默使用默认音色。默认音色仅供没有请求参考音的协议探针，复用会话时也明确重载。`realtime_protocol.build_init()` 仍针对固定 C++ 版本将 `system_prompt` 编为 `<|audio_end|>…<|im_end|>` 后缀；不能直接用于其他后端。生产客户端双会话、参考切换和静音拒绝已验证，音色听感仍须 bo s s 确认，详见 CHANGELOG 附 A4。
 
 ### 五、输出层
 
@@ -101,7 +102,7 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 |---|---|---|---|
 | omni 后端 | 固定版本 Gateway / Worker / C++ Metal，Q4_K_M，`:8006/v1/realtime?mode=video` | 新 `GatewayClient` 已接入 `main.py --gateway` 和轻量 GUI；旧入口已移除 | 继续验证生产设备与升级接线 |
 | 上下文/参数 | 起始 `-c 4096 -t 8 -ngl 99` | 固定方案 B 参数 | 后续性能优化需实测 |
-| 语音输出 | 参考 WAV Base64 + 原生 24k float32 PCM | 参考音已发送、SoundDevice 原生播放正常；固定 C++ Token2Wav 仍用默认声纹，指定音色未生效 | 模板边界已修复；完整克隆接线待确认实施 |
+| 语音输出 | 参考 WAV Base64 + 原生 24k float32 PCM | 原生音色条件已接入 C++ Metal；会话核对已应用的参考音哈希 | 技术接线/重连/切换通过；听感待用户确认 |
 | 记忆 | **ChromaDB** + BGE-Small-ZH-v1.5（ONNX INT8） + JSON | fastembed + paraphrase-multilingual-MiniLM + 自研 MemoryStore | 重写 `src/memory/` |
 | 模型层数 | 三层（o-4_5 + qwen + 云端 OpenClaw） | 第一层 Gateway 已运行；Qwen 组件保留但升级未接线，OpenClaw 未接入 | 接入 Qwen 升级与云端通道 |
 | 音频输入 | SoundDevice + 16k float32 mono + 固定 1 秒块 | Gateway 已接入；旧运行入口已移除 | 并行 VAD/Whisper 转写待接入 |
@@ -228,4 +229,4 @@ VS Code 本机调试配置为忽略的 `.vscode/launch.json`「J.A.C. · Gateway
 - 并行 Whisper 转写尚未接入，GUI 目前显示助手回复，不能展示或恢复未经转写的用户原话。
 - 无 WebRTC AEC（新架构以戴耳机规避回声，AEC 需求待重新评估）。
 - 无云端 OpenClaw 集成（新架构新增项，代码未落地）。
-- 指定音色克隆未完成：C++ Token2Wav 使用官方默认缓存，尚未应用会话 TTS 参考音。提示词边界已修复，不能据此宣称克隆完成或覆盖用户听感反馈。
+- 原生音色克隆接线已修复，但不保证与参考 WAV 完全一致；技术加载确认与用户听感验收分别记录。CPU 前端冷启动/条件加载会增加会话初始化时间，不阻塞已建立会话的音视频回调。

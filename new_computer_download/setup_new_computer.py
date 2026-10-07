@@ -540,6 +540,7 @@ def step_m0(args):
         [m0_python, "-c", "import sys; from src.omni import GatewayClient; "
          "from PySide6.QtWidgets import QApplication; import gui, main; "
          "from src.omni.backend_control import BackendController; import httpx, fastapi, uvicorn; "
+         "import onnxruntime, kaldi_native_fbank; from src.omni.voice_conditioning import prepare_voice; "
          "assert 'torch' not in sys.modules and 'pyaudio' not in sys.modules; "
          "assert 'src.omni.client' not in sys.modules and 'src.judgment.judge' not in sys.modules; "
          "print('Gateway client, GUI and backend dependencies verified')"],
@@ -552,6 +553,7 @@ def step_m0(args):
     log("[自检通过] Gateway 客户端、GUI 与后端控制依赖已就绪；未打开设备。")
     log(f"GUI 启动：{m0_python} {os.path.join(PROJECT_ROOT, 'main.py')} --gateway --gui")
     log("仍须按 READMEfirst.md 配置仓库外模型并启动固定版本后端。")
+    log("音色前端资源安装：prepare_native_voice.py --model-dir <GGUF目录>/voice-frontend --download-models --self-test")
     return True
 
 

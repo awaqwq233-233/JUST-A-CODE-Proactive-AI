@@ -12,7 +12,7 @@ The Chinese section below contains the same commands, one per block. Run environ
 
 Create `.cache/m0/venv` and install `requirements-m0.txt`. Use `start_m0_backend.py --preflight --verify-sha` before launching. The launcher binds all ports to loopback, disables upstream session recording, rejects occupied ports and terminates only its own children on Ctrl+C.
 
-The Gateway URL is `ws://127.0.0.1:8006/v1/realtime?mode=video`. Inputs are 16 kHz mono float32 PCM Base64; outputs are 24 kHz mono float32 PCM Base64. The probe sends fixed one-second chunks and reference-WAV voice fields. `--require-audio` fails if no native audio is returned. It does not verify speaker identity: the pinned C++ backend does not yet apply the TTS reference and still uses its official default Token2Wav speaker cache. The client supplies the version-specific audio/system prompt suffix; do not reuse it with another backend without checking its template.
+The Gateway URL is `ws://127.0.0.1:8006/v1/realtime?mode=video`. Inputs are 16 kHz mono float32 PCM Base64; outputs are 24 kHz mono float32 PCM Base64. The combined engine patch applies the TTS reference using two pinned CPU ONNX frontend models in the external GGUF directory's `voice-frontend/`. Install them with `prepare_native_voice.py --model-dir <GGUF-directory>/voice-frontend --download-models --self-test`; the installer verifies the frontend dependencies and the backend launcher verifies resource hashes. Derived conditions remain in ignored `.cache/voices/`. The client requires an applied-reference hash before opening devices. `--require-audio` checks native output presence; it does not establish perceptual voice similarity. The client supplies the version-specific audio/system prompt suffix; do not reuse it with another backend without checking its template.
 
 The file probe proves protocol and native-audio transport only. The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds. The M1 production client now rotates video sessions after 240 input seconds, with visible capture pauses and re-injection of the reference voice, supplied confirmed context and bounded assistant history. Untranscribed user speech is not reconstructed.
 
@@ -87,10 +87,10 @@ git -C /absolute/backend/llama.cpp-omni checkout 873056743b74e1a4ce5dcf7290e2298
 ```
 
 ```bash
-git -C /absolute/backend/llama.cpp-omni apply /absolute/JAC/new_computer_download/patches/engine-loopback.patch
+git -C /absolute/backend/llama.cpp-omni apply /absolute/JAC/new_computer_download/patches/engine-loopback-native-voice.patch
 ```
 
-该补丁只让内部引擎遵守 --host。固定版本自动启用 OpenSSL 时会构造需要证书的 SSLServer；本机内部链路使用 HTTP，因此显式关闭 LLAMA_OPENSSL。
+该组合补丁让内部引擎遵守 --host，并在会话初始化时应用指定音色的原生合成条件。固定版本自动启用 OpenSSL 时会构造需要证书的 SSLServer；本机内部链路使用 HTTP，因此显式关闭 LLAMA_OPENSSL。
 
 ```bash
 cmake -S /absolute/backend/llama.cpp-omni -B /absolute/backend/llama.cpp-omni/build -DCMAKE_BUILD_TYPE=Release -DGGML_METAL=ON -DLLAMA_OPENSSL=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF
@@ -130,6 +130,8 @@ MiniCPM-o-4_5-gguf/
   token2wav-gguf/flow_extra.gguf
   token2wav-gguf/hifigan2.gguf
   token2wav-gguf/prompt_cache.gguf
+  voice-frontend/campplus.onnx
+  voice-frontend/speech_tokenizer_v2_25hz.onnx
 ```
 
 已有文件优先通过 SHA256 复用。若使用 Hugging Face CLI 下载，需先在专用环境安装 `huggingface_hub`；不要因此替换主程序依赖。
@@ -139,6 +141,16 @@ hf download openbmb/MiniCPM-o-4_5-gguf --revision db25077c33951fe163b42986fba013
 ```
 
 国内网络可为同一命令设置 `HF_ENDPOINT=https://hf-mirror.com`，但下载后必须按 lock 的 SHA256 校验，不能仅依赖文件名或镜像元数据。
+
+**原生音色（2026-10-07 修复）**：组合补丁将指定 TTS 参考音转成本地声纹、token 与 mel 条件，加载到 C++ Token2Wav。依赖新增 onnxruntime 1.24.4 / kaldi-native-fbank 1.22.3，已纳入 Gateway 安装及导入自检；不加载完整 torch 模型。参考音要求 1–30 秒、单一清晰声音。先完成本节的独立资源安装与自检；模型只存放在仓库外。运行时不下载、不发云端，失败不默默使用默认音色。
+
+在 GGUF 下载阶段之后运行以下安装命令。`--model-dir` 应为上文实际 GGUF 目录下的 `voice-frontend` 子目录；两个官方 ONNX（合计约 524MB）的 revision / SHA256 已记录于 backend.lock.json，国内 HTTPS 镜像失败回退官方并验证哈希。自检用项目参考 WAV 生成条件，不开启或播放设备。
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/prepare_native_voice.py --model-dir /absolute/models/MiniCPM-o-4_5-gguf/voice-frontend --download-models --self-test
+```
+
+已安装旧 loopback 补丁的后端，应在确认源码只有该旧补丁时撤销它，再应用新的完整组合补丁并重新构建；不同时叠加两份补丁、不重置未知源码修改。启动器会核对最终完整 diff，不能只更新 Python 客户端。新资源安装完成后再执行第 6 节预检。官方 GGUF 文件与哈希保持不变。
 
 ### 6 预检与启动
 
@@ -160,7 +172,7 @@ hf download openbmb/MiniCPM-o-4_5-gguf --revision db25077c33951fe163b42986fba013
 
 在第二个终端、J.A.C. 根目录运行。参考 WAV 通过 voice 字段转换成 16k float32 PCM；不需要 .pt、NVIDIA GPU 或 Voicebox。以下探针只发送仓库已有音频文件，不打开麦克风、摄像头或扬声器。
 
-**音色限制（2026-10-07 核实）**：当前固定 C++ 后端没有将 TTS 参考音接入 Token2Wav，仍加载官方默认音色缓存。客户端已补齐该版本参考音后的 system 模板边界，但不是完整克隆修复；`--require-audio` 只验证原生音频存在，不验证与参考 WAV 的音色一致。完整修复范围见 CHANGELOG 附 A4，目前无需安装新依赖或更换模型。
+客户端在开启设备前验证 `session.created.voice_conditioning` 中的参考 PCM 哈希；旧二进制未提供确认时明确拒绝。生产 Gateway URL 仍为 video 模式，文件回放验证该路径时应附测试 JPEG。`--require-audio` 只检查原生语音存在，听感相似度需另外试听；技术验证记录见 CHANGELOG 附 A4。
 
 ```bash
 .cache/m0/venv/bin/python verify_duplex.py --mode audio --audio /absolute/中文提问.wav --voice voices/silverwalf_voice.wav --chunks 25 --require-audio --require-realtime
@@ -239,4 +251,4 @@ M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo 
 - queue_done 超时：检查 Worker 已注册、三个健康接口正常，以及 output/m0 下的日志。
 - 无 audio 增量：原生 TTS 验收尚未通过，检查全部 Token2Wav / TTS 模块和参考音。
 - 中文字体异常：DOCX 使用显式东亚字体；如 Windows 缺少字体，安装对应字体后再检查页面渲染。Python 和 Markdown 文件统一 UTF-8。
-- 依赖冲突：当前运行环境为 Python 3.11 `.cache/m0/venv`；根 `requirements.txt` 直接引用 `requirements-m0.txt`，`requirements_fixed.txt` 是历史组件快照。科技主题与 GUI 后端管理没有新增依赖，无需重装。安装器默认 Gateway，原 `.venv` 保留但不作为主程序环境。
+- 依赖冲突：当前运行环境为 Python 3.11 `.cache/m0/venv`；根 `requirements.txt` 直接引用 `requirements-m0.txt`，`requirements_fixed.txt` 是历史组件快照。原生音色前端新增 onnxruntime / kaldi-native-fbank；已有机器须更新当前清单并安装 voice-frontend 资源、重新应用组合补丁和构建后端。安装器默认 Gateway，原 `.venv` 保留但不作为主程序环境。

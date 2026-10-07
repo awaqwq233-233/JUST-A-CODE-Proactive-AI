@@ -160,11 +160,13 @@ class GatewayClient:
                 try:
                     events = Counter()
                     await protocol.receive_until(ws, "session.queue_done", 120, events)
-                    await ws.send(json.dumps(await self._init_message(voice), ensure_ascii=False))
+                    init = await self._init_message(voice)
+                    await ws.send(json.dumps(init, ensure_ascii=False))
                     initialized = True
                     created = await protocol.receive_until(ws, "session.created", 120, events)
                     if created.get("mode") != "full_duplex" or not created.get("session_id"):
                         raise ValueError("Gateway 未创建有效全双工会话")
+                    protocol.require_voice_condition(created, init)
                     startup = asyncio.create_task(asyncio.to_thread(devices.start))
                     try:
                         await asyncio.shield(startup)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import time
 from collections import Counter
@@ -63,6 +64,19 @@ def build_init(prompt: str, voice: np.ndarray | None) -> dict:
             "tts_ref_audio_base64": reference,
         }
     return {"type": "session.init", "payload": payload}
+
+
+def require_voice_condition(created: dict, init: dict) -> None:
+    """请求克隆时须取得对应 PCM 哈希的 native 条件确认，否则拒绝启动设备。"""
+    voice = init.get("payload", {}).get("voice", {})
+    reference = voice.get("tts_ref_audio_base64") or voice.get("ref_audio_base64")
+    if not reference:
+        return
+    expected = hashlib.sha256(base64.b64decode(reference, validate=True)).hexdigest()
+    condition = created.get("voice_conditioning") or {}
+    if (not isinstance(condition, dict) or condition.get("applied") is not True
+            or condition.get("reference_sha256") != expected):
+        raise ValueError("后端未确认应用指定音色，请使用已更新并重新编译的固定后端")
 
 
 def build_input(samples: np.ndarray, jpeg: bytes | None = None) -> dict:

@@ -13,6 +13,8 @@ pydantic==2.12.5
 python-multipart==0.0.22
 PyYAML==6.0.3
 librosa==0.11.0
+onnxruntime==1.24.4  # 仅 CPU 参考音色前端，完整推理仍为 C++ Metal
+kaldi-native-fbank==1.22.3  # CAMPPlus 的 Kaldi 特征；不引入 torch/torchaudio
 markdown==3.10.2
 Pygments==2.19.2
 pytest==8.4.2

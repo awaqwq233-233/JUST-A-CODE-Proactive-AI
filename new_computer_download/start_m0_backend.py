@@ -19,10 +19,11 @@ from pathlib import Path
 import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 
 def check_checkout(path: Path, expected: str, patch: Path | None = None) -> None:
-    """验证 commit，且仅接受 lock 指定的已审阅本机监听补丁。"""
+    """验证 commit，且仅接受 lock 指定的已审阅完整引擎补丁。"""
     result = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
     if result.stdout.strip() != expected:
         raise ValueError(f"仓库 commit 不符: {path}")
@@ -121,6 +122,12 @@ def launch(args, lock: dict) -> None:
     logs.mkdir(parents=True, exist_ok=True)
     children = []
     env = dict(os.environ, PYTHONUNBUFFERED="1", NUMBA_CACHE_DIR=str(ROOT / ".cache/m0/numba"))
+    env.update(JAC_VOICE_PYTHON=sys.executable,
+               JAC_VOICE_PREPARE_SCRIPT=str(ROOT / "new_computer_download/prepare_native_voice.py"),
+               JAC_VOICE_MODEL_DIR=str(args.model_dir / lock["voice_frontend"]["relative_dir"]),
+               JAC_VOICE_CACHE_DIR=str(ROOT / ".cache/voices"))
+    # 禁止继承上游的任意导出目录，避免将派生音色写进官方模型目录。
+    env.pop("T2W_EXPORT_CACHE_DIR", None)
     commands = [
         ("backend", [str(args.engine_dir / "build/bin/llama-omni-server"),
                      "-m", str(args.model_dir / "MiniCPM-o-4_5-Q4_K_M.gguf"),
@@ -191,6 +198,9 @@ def main() -> int:
         if "LLAMA_OPENSSL:BOOL=OFF" not in cache:
             raise ValueError("本机 HTTP 内部链路必须以 -DLLAMA_OPENSSL=OFF 构建")
         check_model_files(args.model_dir, lock["model"]["files"], args.verify_sha)
+        from src.omni.voice_conditioning import validate_models
+        validate_models(args.model_dir / lock["voice_frontend"]["relative_dir"])
+        print("本地音色前端 SHA256 校验通过", flush=True)
         ensure_free_ports(lock["ports"])
         if args.preflight:
             print("M0 源码、模型与端口预检通过")

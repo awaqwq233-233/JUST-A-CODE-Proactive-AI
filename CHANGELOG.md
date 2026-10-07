@@ -5,6 +5,19 @@
 
 ---
 
+## 2026-10-07 — 修复指定音色原生合成，扩展经批准的固定 Metal 补丁
+
+- bo s s 明确同意按附 A4 继续原生 Metal 克隆修复，并指定项目 `voices/` 目录。本轮使用 `voices/silverwalf_voice.wav`，保持 MiniCPM-o / Gateway / Worker / C++ Metal 与原十个 GGUF 文件的版本、SHA256 不变；未恢复旧 TTS 桥接。
+- 新增 `src/omni/voice_conditioning.py` 与 `new_computer_download/prepare_native_voice.py`：本地 CPU/ONNX 生成 192 维 CAMPPlus 声纹、S3 参考 token 和 24k mel 条件，按规范 16k float32 PCM SHA256 隔离缓存到 `.cache/voices/`，校验资源和缓存后原子落盘。参考限 1–30 秒，静音、异常振幅、非有限值与损坏缓存明确失败；不保存原始 PCM、不运行完整 torch 模型、不在运行时下载或发送云端。
+- 单独锁定官方 `openbmb/MiniCPM-o-4_5` revision `503e754207c94da6bb26850b4469f367c9ea3582` 的两个 ONNX，逐文件 SHA256 见 `backend.lock.json`。资源放在仓库外 GGUF 目录的 `voice-frontend/`，下载工具以 HTTPS 优先国内镜像、失败回退官方并校验哈希。Gateway 清单新增 onnxruntime 1.24.4 / kaldi-native-fbank 1.22.3；一键安装导入自检、独立资源安装与启动预检已同步。当前机器已安装、资源自检通过；根 requirements 继续引用独立清单，历史 requirements_fixed 无需改动。
+- 将原 loopback 补丁替换为 `engine-loopback-native-voice.patch`，启动器核对固定 commit 上的完整组合 diff。C++ 在 duplex 线程启动前运行本地 helper（无 shell、60 秒超时），加载原生 PromptBundle 并重置每会话 token 缓冲；返回 `session.created.voice_conditioning` 的应用状态与参考 PCM 哈希。初始化失败拒绝会话，不沿用上一参考音或默认声音；未请求参考音的协议探针明确重载官方默认缓存。GUI/CLI、文件及设备探针在开启设备前核对确认，旧二进制未确认时拒绝。支持 UTF-8 路径的 Windows 分支保留，但未在 Windows 实跑。
+- 全仓库 Python 3.11 回归 **168 passed（154.46 秒）**，包含缓存隔离/复用/损坏、输入拒绝、确认缺失/错哈希以及原有 GUI/重连/启停覆盖。两个 C++ 构建目标完成；CAMPPlus fbank 与官方 torch 数值对照最大绝对误差 0.002004，S3 log-mel 0.00002146；仅离线对照使用既有旧环境，不向生产环境新增 torch。
+- 真实固定后端音视频文件回放通过：24 块、3.20 秒原生输出、P95 603.317ms；生产 GatewayClient 使用文件输入与模拟设备连续完成两次受控会话，共 48 块、3.16 秒原生输出、两次关闭握手，P95 538.298ms，清理失败 0。两个会话确认同一目标哈希；独立切换 TTS 参考音得到新哈希/新缓存，静音参考明确拒绝，恢复模板命中原缓存。未打开麦克风、摄像头或扬声器，不将模拟播放计数当成真实收播或用户验收；所有本轮后端已回收。
+- 保留此前无图 video 模式回放未产生音频的失败报告，默认音色同样未发声；附合成 JPEG 后上述生产路径正常。默认/目标短试听文件与探索性声纹对照仅保存在忽略的 `output/m1/`；相对模板的 CAMPPlus cosine 为 0.1274 / 0.6353，样本很短且生成文本不完全相同，不能换算为音色相似百分比或听感通过。指定条件实际加载、输出、切换与重建已验证，最终音色听感待 bo s s 确认。
+- 同步双语 README、AGENTS、安装指南与附 A4；本地权威 DOCX 更新获批的原生条件架构及资源/会话确认说明，中文字体修正并完成逐页渲染检查。`.cache/`、`output/`、模型与规划目录仍按既有 .gitignore 排除，不提交派生声纹、试听音频、ONNX 或规划文档；个人笔记未编辑。安装器实际依赖/导入自检与完整后端预检通过，git diff --check 通过。
+
+---
+
 ## 2026-10-07 — 定位指定音色未生效，修复固定 C++ 会话提示词边界
 
 - bo s s 反馈当前声音似乎没有克隆指定音色。核查默认参考文件 `voices/silverwalf_voice.wav`：44.1kHz / 单声道 / PCM16 / 12.376 秒，波形有效；客户端转为 16k mono float32 后，同一 Base64 确实发送到 LLM 与 TTS 两个 voice 字段，GUI/CLI 路径未丢失参考音。
@@ -275,16 +288,17 @@
 > - **A1 判断模型**：目标由 MiniCPM-o-4_5 全双工承担主动判断，固定 Gateway `/v1/realtime?mode=video`；旧 `src/judgment/` 轮询 judge 已于本轮删除，旧 :9060 客户端与传统运行入口也已退役。
 > - **A3 记忆**：旧结论「fastembed + JSON 长期记忆」已作废——新架构改 **ChromaDB + BGE-Small-ZH-v1.5（ONNX INT8）+ JSON**，`src/memory/`（自研 MemoryStore）**待重写**；附 B/C/D/E/F 为旧记忆子系统契约，仅作历史存档。
 > - **A5 云端 / OpenClaw**：旧结论「无 MCP / OpenClaw 集成」已作废——新架构**新增云端 OpenClaw 层**（DeepSeek API），属待实现项。
-> - **A4 语音 / TTS**：目标为参考 WAV 经 `session.init.payload.voice` 编码发送，24k float32 原生音频流；不使用 speaker embedding `.pt`。2026-10-07 核查确认参考音已发送，但固定 C++ Token2Wav 未应用 TTS 参考字段，仍使用官方默认声纹缓存，**指定音色克隆尚未完成**。客户端已修复音频/system 模板边界，不能据此宣称完整克隆生效。旧 omni Voicebox 桥接/回灌已删除，主依赖仅 Gateway；未迁移的通用音频组件独立保留。
-> - **A4 后端参数**：目标固定 Gateway `:8006`、Worker `:22400`、引擎 `:22500`，Q4_K_M、起始 `-c 4096 -t 8 -ngl 99`；Metal 构建关闭内部 TLS并应用已登记的 loopback 补丁。
+> - **A4 语音 / TTS**：参考 WAV 经 `session.init.payload.voice` 发送，24k float32 原生音频流；不使用 speaker embedding `.pt`。2026-10-07 bo s s 批准修复固定 C++ 未应用 TTS 参考字段的问题：本地 CPU/ONNX 生成并缓存声纹、token、mel，组合补丁加载到原生 Token2Wav；客户端核对应用哈希后才开启设备。技术加载、原生输出、切换、拒绝无效参考及双会话重建已通过，听感仍待 bo s s 确认。旧 omni Voicebox 桥接/回灌已删除，未迁移通用音频组件独立保留。
+> - **A4 后端参数**：固定 Gateway `:8006`、Worker `:22400`、引擎 `:22500`，Q4_K_M、起始 `-c 4096 -t 8 -ngl 99`；Metal 构建关闭内部 TLS，应用经批准并登记的 `engine-loopback-native-voice.patch` 完整组合补丁。
 > 其余历史坑位记录（令牌碎片、背压、回声门控等）作为工程经验保留，但在新架构后端 / 协议下需**重新验证**。
 
-#### A4. 当前固定原生音色的缺口与修复建议（2026-10-07）
+#### A4. 固定原生音色修复状态（2026-10-07）
 
-- **已核实的链路**：参考 WAV → 16k float32 Base64 → Gateway/Worker 原样转发 → C++ 将 LLM 参考音写临时 WAV 并 APM prefill；TTS 参考字段仅解析。最终 Token2Wav 从官方 `prompt_cache.gguf` 加载 `spk_cb` 与流式条件缓存，未从指定 WAV 生成或替换这些量。参考音影响 LLM 条件不等于最终合成器已换声纹。
-- **已修复的独立问题**：固定 C++ 将 system_prompt 用作音频后的模板后缀，客户端补齐 `<|audio_end|>` 与 `<|im_end|>`，避免参考音与助手指令之间的角色边界损坏。真实后端日志与 22 块文件回放验证通过；完整克隆、相似度与真机听感仍待验证。
-- **具体修复范围（待确认，未实施）**：保留固定 MiniCPM-o / C++ Metal 主链路，用本地前处理将参考 WAV 转成 Token2Wav 已有 `PromptBundle` 接口要求的声纹、参考语音 token 与 mel 条件；优先评估 CPU/ONNX 前处理并单独锁定必要资源，不加载完整 PyTorch 全双工模型。使用参考音内容哈希缓存派生产物，放入忽略目录、禁发云端，不覆盖官方模型与其锁定 SHA256。扩展登记的引擎补丁，在创建/复用会话时按 TTS 参考音加载条件，换参考音时刷新，失败明确报错而不默默使用默认音色。同步安装阶段、导入/资源自检和必要的权威架构说明。验证需包含不同参考音切换、受控重连复用、失败拒绝以及同文案默认/目标声音对比和 bo s s 听感确认。
-- **边界**：AGENTS 当前规定启动器只接受已登记 loopback 补丁，因此不能直接给固定外部引擎加未登记源码变化；以上范围需 bo s s 确认后才实施。不恢复旧桥接或改变模型层数来绕过此缺口。
+- **原始缺口**：参考 WAV 虽已通过 Gateway/Worker 传递，LLM 参考音被 APM prefill，但 TTS 参考字段原本仅解析；最终 Token2Wav 一直从官方 `prompt_cache.gguf` 加载默认 `spk_cb`。发送参考音或收到原生语音不构成指定音色已应用的证据。
+- **修复与批准**：bo s s 已明确同意原生 Metal 克隆范围。新增本地 CPU/ONNX 前端提取声纹、参考 token 与 mel，按 PCM SHA256 缓存到 `.cache/voices/`；固定 C++ 组合补丁在创建/复用会话时调用 helper、加载原生 PromptBundle，并在 `session.created` 确认应用哈希。无效参考、资源/缓存损坏、超时或旧后端未确认均失败，不默认回落。两个 ONNX 的独立版本/哈希、安装自检与外部模型目录预检已落地；原有 GGUF 与官方默认缓存未覆盖，运行时不下载、不发云端。
+- **模板边界**：客户端仍补齐固定 C++ 要求的 `<|audio_end|>` / `<|im_end|>` 后缀，保留第一阶段修复；音色条件则由本轮 Token2Wav 接线实际应用。最终合成保持 C++ Metal，没有恢复旧 Voicebox 或改变模型层数。
+- **验证**：全仓库 168 项通过；两个 C++ 目标构建完成。真后端音视频文件回放与生产客户端两次受控重建已确认同一模板哈希、正常输出与关闭；更换独立 TTS 参考得到不同哈希，静音拒绝，恢复模板命中缓存。无图 video 回放不发声的失败报告保留，带合成 JPEG 的生产路径通过。未打开真实设备；短样本探索性声纹 cosine 不等于听感验收，默认/目标试听仍需 bo s s 判断，严禁将其写成相似百分比或“完全克隆”。
+- **后续边界**：启动器仅接受固定 commit 加已登记完整组合补丁，后续变更仍须按契约登记。首次提取与每会话条件加载增加初始化时间，参考音限 1–30 秒；缓存清理会触发下次重新提取。尚未在 Windows 执行后端验证；本轮不增加真机长测或修改 M0 免测决定。
 
 #### A1. 交互方式：从被动到主动（部分解决）
 

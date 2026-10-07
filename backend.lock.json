@@ -8,7 +8,7 @@
     "offline_tests_passed": 33,
     "audio_file_p95_ms": 860.804,
     "video_file_p95_ms": 591.786,
-    "live_p95_ms": 679.310,
+    "live_p95_ms": 679.31,
     "live_seconds": 40,
     "native_audio_played_seconds": 31.0,
     "human_confirmed_audio_and_relevance": true,
@@ -26,8 +26,12 @@
       "url": "https://github.com/tc-mb/llama.cpp-omni.git",
       "branch": "master",
       "commit": "873056743b74e1a4ce5dcf7290e2298428e214db",
-      "patch": "new_computer_download/patches/engine-loopback.patch",
-      "cmake_options": ["GGML_METAL=ON", "LLAMA_OPENSSL=OFF", "LLAMA_CURL=OFF"]
+      "patch": "new_computer_download/patches/engine-loopback-native-voice.patch",
+      "cmake_options": [
+        "GGML_METAL=ON",
+        "LLAMA_OPENSSL=OFF",
+        "LLAMA_CURL=OFF"
+      ]
     }
   },
   "model": {
@@ -70,5 +74,14 @@
     "registry": 8007,
     "worker": 22400,
     "backend": 22500
+  },
+  "voice_frontend": {
+    "repo_id": "openbmb/MiniCPM-o-4_5",
+    "revision": "503e754207c94da6bb26850b4469f367c9ea3582",
+    "relative_dir": "voice-frontend",
+    "files": {
+      "campplus.onnx": "a6ac6a63997761ae2997373e2ee1c47040854b4b759ea41ec48e4e42df0f4d73",
+      "speech_tokenizer_v2_25hz.onnx": "d43342aa12163a80bf07bffb94c9de2e120a8df2f9917cd2f642e7f4219c6f71"
+    }
   }
 }
