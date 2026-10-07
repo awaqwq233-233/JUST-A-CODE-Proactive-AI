@@ -6,7 +6,7 @@ sounddevice==0.5.5
 opencv-python==5.0.0.93
 soxr==1.0.0
 websockets==16.0
-httpx==0.28.1
+httpx==0.28.1  # Gateway 控制与 M2 独立 Qwen HTTP；无 requests/SDK 新依赖
 fastapi==0.128.0
 uvicorn==0.40.0
 pydantic==2.12.5

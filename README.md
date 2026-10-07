@@ -26,7 +26,7 @@ The target capture pipeline uses SoundDevice and background OpenCV capture at 64
 
 Target memory uses JSON as the structured source of truth, ChromaDB as a rebuildable index, and BGE-Small-ZH-v1.5 ONNX INT8 embeddings. Summaries are batch-written every five records or on session end. Retrieval runs at session initialization and completed user utterances, using parallel local transcription where needed.
 
-**M0 is accepted with the 30-minute soak explicitly waived. M1 live listening/vision/speech, GUI preview and manual restart were accepted by the user on 2026-10-07.** The production Gateway SDK, SoundDevice capture/native playback and background 640×480 OpenCV capture are available through `main.py --gateway`, with a lightweight GUI via `--gui`. Next is Qwen brain/tool escalation; parallel transcription, ChromaDB and OpenClaw migration are still pending. This acceptance does not establish unlimited sessions or long-term stability.
+**M0 is accepted with the 30-minute soak explicitly waived. M1 live listening/vision/speech, GUI preview and manual restart were accepted by the user on 2026-10-07.** The production Gateway SDK, SoundDevice capture/native playback and background 640×480 OpenCV capture are available through `main.py --gateway`, with a lightweight GUI via `--gui`. M2a independent Qwen read-only tool execution and Chinese file output are now verified. Gateway voice escalation, parallel transcription, ChromaDB and OpenClaw migration are still pending. This acceptance does not establish unlimited sessions or long-term stability.
 
 The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds. M1 rotates video sessions after 240 input seconds, closes/releases devices and reconnects with the reference voice and bounded assistant history plus supplied confirmed context. Capture visibly pauses during reconnection. It does not reconstruct untranscribed user speech or provide seamless audio across the gap.
 
@@ -61,6 +61,14 @@ For VS Code, select the project interpreter `.cache/m0/venv/bin/python` and laun
 - [Pinned official protocol](https://github.com/OpenBMB/MiniCPM-o-Demo/blob/47709a9210dfd71afa76c058e017fc8c4db5c8d2/docs/en/realtime-protocol-overview.md): Gateway events.
 - [Pinned C++ engine](https://github.com/tc-mb/llama.cpp-omni/tree/873056743b74e1a4ce5dcf7290e2298428e214db): Metal inference.
 
+### M2a: independent Qwen brain
+
+With `qwen/qwen3.6-35b-a3b` loaded in LM Studio at `http://127.0.0.1:12345`, run `.cache/m0/venv/bin/python verify_toolcall.py` from the project root. It verifies the exact loaded instance, executes real time/battery/status queries and writes UTF-8 Markdown reports plus `verification.json` under ignored `output/m2/qwen/`. An explicit `--task` is supported but exposes only `get_system_info`; it does not enable computer actions or voice routing. No camera, microphone or speaker is opened.
+
+LM Studio 0.4.8+ is required for the native model capability check and `reasoning_effort="none"`. The older `chat_template_kwargs` request still produced reasoning on this machine; the new setting produced zero reasoning tokens and real structured tool calls. See the [official release notes](https://lmstudio.ai/changelog/lmstudio/lmstudio-v0.4.8). Malformed arguments, unlisted tools, incomplete output, missing models, timeouts and cancellation fail explicitly. Each tool execution checks cancellation first. The agent loop returns its final answer once rather than making a second generation request. Ordinary chat still supports SSE; the independent task runner publishes a completed answer as a file.
+
+The three native validation cases completed in 2.02 / 1.69 / 6.04 seconds, each with one real tool call. These are standalone Qwen measurements, not concurrent MiniCPM/Qwen or live voice performance. macOS memory reports use `vm_stat`'s actual page size and label active+wired pages separately from total memory usage. No new runtime dependency is needed; the installer checks the independent Qwen imports without network or device access.
+
 ## 中文说明
 
 J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS。目标是持续感知环境、提前规划与预警，并主动完成任务。智能眼镜、AR 和 Vision Pro 是可选终端，核心是 AI 系统与主动服务框架。当前主要开发平台为 macOS Apple Silicon。
@@ -85,7 +93,7 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 
 ### 当前实现状态
 
-**M0 已通过且 30 分钟长测免测；M1 听看说、GUI 预览与手动启停已于 2026-10-07 获用户真机验收。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。下一步接入 Qwen 大脑/工具升级；并行转写、ChromaDB 和 OpenClaw 尚未迁移。旧 MiniCPM 客户端、:9060 启动器、轮询 judge 与传统运行入口已移除，所有入口统一使用 Gateway。当前验收不等于无限会话或长期稳定性验证。
+**M0 已通过且 30 分钟长测免测；M1 听看说、GUI 预览与手动启停已于 2026-10-07 获用户真机验收。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。M2a 独立 Qwen 只读工具调用与中文文件输出已实测通过；Gateway 语音升级、并行转写、ChromaDB 和 OpenClaw 尚未接入。旧 MiniCPM 客户端、:9060 启动器、轮询 judge 与传统运行入口已移除，所有入口统一使用 Gateway。当前验收不等于无限会话或长期稳定性验证。
 
 固定版本 Gateway 的视频会话限 300 秒、音频会话限 600 秒。M1 默认每 240 秒上行后关闭并重建视频会话，重新注入参考音、已确认上下文和有界助手历史；重连时明确暂停采集，未转写的用户原话不会凭空恢复，目前存在采集间隙。
 
@@ -109,6 +117,14 @@ GUI 内可直接启动固定后端，也可独立启动后端后使用 Python 3.
 GUI 已按 bo s s 最新要求改为深蓝渐变科技风格，配青色高光与细网格。「调节参数」按钮在面板展开时持续高亮，收起时恢复暗色，并有悬停/按压反馈。摄像头按真实比例完整嵌入且无黑边；对话区域扩大、流式文本连续拼接，连接日志可单独折叠，顶部只保留一个状态提示。移除文字输入/发送、显示分辨率/缩放和旧模型开关。顶部「启动后端」异步调用固定启动器，校验版本、模型与端口，并收到明确就绪事件后才允许「启动语音」。停止后端先关闭音视频会话，再回收本窗口启动的三进程；退出窗口等待两者完成。外部已运行的后端仅探测和复用，不会由 GUI 终止。「后端路径设置」可选择 Demo / 引擎 / 仓库外模型目录及 SHA256 校验选项，路径仅保存在忽略的 `.cache/gui/backend.json`，也可通过 `JAC_DEMO_DIR` / `JAC_ENGINE_DIR` / `JAC_MODEL_DIR` 指定。启动语音前可调麦克风增益、采集帧率（5–10fps）、会话轮换（5–240 秒）、异常重连次数、音频设备、相机编号、本机 Gateway 与参考 WAV，运行中锁定。图像仍固定每秒上行最新一帧；Qwen 未接入，因此不提供假开关。`main.py --gui` 与 `python -m src.omni --gui` 使用同一 Gateway 路径，`--gateway` 参数仍兼容，无需新增 GUI 依赖。上一阶段测试共 138 项已分批验证通过（初次全套 136 通过，1 项写真实主目录的旧测试改为隔离目录后通过，再新增 1 项异常清理回归通过）；1440×880 与 1100×700 合成帧预览已检查，未新增真机听感验收。
 
 VS Code 请选择项目解释器 `.cache/m0/venv/bin/python`，并带 `--gui` 启动。本机已配置忽略的 F5 项「J.A.C. · Gateway GUI」；右上角「运行 Python 文件」不使用 launch.json 的参数，系统 Python 缺少 numpy 时应切换环境。完整步骤见安装指南第 10 节。
+
+### M2a：独立 Qwen 大脑
+
+在 LM Studio 加载精确实例 `qwen/qwen3.6-35b-a3b` 并启动 `http://127.0.0.1:12345` 后，从项目根运行 `.cache/m0/venv/bin/python verify_toolcall.py`。脚本核对已加载实例，真实查询时间、电池和系统状态，生成 UTF-8 Markdown 报告及 `verification.json`，默认保存在已忽略的 `output/m2/qwen/`。支持显式 `--task`，但仅开放 `get_system_info`，尚未接入 GUI/语音触发，不打开摄像头、麦克风或扬声器。
+
+需要 LM Studio 0.4.8+。本机旧 `chat_template_kwargs` 仍产生思考，现统一使用实测有效的 `reasoning_effort="none"`；不把思考正文恢复为答案，不回退其他模型。畸形参数、任务白名单外工具、截断响应、未加载模型、超时与取消明确失败。每次执行工具前检查取消；最终回答直接交付一次，不重复请求。普通聊天仍支持 SSE，独立任务完成后发布报告文件。
+
+真实三项验证各调用一次工具，耗时 2.02 / 1.69 / 6.04 秒；它们只代表独立 Qwen，不代表双模型并行或语音升级延迟。内存查询改用 `vm_stat` 实际页大小，明确活跃与有线页合计不等于完整占用。复用已有 httpx，无新增依赖；安装自检已加入大脑/任务模块。下一步为并行 VAD/Whisper 转写、用户任务校验与 Gateway 升级接线。
 
 ### 文档与未来终端
 

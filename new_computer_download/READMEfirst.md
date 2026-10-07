@@ -252,3 +252,31 @@ M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo 
 - 无 audio 增量：原生 TTS 验收尚未通过，检查全部 Token2Wav / TTS 模块和参考音。
 - 中文字体异常：DOCX 使用显式东亚字体；如 Windows 缺少字体，安装对应字体后再检查页面渲染。Python 和 Markdown 文件统一 UTF-8。
 - 依赖冲突：当前运行环境为 Python 3.11 `.cache/m0/venv`；根 `requirements.txt` 直接引用 `requirements-m0.txt`，`requirements_fixed.txt` 是历史组件快照。原生音色前端新增 onnxruntime / kaldi-native-fbank；已有机器须更新当前清单并安装 voice-frontend 资源、重新应用组合补丁和构建后端。安装器默认 Gateway，原 `.venv` 保留但不作为主程序环境。
+
+### 11 M2a：独立 Qwen 只读任务与文件验证
+
+This independent check needs LM Studio 0.4.8+ and the exact loaded instance `qwen/qwen3.6-35b-a3b` at `http://127.0.0.1:12345`. It uses the existing Python 3.11/httpx environment, opens no devices, and does not connect Gateway voice escalation. Reports stay under ignored `output/m2/qwen/`.
+
+在 LM Studio 0.4.8+ 加载 `qwen/qwen3.6-35b-a3b`，启用本机 `http://127.0.0.1:12345`。安装器已增加大脑模块导入自检，无新依赖或模型下载阶段；不能用“清单第一项”替代目标已加载实例。探针仅查询时间、电池、CPU、内存，结果是本机 UTF-8 Markdown 文件，不开启设备。
+
+从项目根执行默认三项验收（macOS/Linux）：
+
+```bash
+.cache/m0/venv/bin/python verify_toolcall.py
+```
+
+显式只读任务示例，仍仅允许系统状态查询：
+
+```bash
+.cache/m0/venv/bin/python verify_toolcall.py --url http://127.0.0.1:12345 --model qwen/qwen3.6-35b-a3b --task "查询电脑状态并生成中文报告"
+```
+
+Windows 的独立大脑入口使用其项目解释器（不代表 Metal 后端已在 Windows 验收）：
+
+```powershell
+.cache\m0\venv\Scripts\python.exe verify_toolcall.py
+```
+
+成功以退出码 0 和 `verification.json` 的 `passed=true` 为准；失败退出码 2，失败报告保留，不能只看模型回复。默认三项还核对回答保留真实工具数值；自定义 `--task` 只证明执行/交付，数值核对标为未做。Ctrl+C 取消在途 HTTP 与后续工具/文件发布，已开始的只读系统查询按自身超时返回。单次 HTTP 上限 90 秒，整个任务 120 秒，最多 4 轮。日志/报告不加入 Git，未请求任何模型或测试媒体上传。
+
+普通聊天 SSE 与独立 agent 文件输出分别处理；不把思考正文当答案、截断输出当成功，也不重复生成已经完成的回答。下一阶段才接并行转写、用户任务来源校验及 GUI/Gateway 升级；当前不能直接对语音助手使用这项能力。固定后端、音色补丁、原模型哈希和权威目标架构不变。

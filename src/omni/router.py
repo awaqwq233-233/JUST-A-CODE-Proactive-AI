@@ -2,6 +2,7 @@
 import logging
 
 from src.brain.llm import LocalBrain
+from src.brain.lm_studio import check_cancelled
 from src.tools.registry import get_tool_schemas
 from src.tools.executor import execute_tool
 from .prompts import TOOL_SYSTEM_PROMPT
@@ -37,7 +38,7 @@ def parse_call_qwen(text: str):
 
 
 class EscalationRouter:
-    """升级路由器：把任务交给 qwen + tools 执行，流式产出最终回答。
+    """保留的独立只读路由草案，Gateway 尚未接线。
 
     与 omni 解耦：持有自己的 LocalBrain 实例（lm_studio / qwen3.6-35b），
     不依赖 omni 的全双工会话；因此可在任意线程独立运行（调用方负责放到后台线程）。
@@ -45,52 +46,33 @@ class EscalationRouter:
 
     def __init__(self, backend: str = "lm_studio",
                  lm_studio_model: str = "qwen/qwen3.6-35b-a3b"):
-        """初始化路由器（仅设置大脑后端，不加载模型，首次请求才真正联机）。"""
+        """核对已加载的大脑实例，不自行加载模型；须由后台线程构造。"""
         self.brain = LocalBrain(backend=backend, lm_studio_model=lm_studio_model)
 
     def escalate(self, task_text: str, on_progress=None, should_stop=None) -> str:
-        """执行升级任务，返回最终自然语言结果文本。
-
-        Args:
-            task_text: omni 给出的任务描述（一句话）。
-            on_progress: 可选回调(text_chunk)，把流式打字机文本推到 GUI / 控制台。
-            should_stop: 可选回调() -> bool，返回 True 表示调用方已停止（如 `runtime.stop()`），
-                应尽快中断并**丢弃结果**（返回空串）。工具循环内部是同步 HTTP 流，
-                无法抢占式中断，因此采用「每收到一个流式分片检查一次」的协作取消——
-                这是不引入线程强制终止的前提下能做到的最细粒度。
-
-        Returns:
-            str: qwen + tools 最终回答（可能为空串，表示执行失败 / 无结果 / 被取消）。
-        """
+        """独立只读路由草案；取消传入 HTTP/工具循环，Gateway 尚未调用它。"""
         if not task_text or not task_text.strip():
             return ""
         # 把「升级任务」包装成给大脑的一句话指令：明确可用工具 + 用简体中文回答 boss
         prompt = (
             f"[升级任务] {task_text.strip()}\n"
-            "如需操作电脑 / 联网 / 查状态，请调用可用工具；"
+            "本阶段仅提供系统状态查询，其他操作明确说明暂未开放；"
             "最终用简体中文、口语化一句话告诉 boss 结果。"
         )
         try:
             result_parts = []
-            # run_agentic 是生成器，流式 yield 最终回答文本（打字机效果）
+            # 最终回答只生成一次；不会再请求第二次答案。
             for chunk in self.brain.run_agentic(
                 prompt=prompt,
-                tools=get_tool_schemas(),
+                tools=[t for t in get_tool_schemas() if t["function"]["name"] == "get_system_info"],
                 tool_executor=execute_tool,
                 system_prompt=TOOL_SYSTEM_PROMPT,
                 temperature=0.3,
                 max_tokens=512,
                 max_iterations=4,
+                should_stop=should_stop,
             ):
-                # 协作取消检查点：调用方（runtime/GUI）已停止时立刻收手，
-                # 不再累积文本、不再回调进度——否则「点了停止」之后控制台还在打字。
-                if should_stop is not None:
-                    try:
-                        if should_stop():
-                            logger.info("升级路由被调用方取消，丢弃未完成结果")
-                            return ""
-                    except Exception:  # noqa: BLE001
-                        pass  # 取消判据本身出错不应中断正常流程
+                check_cancelled(should_stop)
                 if chunk:
                     result_parts.append(chunk)
                     if on_progress is not None:

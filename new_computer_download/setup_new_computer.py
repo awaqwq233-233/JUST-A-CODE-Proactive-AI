@@ -506,8 +506,8 @@ def step_verify(args):
 # 主流程
 # ----------------------------------------------------------------------------
 def step_m0(args):
-    """建立当前主程序的 3.11 环境（含 Gateway GUI），保留已有 .venv。"""
-    hr("方案 B M0/M1 独立环境")
+    """建立 3.11 环境（含 Gateway GUI 与独立 Qwen），保留已有 .venv。"""
+    hr("方案 B Gateway / M2 独立环境")
     interpreter = sys.executable if sys.version_info[:2] == (3, 11) else shutil.which("python3.11")
     if not interpreter:
         log("M0 需要 Python 3.11，请先安装 python3.11。")
@@ -541,19 +541,23 @@ def step_m0(args):
          "from PySide6.QtWidgets import QApplication; import gui, main; "
          "from src.omni.backend_control import BackendController; import httpx, fastapi, uvicorn; "
          "import onnxruntime, kaldi_native_fbank; from src.omni.voice_conditioning import prepare_voice; "
+         "from src.brain.lm_studio import LMStudioClient; from src.brain.task_runner import BrainTaskRunner; "
+         "import verify_toolcall; "
          "assert 'torch' not in sys.modules and 'pyaudio' not in sys.modules; "
+         "assert 'requests' not in sys.modules and 'llama_cpp' not in sys.modules; "
          "assert 'src.omni.client' not in sys.modules and 'src.judgment.judge' not in sys.modules; "
-         "print('Gateway client, GUI and backend dependencies verified')"],
+         "print('Gateway client, GUI, backend and independent Qwen dependencies verified')"],
         capture=True, check=False, cwd=PROJECT_ROOT,
     )
     if verification.returncode:
         log("[自检失败] Gateway 或 GUI 依赖未就绪，请检查安装输出。")
         log(verification.stderr or verification.stdout)
         return False
-    log("[自检通过] Gateway 客户端、GUI 与后端控制依赖已就绪；未打开设备。")
+    log("[自检通过] Gateway、GUI、后端控制和独立 Qwen 依赖已就绪；未联网或打开设备。")
     log(f"GUI 启动：{m0_python} {os.path.join(PROJECT_ROOT, 'main.py')} --gateway --gui")
     log("仍须按 READMEfirst.md 配置仓库外模型并启动固定版本后端。")
     log("音色前端资源安装：prepare_native_voice.py --model-dir <GGUF目录>/voice-frontend --download-models --self-test")
+    log(f"Qwen 独立只读验证：{m0_python} {os.path.join(PROJECT_ROOT, 'verify_toolcall.py')}")
     return True
 
 
