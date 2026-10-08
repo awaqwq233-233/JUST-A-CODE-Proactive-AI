@@ -283,7 +283,7 @@ Windows 的独立大脑入口使用其项目解释器（不代表 Metal 后端�
 
 ### 12 M2b：并行转写与 Gateway 系统任务
 
-The default Gateway install now prepares the pinned multilingual Whisper small resources outside the repository and runs a CPU process self-check. Runtime transcription is offline. CPU VAD/Whisper and Qwen run beside the existing audio stream; the CLI/GUI open no second microphone. Native speech feedback for task results remains pending.
+The default Gateway install now prepares the pinned multilingual Whisper small resources outside the repository and runs a CPU process self-check. Runtime transcription is offline. CPU VAD/Whisper and Qwen run beside the existing audio stream; the CLI/GUI open no second microphone. The user confirmed successful live voice-task text results on 2026-10-08. Native speech feedback for task results remains pending.
 
 当前安装器默认安装 CPU 转写依赖，并下载锁定的 Whisper small 四项资源（约 487MB，仓库外 `~/.cache/jac/models/whisper-small`），逐文件 SHA256 和纯 CPU 自检通过才报成功。运行期不下载，不发送云端。下载采用 HTTPS 镜像/官方回退，持续过慢会切源，失败保留明确结果。根依赖和固定独立清单已同步，历史 requirements_fixed 不用于主程序。
 
@@ -314,6 +314,8 @@ python3.11 new_computer_download/setup_new_computer.py --only gateway --skip-tra
 ```
 
 GUI 内先启动后端再启动语音，戴耳机。第一轮使用明确短句：“查询电脑状态”“查一下电池电量”“查询本机当前时间”“生成一份系统状态报告”。界面应出现独立用户转写、大脑任务状态和可打开的真实报告。报告含该条任务转写及实际工具证据，仅在本机 output/m2/qwen/；一般转写只在内存，音视频不落盘。目前任务结果不会从原生音色播报，不能把界面文件交付当成播报验收。
+
+2026-10-08，bo s s 反馈“测试成功，能正常输出文字结果”，真机语音任务文字结果按用户反馈验收通过。此次未新增具体指令、次数、时长、延迟或报告内容核对记录，音色听感仍单独确认。下一步优先接入原生任务结果播报；安装步骤、依赖与启动命令不变。
 
 仅基础听看说的完整命令：
 
