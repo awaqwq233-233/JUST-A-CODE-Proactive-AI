@@ -79,6 +79,13 @@ def require_voice_condition(created: dict, init: dict) -> None:
         raise ValueError("后端未确认应用指定音色，请使用已更新并重新编译的固定后端")
 
 
+def require_task_speech(created: dict) -> None:
+    """任务启用时核对锁定补丁的字面文本播报能力，旧后端须明确升级。"""
+    capabilities = created.get("capabilities")
+    if not isinstance(capabilities, dict) or type(capabilities.get("task_speech")) is not int or capabilities["task_speech"] != 1:
+        raise ValueError("后端不支持原生任务播报，请更新锁定补丁并重新编译后端")
+
+
 def build_input(samples: np.ndarray, jpeg: bytes | None = None) -> dict:
     """组装恰好一秒音频和可选的一帧 JPEG，不包含旧协议字段。"""
     if len(samples) != SAMPLES_PER_CHUNK:

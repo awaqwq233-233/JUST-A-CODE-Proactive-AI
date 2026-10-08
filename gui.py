@@ -622,10 +622,16 @@ class MainWindow(QMainWindow):
         if self._stopping or self._stop_requested:
             return
         labels = {"running": "大脑正在查询", "completed": "报告已生成", "error": "任务暂停或失败", "rejected": "任务未执行", "cancelled": "任务已取消"}
+        labels.update(speech_queued="结果等待播报", speech_sent="正在准备结果语音", speech_started="原生结果语音处理中",
+                      speech_completed="结果音频已接收", speech_failed="结果播报失败，文字报告仍可查看",
+                      speech_cancelled="结果播报已取消", speech_skipped="本次结果未播报，文字报告仍可查看")
         reasons = {"brain_busy": "大脑忙，请完成后再说", "unclear_speech": "没有听清，请重复", "brain_failed": "大脑不可用或任务失败",
                    "audio_overflow": "转写积压，请停止后重启", "utterance_overflow": "转写积压，请停止后重启",
                    "whisper_error": "转写异常，请停止后重启", "vad_error": "切句异常，请停止后重启",
                    "session_changed": "会话重连，请重新发出指令"}
+        reasons.update(speech_busy="已有播报任务", speech_timeout="等待播报超时", session_ending="会话即将重连",
+                       speech_failed="原生音频或文本校验失败", speech_text_mismatch="结果文本校验失败",
+                       speech_backend_failed="原生语音合成失败", speech_audio_mismatch="结果音频校验失败")
         message = labels.get(state, state)
         if detail.get("code"):
             message += "：" + reasons.get(detail["code"], "请查看连接状态")

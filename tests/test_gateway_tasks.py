@@ -249,6 +249,7 @@ def test_gateway_owns_pipeline_and_cleans_on_error(monkeypatch):
         """无设备的生命周期替身。"""
         def __init__(self, *args):
             """构造不访问设备。"""
+            self.lock = threading.RLock()
             events.append("construct")
         def start(self):
             """记录 CPU 就绪。"""
@@ -299,6 +300,7 @@ def test_gateway_cancel_during_pipeline_start_joins_startup(monkeypatch):
         """模拟可取消的模型冷启动。"""
         def __init__(self, *args):
             """不访问网络或模型。"""
+            self.lock = threading.RLock()
         def start(self):
             """等待跨线程取消后结束启动。"""
             entered.set()

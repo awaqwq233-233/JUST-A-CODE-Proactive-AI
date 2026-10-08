@@ -26,7 +26,7 @@ The target capture pipeline uses SoundDevice and background OpenCV capture at 64
 
 Target memory uses JSON as the structured source of truth, ChromaDB as a rebuildable index, and BGE-Small-ZH-v1.5 ONNX INT8 embeddings. Summaries are batch-written every five records or on session end. Retrieval runs at session initialization and completed user utterances, using parallel local transcription where needed.
 
-**M0 is accepted with the 30-minute soak explicitly waived. M1 live listening/vision/speech, GUI preview and manual restart were accepted by the user on 2026-10-07.** The production Gateway SDK, SoundDevice capture/native playback and background 640×480 OpenCV capture are available through `main.py --gateway`, with a lightweight GUI via `--gui`. M2a independent Qwen read-only tool execution and Chinese file output are now verified. M2b now connects parallel VAD/Whisper transcription and explicit read-only system tasks to the Gateway CLI/GUI; the user confirmed successful live text results on 2026-10-08. ChromaDB, cloud tasks and native result speech are still pending. This acceptance does not establish unlimited sessions or long-term stability.
+**M0 is accepted with the 30-minute soak explicitly waived. M1 live listening/vision/speech, GUI preview and manual restart were accepted by the user on 2026-10-07.** The production Gateway SDK, SoundDevice capture/native playback and background 640×480 OpenCV capture are available through `main.py --gateway`, with a lightweight GUI via `--gui`. M2a independent Qwen read-only tool execution and Chinese file output are now verified. M2b now connects parallel VAD/Whisper transcription and explicit read-only system tasks to the Gateway CLI/GUI; the user confirmed successful live text results on 2026-10-08. Native task-result speech is now connected; ChromaDB and cloud tasks are still pending. This acceptance does not establish unlimited sessions or long-term stability.
 
 The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds. M1 rotates video sessions after 240 input seconds, closes/releases devices and reconnects with the reference voice and bounded assistant history plus supplied confirmed context. Capture visibly pauses during reconnection. It does not reconstruct untranscribed user speech or provide seamless audio across the gap.
 
@@ -69,9 +69,14 @@ Production CLI/GUI now enable local transcription by default. The microphone sti
 
 Supported explicit commands include “查询电脑状态”, “查一下电池电量”, “查询本机当前时间”, “检查内存占用” and “生成一份系统状态报告”. Only `get_system_info` is exposed. Whole-sentence matching rejects negations, quoted/reported requests, ordinary chat and unlisted compound actions. Each utterance has a session generation and unique ID. Poor recognition, audio overlapping assistant playback, results older than 15 seconds, duplicate IDs and commands arriving while Qwen is busy do not execute. VAD waits 600 ms after speech; utterances over 12 seconds are rejected rather than split into tasks. Restarting/rotating a session cancels its unfinished tasks and prevents old results from publishing. Queue or transcription faults pause automatic tasks with an explicit message while the perception stream continues.
 
-The GUI shows confirmed user transcripts, task progress and an “Open latest report” button. Reports are real UTF-8 Markdown files under ignored `output/m2/qwen/`. They include the recognized task and actual tool evidence; general conversation transcripts remain in bounded memory and runtime statistics contain no text or PCM. Results currently appear as text/files, with no native speech feedback. `--no-transcription` keeps the listening/vision/speech path; `--whisper-model-dir` and `--brain-url` configure the local resources. SDK `GatewayClient` retains opt-in transcription; file replay enables it only with `--transcription`. A 60-second synthetic-file run through the real pinned Gateway, CPU Whisper and loaded Qwen completed one system query and one report, with successful shutdown. A preceding 24-second run correctly cancelled its unfinished task at rotation. These runs opened no devices and do not validate live recognition or long-term concurrency.
+The GUI shows confirmed user transcripts, task progress and an “Open latest report” button. Reports are real UTF-8 Markdown files under ignored `output/m2/qwen/`. They include the recognized task and actual tool evidence; general conversation transcripts remain in bounded memory and runtime statistics contain no text or PCM. Completed tasks now use the same native voice/playback stream for short evidence-based feedback; full text and files remain available. `--no-transcription` keeps the listening/vision/speech path; `--whisper-model-dir` and `--brain-url` configure the local resources. SDK `GatewayClient` retains opt-in transcription; file replay enables it only with `--transcription`. A 60-second synthetic-file run through the real pinned Gateway, CPU Whisper and loaded Qwen completed one system query and one report, with successful shutdown. A preceding 24-second run correctly cancelled its unfinished task at rotation. These runs opened no devices and do not validate live recognition or long-term concurrency.
 
-On 2026-10-08, the user reported successful live testing with normal text results. The live voice-task-to-text path is accepted based on that feedback. No additional per-command, timing or report-content measurements were recorded. Native task-result speech is the next priority; reference-voice listening acceptance remains separate.
+On 2026-10-08, the user reported successful live testing with normal text results. The live voice-task-to-text path is accepted based on that feedback. No additional per-command, timing or report-content measurements were recorded. Native task-result speech is now connected; reference-voice listening acceptance remains separate.
+
+
+Native speech uses a registered extension of the pinned C++ patch, not an upstream protocol feature. The client requires `session.created.capabilities.task_speech=1` before capture when tasks are enabled. `input.task_speech` carries a bounded literal utterance alongside real audio/video. The existing duplex LLM thread evaluates its exact tokens and passes hidden states into native TTS/Token2Wav; status numbers come from actual tool evidence and are not regenerated by the perception model. Tagged text/audio and a final-window completion event are checked before claiming received task audio. Only one utterance waits for listening, user silence and idle playback; expiry or rotation skips speech while preserving the report. Cancellation flags also suppress already-queued task audio. File probes receive audio without playing it.
+
+Existing installations must rebuild the updated combined patch. `new_computer_download/update_native_backend.py --build` reads the saved GUI engine path, accepts only the pinned commit plus an approved old/current patch, and rolls back an application failure. Stop the backend before rebuilding, then reopen the GUI and start the backend again. Dependencies and official model hashes are unchanged.
 
 ### M2a: independent Qwen brain
 
@@ -105,7 +110,7 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 
 ### 当前实现状态
 
-**M0 已通过且 30 分钟长测免测；M1 听看说、GUI 预览与手动启停已于 2026-10-07 获用户真机验收。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。M2a 独立 Qwen 只读工具调用与中文文件输出已实测通过；M2b 已接入 Gateway CLI/GUI 的并行转写和明确系统指令路由，并于 2026-10-08 获用户确认真机文字结果正常；ChromaDB、云端任务及原生结果播报尚未接入。旧 MiniCPM 客户端、:9060 启动器、轮询 judge 与传统运行入口已移除，所有入口统一使用 Gateway。当前验收不等于无限会话或长期稳定性验证。
+**M0 已通过且 30 分钟长测免测；M1 听看说、GUI 预览与手动启停已于 2026-10-07 获用户真机验收。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。M2a 独立 Qwen 只读工具调用与中文文件输出已实测通过；M2b 已接入 Gateway CLI/GUI 的并行转写和明确系统指令路由，并于 2026-10-08 获用户确认真机文字结果正常；原生结果播报已接入，ChromaDB 与云端任务尚未接入。旧 MiniCPM 客户端、:9060 启动器、轮询 judge 与传统运行入口已移除，所有入口统一使用 Gateway。当前验收不等于无限会话或长期稳定性验证。
 
 固定版本 Gateway 的视频会话限 300 秒、音频会话限 600 秒。M1 默认每 240 秒上行后关闭并重建视频会话，重新注入参考音、已确认上下文和有界助手历史；重连时明确暂停采集，未转写的用户原话不会凭空恢复，目前存在采集间隙。
 
@@ -138,11 +143,16 @@ VS Code 请选择项目解释器 `.cache/m0/venv/bin/python`，并带 `--gui` �
 
 首批指令为“查询电脑状态”“查一下电池电量”“查询本机当前时间”“检查内存占用”“生成一份系统状态报告”。仅开放 `get_system_info`，完整句匹配拒绝聊天、否定、转述和未开放的复合操作。句子按会话代次/编号去重；低置信度、与助手播放重叠、超过 15 秒的转写或大脑忙时的新增指令不执行。VAD 在句末静音 600ms 后提交，超过 12 秒的长句直接拒绝，不拆成多个任务。停止/重连取消旧任务及发布；积压/转写异常明确暂停任务，听看说继续运行。
 
-GUI 独立显示用户原话、任务进度，完成后可点“打开最新报告”。真实 UTF-8 报告保存在忽略的 `output/m2/qwen/`，包含该任务的转写及工具证据；一般对话转写仅保留有界内存，运行统计不含正文/PCM。目前结果为文字与文件，原生结果播报待接入。启动前可关闭“本地转写与系统任务”或指定本地目录/大脑地址；CLI 对应 `--no-transcription` / `--whisper-model-dir` / `--brain-url`。SDK 默认不启用旁路，文件回放需显式 `--transcription`。
+GUI 独立显示用户原话、任务进度，完成后可点“打开最新报告”。真实 UTF-8 报告保存在忽略的 `output/m2/qwen/`，包含该任务的转写及工具证据；一般对话转写仅保留有界内存，运行统计不含正文/PCM。任务完成后由同一原生音色/播放流播报实际工具证据短句；综合报告播报完成提示，完整文字与文件继续保留。启动前可关闭“本地转写与系统任务”或指定本地目录/大脑地址；CLI 对应 `--no-transcription` / `--whisper-model-dir` / `--brain-url`。SDK 默认不启用旁路，文件回放需显式 `--transcription`。
 
 固定后端、CPU Whisper、已加载 Qwen 的 60 秒合成文件验证完成唯一系统查询和报告，关闭清理成功；前一段 24 秒验证在会话结束取消未完成任务。该合成文件验证未打开设备，不替代真机识别或长时并行验收。
 
-2026-10-08，bo s s 反馈“测试成功，能正常输出文字结果”，真机语音任务到文字结果的路径按用户反馈验收通过；未新增具体指令、次数、时长、延迟或报告内容核对记录。下一步优先补齐原生任务结果播报，参考音色听感仍单独确认。
+2026-10-08，bo s s 反馈“测试成功，能正常输出文字结果”，真机语音任务到文字结果的路径按用户反馈验收通过；未新增具体指令、次数、时长、延迟或报告内容核对记录。原生任务结果播报现已接入，参考音色听感仍单独确认。
+
+
+原生播报使用已登记 C++ 补丁扩展，固定上游原协议没有此功能。任务开启时须在采集前确认 `session.created.capabilities.task_speech=1`，通过 `input.task_speech` 把有界字面短句附在真实音视频块上，复用同一 duplex LLM/TTS/Token2Wav。单项数字来自实际工具证据；综合报告只播报完成提示，不重新推理数字。带任务标识的文本、非静音 PCM 和末窗口样本计数必须一致。GUI“结果音频已接收”表示传输确认；文件探针只收不播放，真机听感单独验收。仅一个待播报，等待聆听、用户静音和播放空闲；等待过期或会话即将轮换时跳过播报，停止/重连使已排队任务音频也失效，文字报告仍可查看。
+
+旧安装需重新编译更新后的组合补丁；`new_computer_download/update_native_backend.py --build` 默认读取已保存的 GUI 引擎路径，只接受固定 commit 的干净源码或登记补丁，陌生源码拒绝覆盖、应用失败回滚。先停止后端，再更新构建、重开 GUI 并启动后端；依赖版本与官方模型 SHA256 不变。
 
 ### M2a：独立 Qwen 大脑
 
@@ -150,7 +160,7 @@ GUI 独立显示用户原话、任务进度，完成后可点“打开最新报�
 
 需要 LM Studio 0.4.8+。本机旧 `chat_template_kwargs` 仍产生思考，现统一使用实测有效的 `reasoning_effort="none"`；不把思考正文恢复为答案，不回退其他模型。畸形参数、任务白名单外工具、截断响应、未加载模型、超时与取消明确失败。每次执行工具前检查取消；最终回答直接交付一次，不重复请求。普通聊天仍支持 SSE，独立任务完成后发布报告文件。
 
-真实三项验证各调用一次工具，耗时 2.02 / 1.69 / 6.04 秒；它们只代表独立 Qwen，不代表双模型并行或语音升级延迟。内存查询改用 `vm_stat` 实际页大小，明确活跃与有线页合计不等于完整占用。复用已有 httpx，无新增依赖；安装自检已加入大脑/任务模块。M2b 已接入上述旁路与路由，真机文字结果已获用户确认；下一步优先补齐原生任务结果播报。
+真实三项验证各调用一次工具，耗时 2.02 / 1.69 / 6.04 秒；它们只代表独立 Qwen，不代表双模型并行或语音升级延迟。内存查询改用 `vm_stat` 实际页大小，明确活跃与有线页合计不等于完整占用。复用已有 httpx，无新增依赖；安装自检已加入大脑/任务模块。M2b 已接入上述旁路与路由，真机文字结果已获用户确认；原生任务结果播报现已接入。
 
 ### 文档与未来终端
 

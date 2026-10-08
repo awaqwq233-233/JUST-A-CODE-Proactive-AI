@@ -1,5 +1,295 @@
+diff --git a/tools/omni/omni.cpp b/tools/omni/omni.cpp
+index 3e029c6..3bbe685 100644
+--- a/tools/omni/omni.cpp
++++ b/tools/omni/omni.cpp
+@@ -307,6 +307,7 @@ struct omni_output {
+ };
+ 
+ struct LLMOut {
++    std::string jac_speech_id;
+     std::string text;
+     int n_past;
+     bool llm_finish = false;
+@@ -1396,7 +1397,16 @@ static const char * llama_loop_with_hidden(struct omni_context * ctx_omni, commo
+ }
+ 
+ // 新增：返回token ID的版本
+-static const char * llama_loop_with_hidden_and_token(struct omni_context * ctx_omni, common_params *params, struct common_sampler * smpl, int &n_past, float *& hidden_states, llama_token & token_id) {
++static const char * llama_loop_with_hidden_and_token(struct omni_context * ctx_omni, common_params *params, struct common_sampler * smpl, int &n_past, float *& hidden_states, llama_token & token_id, llama_token forced_token = -1) {
++    // Literal task speech bypasses sampling, but uses the same hidden-state evaluator.
++    if (forced_token >= 0) {
++        token_id = forced_token;
++        common_sampler_accept(smpl, token_id, true);
++        static thread_local std::string literal;
++        literal = common_token_to_piece(ctx_omni->ctx_llama, token_id);
++        if (!eval_id_with_hidden(ctx_omni, params, token_id, &n_past, hidden_states)) return nullptr;
++        return literal.c_str();
++    }
+     const char * tmp = sample_with_hidden_and_token(smpl, ctx_omni, params, &n_past, hidden_states, token_id);
+     return tmp;
+ }
+@@ -5687,7 +5697,9 @@ static bool generate_audio_tokens_local(
+     // 🔧 [单双工适配] max_audio_tokens:
+     // - 双工模式: 26 (与 Python 对齐，max_token_per_chunk = 25 + 1)
+     // - 单工模式: 500 (允许更长的生成，靠 EOS 结束)
+-    const int max_audio_tokens = ctx_omni->duplex_mode ? 26 : 500;
++    // A literal task final chunk must reach EOS; ordinary duplex chunks keep the pinned 26-token limit.
++    const int max_audio_tokens = (!ctx_omni->jac_tts_speech_id.empty() && is_end_of_turn)
++                                 ? 256 : (ctx_omni->duplex_mode ? 26 : 500);
+     print_with_timestamp("TTS Local: mode=%s, max_audio_tokens=%d\n", 
+                          ctx_omni->duplex_mode ? "duplex" : "simplex", max_audio_tokens);
+     
+@@ -5828,6 +5840,7 @@ static bool generate_audio_tokens_local(
+     bool first_chunk_pushed = false;
+     std::vector<int32_t> stream_buffer;
+     
++    bool jac_generation_failed = false, jac_seen_eos = false;
+     for (int t = 0; t < max_audio_tokens; ++t) {
+         // 🔧 [差异1修复] 计算 force_no_eos
+         // Python generate_chunk: if force_no_stop or t < min_new_tokens: logits[:, eos_token] = -torch.inf
+@@ -5854,6 +5867,7 @@ static bool generate_audio_tokens_local(
+         );
+         
+         if (sampled_token_abs == 0) {
++            jac_generation_failed = true;
+             LOG_ERR("TTS Local: sample_tts_token failed at step %d\n", t);
+             break;
+         }
+@@ -5861,6 +5875,7 @@ static bool generate_audio_tokens_local(
+         // Convert to relative index and check EOS
+         int relative_idx = sampled_token_abs - audio_bos_token_id;
+         if (relative_idx < 0 || relative_idx >= num_audio_tokens) {
++            jac_generation_failed = true;
+             LOG_ERR("TTS Local: invalid token ID %d (relative_idx: %d) at step %d\n",
+                     sampled_token_abs, relative_idx, t);
+             break;
+@@ -5878,6 +5893,7 @@ static bool generate_audio_tokens_local(
+         // 如果是 EOS，立即从 buffer 中移除，防止被推送到 T2W
+         bool is_eos = (relative_idx == num_audio_tokens - 1);
+         if (is_eos) {
++            jac_seen_eos = true;
+             output_audio_tokens.pop_back();
+             stream_buffer.pop_back();
+             chunk_generated_tokens.pop_back();
+@@ -5899,6 +5915,7 @@ static bool generate_audio_tokens_local(
+         if ((int)stream_buffer.size() >= push_threshold && ctx_omni->t2w_thread_info && !is_end_of_turn) {
+             first_chunk_pushed = true;
+             T2WOut *t2w_out = new T2WOut();
++            t2w_out->jac_speech_id = ctx_omni->jac_tts_speech_id;
+             t2w_out->audio_tokens.assign(stream_buffer.begin(), stream_buffer.end());
+             t2w_out->is_final = false;
+             t2w_out->is_chunk_end = false;  // 🔧 中间推送，不是 chunk 结束
+@@ -5926,9 +5943,11 @@ static bool generate_audio_tokens_local(
+     // 解决：在 chunk 结束时发送 is_chunk_end=true 信号，让 T2W flush 掉 buffer 中的剩余 tokens
+     if (ctx_omni->t2w_thread_info) {
+         T2WOut *t2w_out = new T2WOut();
++            t2w_out->jac_speech_id = ctx_omni->jac_tts_speech_id;
+         t2w_out->audio_tokens.assign(stream_buffer.begin(), stream_buffer.end());
+         // 🔧 [与 Python 对齐] is_end_of_turn 时传 is_final=true，让 T2W 立即 flush 所有 buffer
+         // Python: token2wav.stream(..., last_chunk=is_last_chunk) 其中 is_last_chunk = end_of_turn
++        t2w_out->jac_speech_failed = jac_generation_failed || (is_end_of_turn && !jac_seen_eos);
+         t2w_out->is_final = is_end_of_turn;
+         t2w_out->is_chunk_end = !is_end_of_turn;  // 非 turn 结束时才用 is_chunk_end
+         t2w_out->round_idx = ctx_omni->simplex_round_idx;  // 🔧 传递轮次索引
+@@ -6324,6 +6343,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+             // 累积所有队列中的数据
+             while (!queue.empty()) {
+                 LLMOut *llm_out = queue.front();
++                ctx_omni->jac_tts_speech_id = llm_out->jac_speech_id;
+                 llm_finish |= llm_out->llm_finish;
+                 bool item_is_eot = llm_out->is_end_of_turn;
+                 accumulated_is_end_of_turn |= item_is_eot;
+@@ -6391,6 +6411,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+                     
+                     if (ctx_omni->t2w_thread_info) {
+                         T2WOut *t2w_out = new T2WOut();
++            t2w_out->jac_speech_id = ctx_omni->jac_tts_speech_id;
+                         t2w_out->audio_tokens.clear();
+                         t2w_out->is_final = false;
+                         t2w_out->is_chunk_end = true;
+@@ -6458,6 +6479,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+                 // LISTEN/CHUNK_EOS
+                 if (ctx_omni->t2w_thread_info) {
+                     T2WOut *t2w_out = new T2WOut();
++            t2w_out->jac_speech_id = ctx_omni->jac_tts_speech_id;
+                     t2w_out->audio_tokens.clear();
+                     t2w_out->is_final = false;
+                     t2w_out->is_chunk_end = true;
+@@ -6478,6 +6500,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+                 // 非双工模式
+                 if (ctx_omni->t2w_thread_info) {
+                     T2WOut *t2w_out = new T2WOut();
++            t2w_out->jac_speech_id = ctx_omni->jac_tts_speech_id;
+                     t2w_out->audio_tokens.clear();
+                     t2w_out->is_final = true;
+                     t2w_out->is_chunk_end = false;
+@@ -6715,6 +6738,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+                     // LISTEN/CHUNK_EOS: 保持 TTS 状态
+                     if (ctx_omni->t2w_thread_info) {
+                         T2WOut *t2w_out = new T2WOut();
++            t2w_out->jac_speech_id = ctx_omni->jac_tts_speech_id;
+                         t2w_out->audio_tokens.clear();
+                         t2w_out->is_final = false;
+                         t2w_out->is_chunk_end = true;
+@@ -6731,6 +6755,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+                     // 真正的轮次结束
+                     if (ctx_omni->t2w_thread_info && !turn_eos_flushed) {
+                         T2WOut *t2w_out = new T2WOut();
++            t2w_out->jac_speech_id = ctx_omni->jac_tts_speech_id;
+                         t2w_out->audio_tokens.clear();
+                         t2w_out->is_final = true;
+                         t2w_out->round_idx = ctx_omni->simplex_round_idx;  // 🔧 传递轮次索引
+@@ -6778,6 +6803,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+                 } else {
+                     if (ctx_omni->t2w_thread_info) {
+                         T2WOut *t2w_out = new T2WOut();
++            t2w_out->jac_speech_id = ctx_omni->jac_tts_speech_id;
+                         t2w_out->audio_tokens.clear();
+                         t2w_out->is_final = true;
+                         t2w_out->is_chunk_end = false;
+@@ -8911,6 +8937,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+     int wav_idx = 0;
+     const int sample_rate = omni::flow::Token2Wav::kSampleRate;
+     
++    std::set<std::string> jac_failed_speech;
+     while (t2w_thread_running) {
+         // 🔧 [P0-打断检测] 检测 break_event 并清空队列
+         if (ctx_omni->break_event.load()) {
+@@ -8958,6 +8985,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+         
+         // Get all available tokens from queue
+         std::vector<llama_token> new_tokens;
++        std::string jac_speech_id;
+         bool is_final = false;
+         bool is_chunk_end = false;  // 标记 TTS chunk 结束
+         int received_round_idx = -1;  // 🔧 保存传入的 round_idx
+@@ -8966,6 +8994,9 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+         bool have_enqueue_time = false;
+         while (!queue.empty()) {
+             T2WOut *t2w_out = queue.front();
++            if (have_enqueue_time && t2w_out->jac_speech_id != jac_speech_id) break;
++            jac_speech_id = t2w_out->jac_speech_id;
++            if (t2w_out->jac_speech_failed && !jac_speech_id.empty()) jac_failed_speech.insert(jac_speech_id);
+             queue.pop();
+             if (!have_enqueue_time || t2w_out->enqueue_time < oldest_enqueue_time) {
+                 oldest_enqueue_time = t2w_out->enqueue_time;
+@@ -8980,6 +9011,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+                 received_round_idx = t2w_out->round_idx;
+             }
+             delete t2w_out;
++            if (is_final) break;
+         }
+         
+         lock.unlock();
+@@ -9077,7 +9109,10 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+                 
+                 if (!chunk_wav.empty()) {
+                     // Audio output callback (for WS protocol)
+-                    if (ctx_omni->audio_output_cb) {
++                    if (!jac_speech_id.empty() && ctx_omni->jac_speech_output_cb) {
++                        ctx_omni->jac_speech_output_cb(jac_speech_id, chunk_wav.data(),
++                                                       static_cast<int>(chunk_wav.size()), false);
++                    } else if (ctx_omni->audio_output_cb) {
+                         ctx_omni->audio_output_cb(chunk_wav.data(), static_cast<int>(chunk_wav.size()),
+                                                   sample_rate, is_last_window);
+                     }
+@@ -9137,6 +9172,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+                     }
+                 }
+             } else {
++                if (!jac_speech_id.empty()) jac_failed_speech.insert(jac_speech_id);
+                 LOG_ERR("T2W线程: feed_window 失败\n");
+             }
+             
+@@ -9223,7 +9259,18 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+                 break;
+             }
+         }
+-        
++        // Completion is emitted only after the final window has been processed.
++        if (is_final && !jac_speech_id.empty()) {
++            std::lock_guard<std::mutex> guard(ctx_omni->jac_speech_state_mutex);
++            // A duplicate old flush must not complete or clear a newer utterance.
++            if (ctx_omni->jac_speech_busy.load() && ctx_omni->jac_speech_id == jac_speech_id) {
++                if (ctx_omni->jac_speech_output_cb) {
++                    ctx_omni->jac_speech_output_cb(jac_speech_id, nullptr, jac_failed_speech.count(jac_speech_id) ? -1 : 0, true);
++                }
++                ctx_omni->jac_speech_busy.store(false);
++            }
++            jac_failed_speech.erase(jac_speech_id);
++        }
+     }
+     
+     print_with_timestamp("T2W(C++) 线程: 停止\n");
+@@ -9838,7 +9885,8 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
+     int decode_start_cache_len = ctx_omni->n_past;
+ 
+     // ---- force_listen：会话开局强制 LISTEN N 次 ----
+-    if (ctx_omni->force_listen_used < ctx_omni->force_listen_count) {
++    if ((!ctx_omni->jac_speech_busy.load() && ctx_omni->force_listen_used < ctx_omni->force_listen_count)
++        || (ctx_omni->jac_speech_busy.load() && ctx_omni->jac_speech_position >= ctx_omni->jac_speech_tokens.size())) {
+         ctx_omni->force_listen_used++;
+         if (ctx_omni->special_token_listen >= 0) {
+             common_sampler_accept(ctx_omni->ctx_sampler, ctx_omni->special_token_listen, true);
+@@ -9899,9 +9947,15 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
+             float *      hidden_states = nullptr;
+             llama_token  sampled_token = 0;
+ 
++            const bool literal = ctx_omni->jac_speech_busy.load();
++            llama_token forced = -1;
++            if (literal) {
++                if (ctx_omni->jac_speech_position >= ctx_omni->jac_speech_tokens.size()) break;
++                forced = ctx_omni->jac_speech_tokens[ctx_omni->jac_speech_position++];
++            }
+             tmp = llama_loop_with_hidden_and_token(
+                 ctx_omni, params, ctx_omni->ctx_sampler,
+-                ctx_omni->n_past, hidden_states, sampled_token);
++                ctx_omni->n_past, hidden_states, sampled_token, forced);
+ 
+             total_tokens_generated++;
+ 
+@@ -9917,6 +9971,7 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
+                 }
+             }
+ 
++            free(hidden_states);
+             if (tmp == nullptr) {
+                 LOG_ERR("Duplex decode: llama_loop returned nullptr\n");
+                 break;
+@@ -10011,6 +10066,7 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
+             && (!response.empty() || llm_finish))
+         {
+             LLMOut * llm_out = new LLMOut();
++            llm_out->jac_speech_id = ctx_omni->jac_speech_busy.load() ? ctx_omni->jac_speech_id : "";
+             llm_out->text            = response;
+             llm_out->n_past          = ctx_omni->n_past;
+             llm_out->llm_finish      = llm_finish;
+@@ -11704,3 +11760,23 @@ bool clean_kvcache(struct omni_context * ctx_omni) {
+     
+     return true;
+ }
++
++// Prepare literal tokens outside the sampling loop; input text cannot insert control tokens.
++bool omni_prepare_task_speech(omni_context * ctx, const std::string & id, const std::string & text) {
++    if (!ctx) return false;
++    std::lock_guard<std::mutex> guard(ctx->jac_speech_state_mutex);
++    if (!ctx->duplex_mode || !ctx->async || !ctx->use_tts || ctx->jac_speech_busy.load()
++        || text.empty() || text.size() > 768 || id.empty() || id.size() > 80
++        || ctx->special_token_speak < 0 || ctx->special_token_turn_eos < 0 || ctx->special_token_chunk_eos < 0) return false;
++    auto tokens = common_tokenize(ctx->ctx_llama, text, false, false);
++    if (tokens.empty() || tokens.size() > 192) return false;
++    for (auto token : tokens) if (!is_valid_tts_token(token)) return false;
++    tokens.insert(tokens.begin(), ctx->special_token_speak);
++    tokens.push_back(ctx->special_token_turn_eos);
++    tokens.push_back(ctx->special_token_chunk_eos);
++    ctx->jac_speech_tokens = std::move(tokens);
++    ctx->jac_speech_position = 0;
++    ctx->jac_speech_id = id;
++    ctx->jac_speech_busy.store(true);
++    return true;
++}
 diff --git a/tools/omni/omni.h b/tools/omni/omni.h
-index ab524b3..103e83d 100644
+index ab524b3..3645c83 100644
 --- a/tools/omni/omni.h
 +++ b/tools/omni/omni.h
 @@ -25,7 +25,7 @@ struct audition_audio_f32;
@@ -11,6 +301,39 @@ index ab524b3..103e83d 100644
  }
  }
  
+@@ -73,6 +73,8 @@ struct LLMThreadInfo {
+ };
+ 
+ struct T2WOut {
++    std::string jac_speech_id;  // Native task utterance identity; empty for conversation.
++    bool jac_speech_failed = false;
+     std::vector<llama_token> audio_tokens;  // Audio token IDs (25 tokens per chunk)
+     bool is_final = false;  // Whether this is the final chunk (turn end)
+     bool is_chunk_end = false;  // Whether this is the end of a TTS chunk (flush buffer, but not final)
+@@ -428,6 +430,14 @@ struct omni_context {
+     // 设置为 true 时使用 Python 实现（精度更高），false 时使用 C++ 实现
+     // macOS 上默认使用 C++ 实现（无 CUDA）
+     bool use_python_token2wav = false;
++    // Task text is decoded only by the existing duplex LLM thread.
++    std::vector<llama_token> jac_speech_tokens;
++    size_t jac_speech_position = 0;
++    std::string jac_speech_id;
++    std::atomic<bool> jac_speech_busy{false};
++    std::mutex jac_speech_state_mutex;
++    std::string jac_tts_speech_id; // Owned exclusively by the TTS thread.
++    std::function<void(const std::string &, const float *, int, bool)> jac_speech_output_cb;
+     audio_output_cb_t audio_output_cb = nullptr; // called by T2W threads when a chunk of audio is ready
+     std::string python_t2w_script_dir;  // Python Token2Wav 脚本目录
+     std::string python_t2w_model_dir;   // Python Token2Wav 模型目录
+@@ -628,4 +638,6 @@ void sliding_window_reset(struct omni_context * ctx_omni);
+ void vision_set_max_slice_nums(struct vision_ctx * ctx_vision, int max_slice_nums);
+ 
+ // benchmark: serial vs batched vision encoding
+-void omni_bench_vision(struct vision_ctx * ctx_vision, int n_threads, const char * image_path);
+\ No newline at end of file
++void omni_bench_vision(struct vision_ctx * ctx_vision, int n_threads, const char * image_path);
++// Prepare a bounded literal utterance; call only between synchronous duplex decodes.
++bool omni_prepare_task_speech(omni_context * ctx, const std::string & id, const std::string & text);
 diff --git a/tools/server/server-omni.cpp b/tools/server/server-omni.cpp
 index 851038a..2751e37 100644
 --- a/tools/server/server-omni.cpp
@@ -25,7 +348,7 @@ index 851038a..2751e37 100644
      // cleanup
      {
 diff --git a/tools/server/ws_handler.cpp b/tools/server/ws_handler.cpp
-index 5cf6427..97ffa2b 100644
+index 5cf6427..fa5d99b 100644
 --- a/tools/server/ws_handler.cpp
 +++ b/tools/server/ws_handler.cpp
 @@ -20,6 +20,22 @@
@@ -51,7 +374,20 @@ index 5cf6427..97ffa2b 100644
  namespace fs = std::filesystem;
  
  static double elapsed_ms(std::chrono::steady_clock::time_point start,
-@@ -568,6 +584,115 @@ static omni_context * create_session_octx(common_params & params, const ParsedSe
+@@ -202,6 +218,12 @@ static void reset_octx_for_session(omni_context * octx, const ParsedSessionInit
+     octx->tts_condition_length = 0;
+     octx->tts_condition_n_embd = 0;
+ 
++    octx->jac_speech_tokens.clear();
++    octx->jac_speech_position = 0;
++    octx->jac_speech_id.clear();
++    octx->jac_tts_speech_id.clear();
++    octx->jac_speech_busy.store(false);
++    octx->jac_speech_output_cb = nullptr;
+     clear_text_stream_state(octx);
+ 
+     if (octx->ctx_llama) {
+@@ -568,6 +590,115 @@ static omni_context * create_session_octx(common_params & params, const ParsedSe
      return octx;
  }
  
@@ -167,7 +503,7 @@ index 5cf6427..97ffa2b 100644
  // ============================================================================
  // Main WS handler
  // ============================================================================
-@@ -653,6 +778,19 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+@@ -653,6 +784,19 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
          return;
      }
  
@@ -187,7 +523,7 @@ index 5cf6427..97ffa2b 100644
      // Full-duplex requires index=0 prefill before the first frame. This
      // initializes the system prompt and starts the duplex encoder/LLM pipeline.
      if (parsed_init.mode == "full_duplex" || !parsed_init.ref_audio_b64.empty()) {
-@@ -694,8 +832,9 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+@@ -694,8 +838,10 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
      }
  
      // Send session.created
@@ -195,7 +531,100 @@ index 5cf6427..97ffa2b 100644
 -
 +    auto created = make_session_created(session_id, parsed_init.mode, make_runtime_metrics(octx));
 +    if (!voice_conditioning.is_null()) created["voice_conditioning"] = voice_conditioning;
++    created["capabilities"]["task_speech"] = 1;
 +    send_event(created);
      LOG_INF("WS /backend: session %s activated, mode=%s\n", session_id.c_str(), parsed_init.mode.c_str());
  
      // ================================================================
+@@ -713,6 +859,7 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+         bool accumulate = false;
+         std::vector<float> accum;
+         bool emitted_audio = false;
++        std::map<std::string, int64_t> jac_samples;
+     };
+     auto audio_state = std::make_shared<AudioCbState>();
+     audio_state->session_id = session_id;
+@@ -749,6 +896,27 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+         }
+     };
+ 
++    // Task callbacks retain packet identity across both asynchronous native stages.
++    octx->jac_speech_output_cb = [audio_state](const std::string & id, const float * samples, int n, bool final) {
++        if (!audio_state->ws || !audio_state->ws->is_open()) return;
++        std::lock_guard<std::mutex> lk(audio_state->mtx);
++        if (samples && n > 0) {
++            audio_state->jac_samples[id] += n;
++            auto ev = make_audio_delta(audio_state->session_id, id,
++                                       float32_pcm_to_b64(samples, n), ProtocolMetrics());
++            ev["task_speech_id"] = id;
++            audio_state->ws->send(ev.dump());
++        }
++        if (final) {
++            int64_t count = audio_state->jac_samples[id];
++            audio_state->jac_samples.erase(id);
++            audio_state->ws->send(json({{"type", "task.speech"}, {"id", id},
++                                       {"state", count > 0 && n >= 0 ? "completed" : "error"},
++                                       {"audio_samples", count}}).dump());
++        }
++    };
++    std::deque<std::string> jac_seen_speech;
++
+     // ================================================================
+     // Step 3: Read loop — process input.append messages
+     // ================================================================
+@@ -1082,6 +1250,37 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+                 return;
+             }
+ 
++            if (msg["input"].contains("task_speech")) {
++                const auto & request = msg["input"]["task_speech"];
++                std::string id, literal;
++                if (request.is_object() && request.contains("id") && request["id"].is_string()
++                    && request.contains("text") && request["text"].is_string()) {
++                    id = request["id"].get<std::string>();
++                    literal = request["text"].get<std::string>();
++                }
++                bool valid = !id.empty() && id.size() <= 80 && id.find_first_not_of("0123456789abcdefghijklmnopqrstuvwxyz:-") == std::string::npos
++                    && !literal.empty() && literal.size() <= 768 && !parsed_input.force_listen;
++                for (unsigned char c : literal) if (c < 32 || c == 127) valid = false;
++                bool duplicate = std::find(jac_seen_speech.begin(), jac_seen_speech.end(), id) != jac_seen_speech.end();
++                bool accepted = false;
++                if (valid && !duplicate) {
++                    std::lock_guard<std::mutex> lk(octx_mutex);
++                    accepted = omni_prepare_task_speech(octx, id, literal);
++                }
++                json ack = {{"type", "task.speech"}, {"id", id}, {"state", accepted ? "accepted" : "error"}};
++                if (!accepted) ack["code"] = duplicate ? "duplicate" : (valid ? "busy_or_invalid_tokens" : "invalid_request");
++                send_event(ack);
++                if (accepted) {
++                    jac_seen_speech.push_back(id);
++                    if (jac_seen_speech.size() > 64) jac_seen_speech.pop_front();
++                }
++            }
++            const std::string jac_speech_id = octx->jac_speech_busy.load() ? octx->jac_speech_id : "";
++            // Tag text using the decode's immutable identity, never the next input's id.
++            auto jac_send_text = [&](json ev) {
++                if (!jac_speech_id.empty()) ev["task_speech_id"] = jac_speech_id;
++                send_event(ev);
++            };
+             TempMediaFiles tmp_files;
+             int input_index = ++msg_counter;
+             double prefill_ms = 0.0;
+@@ -1184,7 +1383,7 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+                         const std::string text = sanitize_utf8_stream(utf8_pending, frag);
+                         full_text += text;
+                         if (!text.empty()) {
+-                            send_event(make_text_delta(
++                            jac_send_text(make_text_delta(
+                                 session_id, response_id, text,
+                                 make_runtime_metrics(octx, prefill_ms,
+                                                      elapsed_ms(t_generate_start),
+@@ -1213,7 +1412,7 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+                 const std::string text = sanitize_utf8_stream(utf8_pending, "", true);
+                 if (!text.empty()) {
+                     full_text += text;
+-                    send_event(make_text_delta(
++                    jac_send_text(make_text_delta(
+                         session_id, response_id, text,
+                         make_runtime_metrics(octx, prefill_ms,
+                                              elapsed_ms(t_generate_start),

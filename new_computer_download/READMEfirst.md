@@ -214,7 +214,7 @@ M0 已根据真实模型/设备验证与 bo s s 明确确认标记通过，30 �
 
 固定 Gateway 视频会话 300 秒、音频会话 600 秒。后续客户端必须实现受控重连、重新注入记忆和上下文；旧 /ws/duplex 页面不作为当前客户端协议依据。
 
-M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo s s 真机验收，反馈为「这次完全正常」。专项回归 57 项通过；这不增加未测的长测时长或循环次数。M2b 已接入并行 VAD/Whisper 与 Gateway 明确系统任务，见第 12 节；原生结果播报、ChromaDB 和 OpenClaw 仍待接入。Qwen 继续使用 LM Studio 127.0.0.1:12345；基础听看说无需加载 Qwen 或启动云端。
+M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo s s 真机验收，反馈为「这次完全正常」。专项回归 57 项通过；这不增加未测的长测时长或循环次数。M2b 已接入并行 VAD/Whisper 与 Gateway 明确系统任务，见第 12 节；原生结果播报已接入，ChromaDB 和 OpenClaw 仍待接入。Qwen 继续使用 LM Studio 127.0.0.1:12345；基础听看说无需加载 Qwen 或启动云端。
 
 ### 9 M1 生产入口
 
@@ -283,7 +283,7 @@ Windows 的独立大脑入口使用其项目解释器（不代表 Metal 后端�
 
 ### 12 M2b：并行转写与 Gateway 系统任务
 
-The default Gateway install now prepares the pinned multilingual Whisper small resources outside the repository and runs a CPU process self-check. Runtime transcription is offline. CPU VAD/Whisper and Qwen run beside the existing audio stream; the CLI/GUI open no second microphone. The user confirmed successful live voice-task text results on 2026-10-08. Native speech feedback for task results remains pending.
+The default Gateway install now prepares the pinned multilingual Whisper small resources outside the repository and runs a CPU process self-check. Runtime transcription is offline. CPU VAD/Whisper and Qwen run beside the existing audio stream; the CLI/GUI open no second microphone. The user confirmed successful live voice-task text results on 2026-10-08. Native speech feedback is now connected through the updated, registered C++ patch; rebuild existing installations before enabling tasks.
 
 当前安装器默认安装 CPU 转写依赖，并下载锁定的 Whisper small 四项资源（约 487MB，仓库外 `~/.cache/jac/models/whisper-small`），逐文件 SHA256 和纯 CPU 自检通过才报成功。运行期不下载，不发送云端。下载采用 HTTPS 镜像/官方回退，持续过慢会切源，失败保留明确结果。根依赖和固定独立清单已同步，历史 requirements_fixed 不用于主程序。
 
@@ -313,9 +313,19 @@ python3.11 new_computer_download/setup_new_computer.py --only gateway --skip-tra
 .cache/m0/venv/bin/python main.py --gateway --gui
 ```
 
-GUI 内先启动后端再启动语音，戴耳机。第一轮使用明确短句：“查询电脑状态”“查一下电池电量”“查询本机当前时间”“生成一份系统状态报告”。界面应出现独立用户转写、大脑任务状态和可打开的真实报告。报告含该条任务转写及实际工具证据，仅在本机 output/m2/qwen/；一般转写只在内存，音视频不落盘。目前任务结果不会从原生音色播报，不能把界面文件交付当成播报验收。
+GUI 内先启动后端再启动语音，戴耳机。第一轮使用明确短句：“查询电脑状态”“查一下电池电量”“查询本机当前时间”“生成一份系统状态报告”。界面应出现独立用户转写、大脑任务状态和可打开的真实报告。报告含该条任务转写及实际工具证据，仅在本机 output/m2/qwen/；一般转写只在内存，音视频不落盘。完成的单项查询会通过现有原生音色播报实际工具证据，综合报告播报完成提示。完整结果仍保留在界面和报告；文件探针只收不播放，听感单独验收。
 
-2026-10-08，bo s s 反馈“测试成功，能正常输出文字结果”，真机语音任务文字结果按用户反馈验收通过。此次未新增具体指令、次数、时长、延迟或报告内容核对记录，音色听感仍单独确认。下一步优先接入原生任务结果播报；安装步骤、依赖与启动命令不变。
+2026-10-08，bo s s 反馈“测试成功，能正常输出文字结果”，真机语音任务文字结果按用户反馈验收通过。此次未新增具体指令、次数、时长、延迟或报告内容核对记录，音色听感仍单独确认。原生任务结果播报已接入；依赖版本与模型不变，旧后端需按下方步骤更新补丁并重新编译。
+
+旧安装升级原生播报：先在 GUI 点击“停止后端”并等待清理完成，再关闭 GUI。已保存后端路径的机器从项目根执行：
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/update_native_backend.py --build
+```
+
+更新器核对固定 commit，只接受登记的旧音色补丁、当前完整补丁或干净源码。陌生改动不会覆盖；新补丁应用失败恢复原补丁。它不改模型或下载依赖。未保存 GUI 路径时先通过“后端路径设置”选择引擎目录；新机器仍按第 4 节应用最新完整组合补丁构建。构建后重新打开 GUI，先启动后端再启动语音。旧二进制缺少 `task_speech=1` 确认时，任务模式在开启设备前明确拒绝启动。
+
+原生结果播报只排一个短句，等待助手聆听、用户静音和播放空闲；等待 20 秒或已发 30 秒超时、会话剩余不足 15 秒时跳过，文字报告保留。任务 PCM 仍为 24k float32，复用原播放流及同一参考音；停止/重连取消剩余任务音频。GUI“结果音频已接收”确认字面文本及音频传输，不等于人工听感通过。
 
 仅基础听看说的完整命令：
 

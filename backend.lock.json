@@ -31,6 +31,9 @@
         "GGML_METAL=ON",
         "LLAMA_OPENSSL=OFF",
         "LLAMA_CURL=OFF"
+      ],
+      "previous_patch_sha256": [
+        "705c68a3f06cda1856f2de09b2af7f4b2eae7040dec34b7367793be556385035"
       ]
     }
   },
@@ -67,7 +70,14 @@
     "docs": [
       "docs/en/realtime-protocol-overview.md",
       "docs-app/content/docs/en/realtime-api/video.md"
-    ]
+    ],
+    "task_speech": {
+      "version": 1,
+      "input_field": "task_speech",
+      "event": "task.speech",
+      "max_text_bytes": 768,
+      "max_text_tokens": 192
+    }
   },
   "ports": {
     "gateway": 8006,

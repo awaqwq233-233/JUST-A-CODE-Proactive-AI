@@ -43,6 +43,7 @@ class VadSegmenter:
         self.pre = deque(maxlen=10)
         self.frames, self.voiced, self.quiet = [], 0, 0
         self.overlap, self.discarding = False, False
+        self.last_speech_at = 0.0
 
     def feed(self, samples, overlap=False, ended_at=None):
         """在 VAD 线程切片；返回完整句子，长句拒绝而不拆成多个任务。"""
@@ -57,6 +58,8 @@ class VadSegmenter:
             frame, self.pending = self.pending[:480], self.pending[480:]
             pcm16 = (np.clip(frame, -1, 1) * 32767).astype("<i2").tobytes()
             speech = float(np.sqrt(np.mean(frame * frame))) >= .005 and self.detector.is_speech(pcm16, 16000)
+            if speech:
+                self.last_speech_at = ended_at - len(self.pending) / 16000
             if self.discarding:
                 self.quiet = 0 if speech else self.quiet + 1
                 if self.quiet >= 20:
@@ -154,6 +157,7 @@ class TaskPipeline:
         self.seen = deque(maxlen=256)
         self.counters = Counter()
         self.segmenter = None
+        self.on_result_speech = self.on_invalidate = None
 
     def start(self):
         """后台完成资源/模型就绪，启动三个有界处理线程。"""
@@ -198,6 +202,8 @@ class TaskPipeline:
             cancelled = self.active and self.busy
             self.generation += 1
             self.active = False
+            if self.on_invalidate is not None:
+                self.on_invalidate()
             for buffer in (self.audio, self.utterances):
                 self._drain(buffer)
             if cancelled and not self.stopped.is_set():
@@ -208,11 +214,20 @@ class TaskPipeline:
         with self.lock:
             return self.active and not self.stopped.is_set() and not self.fault.is_set() and generation == self.generation
 
+    def user_quiet(self):
+        """只读 VAD 线程的最近活动；句末静音满足后才允许插入任务播报。"""
+        with self.lock:
+            return (self.segmenter is not None and not self.segmenter.frames
+                    and not self.segmenter.discarding
+                    and time.monotonic() - self.segmenter.last_speech_at >= .8)
+
     def _fail(self, code):
         """旁路故障关闭自动任务，通知 GUI，原音视频上行继续运行。"""
         self.fault.set()
         with self.lock:
             self.counters[code] += 1
+            if self.on_invalidate is not None:
+                self.on_invalidate()
         if not self.stopped.is_set():
             self._notify("error", {"code": code})
 
@@ -344,6 +359,12 @@ class TaskPipeline:
                         self.counters["tasks_completed"] += 1
                         self._notify("completed", {"id": utterance.identifier,
                             "path": str(result.path), "answer": result.answer})
+                        if self.on_result_speech is not None:
+                            try:
+                                self.on_result_speech(utterance.identifier, utterance.generation, result, fields)
+                            except Exception:
+                                self.counters["speech_callback_error"] += 1
+                                self._notify("speech_failed", {"id": utterance.identifier, "code": "speech_failed"})
             except Exception:
                 if self.current(utterance.generation):
                     with self.lock:
