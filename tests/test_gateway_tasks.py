@@ -33,6 +33,8 @@ def audio(frames, speech=True):
     ("查询本机当前时间", ("time",)), ("生成一份系统状态报告", ("all",)),
     ("查詢電池電量", ("battery",)), ("查看CPU负载", ("cpu",)), ("检查内存占用", ("memory",)),
     ("现在几点了", ("time",)),
+    ("请查询一下电脑电池的电量", ("battery",)),
+    ("检测本机电池电量", ("battery",)),
     ("查詢電腦狀態並生成中文報告", ("all",)), ("檢查記憶體", ("memory",)),
 ])
 def test_explicit_whole_commands_route(text, fields):
@@ -171,6 +173,40 @@ def test_parallel_pipeline_delivers_file_once(tmp_path):
         assert pipeline.stats()["tasks_completed"] == 1
     finally:
         pipeline.stop()
+
+
+def test_playback_overlap_reports_no_query_and_blocks_guessed_reply():
+    """实际已有播放的用户指令明确拒绝，不能只在统计中悄悄丢弃。"""
+    callbacks = Callbacks()
+    pipeline = TaskPipeline(callbacks, decoder_factory=Decoder)
+    try:
+        pipeline.start()
+        pipeline.segmenter.detector = Detector()
+        pipeline.begin_session()
+        pipeline.offer_audio(audio(12), overlap=True)
+        pipeline.offer_audio(audio(20, False))
+        deadline = time.monotonic() + 2
+        while not pipeline.stats().get("playback_rejected") and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert pipeline.stats()["playback_rejected"] == 1
+        assert ("rejected", {"code": "playback_overlap"}) in callbacks.events
+        assert pipeline.response_state()[1] == "block" and not pipeline.tasks.qsize()
+    finally:
+        pipeline.stop()
+
+
+def test_old_transcription_does_not_unlock_new_pending_user_sentence():
+    """前句转写迟到不能放行新系统请求的未核验普通音频。"""
+    pipeline = TaskPipeline(Callbacks(), decoder_factory=Decoder)
+    pipeline.begin_session()
+    first = pipeline._response_started()
+    old = Utterance("one", pipeline.generation, time.monotonic(), audio(12), False, first)
+    pipeline._response_started()
+    pipeline._response_decided(old, "allow")
+    assert pipeline.response_state()[1] == "pending"
+    pipeline.invalidate()
+    pipeline._response_decided(old, "allow")
+    assert pipeline.response_state()[1] == "block"
 
 
 def test_reconnect_cancels_active_task_before_file(tmp_path):

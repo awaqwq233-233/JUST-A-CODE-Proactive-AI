@@ -195,6 +195,9 @@ def test_media_failure_cancels_task_before_receive_tail(tmp_path):
             state["active"] = False
         def offer_audio(self, *args):
             """模拟旁路入队。"""
+        def response_state(self):
+            """故障尾窗禁止普通回复，仍允许生命周期关闭事件。"""
+            return 1, "block", threading.Event()
         def request_stop(self):
             """取消旁路。"""
             self.invalidate()

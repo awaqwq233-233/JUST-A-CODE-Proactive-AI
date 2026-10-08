@@ -134,10 +134,41 @@ class GatewayClient:
             self._recent.append(self._pending_text[-2000:])
         self._pending_text = ""
 
+    def _deliver_output(self, kind, value, devices, guard=None):
+        """只交付已放行普通回复或已核验任务结果，取消块不进入播放队列。"""
+        if self._stop.is_set() or (guard is not None and guard.is_set()):
+            return
+        if kind == "text":
+            self._pending_text = (self._pending_text + value)[-2000:]
+            with self._lock:
+                self._reply = (self._reply + value)[-8192:]
+            self.callbacks.on_text_delta(value)
+        else:
+            if guard is not None:
+                devices.enqueue_task_output(value, guard)
+            else:
+                devices.enqueue_output(value)
+            with self._lock:
+                self._stats["native_audio_samples"] += len(value)
+            self.callbacks.on_audio_chunk(value.tobytes())
+
     async def _receive(self, ws, devices, costs) -> str:
         """独立收取文本和原生音频；忽略视频双工中非可靠的 response.done。"""
+        from .response_gate import ResponseGate
+        gate = ResponseGate(self._pipeline, self.callbacks) if self._pipeline is not None else None
+        gate_counts = Counter()
         while True:
-            event = protocol.check_event(await ws.recv())
+            if gate is not None:
+                for kind, value, guard in gate.poll():
+                    self._deliver_output(kind, value, devices, guard)
+                with self._lock:
+                    self._stats.update({"ordinary_" + key: value - gate_counts[key]
+                                        for key, value in gate.counters.items()})
+                gate_counts = gate.counters.copy()
+            try:
+                event = protocol.check_event(await asyncio.wait_for(ws.recv(), .1))
+            except TimeoutError:
+                continue
             if event["type"] == "session.closed":
                 self._remember_text()
                 return event.get("reason", "unknown")
@@ -160,13 +191,12 @@ class GatewayClient:
                 if speech_id is not None:
                     if self._speech is None or not self._speech.text_delta(speech_id, text):
                         continue
+                    self._deliver_output("text", text, devices)
                 else:
                     self._listening = False
                     self._last_assistant_output = time.monotonic()
-                self._pending_text = (self._pending_text + text)[-2000:]
-                with self._lock:
-                    self._reply = (self._reply + text)[-8192:]
-                self.callbacks.on_text_delta(text)
+                    for kind, value, guard in gate.offer("text", text) if gate else [("text", text, None)]:
+                        self._deliver_output(kind, value, devices, guard)
             elif kind == "audio":
                 samples = protocol.decode_pcm(event["audio"])
                 speech_id = event.get("task_speech_id")
@@ -178,14 +208,9 @@ class GatewayClient:
                 else:
                     self._listening = False
                     self._last_assistant_output = time.monotonic()
-                if not self._stop.is_set():
-                    if guard is not None:
-                        devices.enqueue_task_output(samples, guard)
-                    else:
-                        devices.enqueue_output(samples)
-                with self._lock:
-                    self._stats["native_audio_samples"] += len(samples)
-                self.callbacks.on_audio_chunk(samples.tobytes())
+                outputs = [("audio", samples, guard)] if speech_id is not None or gate is None else gate.offer("audio", samples)
+                for kind, value, guard in outputs:
+                    self._deliver_output(kind, value, devices, guard)
             else:
                 raise ValueError("未知输出类型")
             metrics = event.get("metrics") or {}

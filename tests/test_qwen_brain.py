@@ -194,9 +194,23 @@ def test_report_contains_actual_tool_evidence(tmp_path, monkeypatch):
         yield "中文结果"
 
     monkeypatch.setattr("src.brain.task_runner.execute_tool", lambda *a: "实际时间：2026-10-07 10:20:30")
-    result = BrainTaskRunner(SimpleNamespace(run_agentic=agent), tmp_path).run("../模型路径")
+    returned = []
+    result = BrainTaskRunner(SimpleNamespace(run_agentic=agent), tmp_path).run("../模型路径", on_tool_result=returned.append)
     assert result.path.parent == tmp_path and result.path.name.startswith("system-status-")
     assert "实际时间：2026-10-07 10:20:30" in result.path.read_text(encoding="utf-8")
+    assert returned == result.trace and returned[0]["queried_at"]
+    assert "get_system_info" in result.path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("status, expected", [("not charging", "未充电"), ("charging", "充电中"), ("discharging", "放电中")])
+def test_battery_uses_actual_percentage_and_distinguishes_not_charging(monkeypatch, status, expected):
+    """macOS 保留真实百分比，not charging 不能因为含 charging 被误报。"""
+    from src.tools import system_info
+    monkeypatch.setattr(system_info.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(system_info.subprocess, "run", lambda *a, **kw:
+        SimpleNamespace(stdout=f"-InternalBattery-0 (id=123) 80%; {status}; present: true"))
+    result = system_info.get_system_info({"info_type": "battery"})
+    assert "80%" in result and expected in result
 
 
 def test_cancel_before_atomic_publish_removes_temporary_file(tmp_path):

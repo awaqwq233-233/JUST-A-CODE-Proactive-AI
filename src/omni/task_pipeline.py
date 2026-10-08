@@ -23,17 +23,19 @@ class Utterance:
     ended_at: float
     samples: np.ndarray
     overlap: bool
+    response_sequence: int = 0
 
 
 class VadSegmenter:
     """WebRTC 30ms 判定，300ms 预留、600ms 句末、12s 上限。"""
 
-    def __init__(self, detector=None):
+    def __init__(self, detector=None, on_start=None, on_discard=None):
         """创建 VAD；detector 仅供离线测试替换语音判定。"""
         if detector is None:
             import webrtcvad
             detector = webrtcvad.Vad(2)
         self.detector = detector
+        self.on_start, self.on_discard = on_start, on_discard
         self.reset()
 
     def reset(self):
@@ -44,6 +46,8 @@ class VadSegmenter:
         self.frames, self.voiced, self.quiet = [], 0, 0
         self.overlap, self.discarding = False, False
         self.last_speech_at = 0.0
+        self.response_sequence = 0
+        self.completed_sequences = []
 
     def feed(self, samples, overlap=False, ended_at=None):
         """在 VAD 线程切片；返回完整句子，长句拒绝而不拆成多个任务。"""
@@ -54,6 +58,7 @@ class VadSegmenter:
         self.pending = np.concatenate((self.pending, samples))
         blocked = overlap or self.pending_overlap
         results = []
+        self.completed_sequences = []
         while len(self.pending) >= 480:
             frame, self.pending = self.pending[:480], self.pending[480:]
             pcm16 = (np.clip(frame, -1, 1) * 32767).astype("<i2").tobytes()
@@ -72,6 +77,7 @@ class VadSegmenter:
                 self.frames = [f for f, _ in self.pre]
                 self.overlap = False
                 self.pre.clear()
+                self.response_sequence = self.on_start() if self.on_start else 0
             self.frames.append(frame.copy())
             self.overlap |= blocked and speech
             self.voiced += bool(speech)
@@ -80,11 +86,16 @@ class VadSegmenter:
                 self.frames = []
                 self.pre.clear()
                 self.discarding, self.quiet = True, 0
+                if self.on_discard:
+                    self.on_discard(self.response_sequence, "long_speech")
                 continue
             if self.quiet >= 20:
                 if self.voiced >= 10:
                     results.append((np.concatenate(self.frames), self.overlap,
                                     ended_at - len(self.pending) / 16000))
+                    self.completed_sequences.append(self.response_sequence)
+                elif self.on_discard:
+                    self.on_discard(self.response_sequence, "unclear_speech")
                 self.frames, self.voiced, self.quiet, self.overlap = [], 0, 0, False
         self.pending_overlap = overlap if len(self.pending) else False
         return results
@@ -105,9 +116,9 @@ def route_instruction(text):
     if re.fullmatch(prefix + report, text):
         return ("all",)
     owner = r"(?:(?:这台|我的|本机|当前|现在|电脑|计算机|系统|的)){0,4}"
-    action = r"(?:查询|查一下|查看|检查|查下|查|看一下|告诉我)"
+    action = r"(?:查询一下|查询|查一下|查看|检查|检测|查下|查|看一下|告诉我)"
     fields = {
-        "battery": r"(?:电池(?:电量|状态)?|电量(?:百分比)?|剩余电量)",
+        "battery": r"(?:电池(?:的)?(?:电量|状态)?|电量(?:百分比)?|剩余电量)",
         "time": r"(?:时间|几点(?:钟)?)",
         "cpu": r"cpu(?:负载|状态)?",
         "memory": r"内存(?:状态|占用)?",
@@ -119,6 +130,15 @@ def route_instruction(text):
     if re.fullmatch(prefix + r"(?:本机|当前|现在)几点(?:钟)?(?:了)?", text):
         return ("time",)
     return None
+
+
+def is_system_request(text):
+    """识别需真实电脑证据的未支持说法，仅用于禁猜，不据此执行工具。"""
+    text = normalize_transcript(text)
+    topic = re.search(r"电池|电量|cpu|内存|系统状态|电脑状态|几点|当前时间", text)
+    educational = re.search(r"原理|科普|知识|定义|是什么|如何保养|怎么保养", text)
+    state_intent = re.search(r"查询|查一下|查看|检查|检测|我的|电脑|本机|多少|剩余", text)
+    return bool(topic and (state_intent or not educational))
 
 
 def confirmed_text(segments):
@@ -158,12 +178,14 @@ class TaskPipeline:
         self.counters = Counter()
         self.segmenter = None
         self.on_result_speech = self.on_invalidate = None
+        self.response_sequence, self.response_policy = 0, "allow"
+        self.response_guard = threading.Event()
 
     def start(self):
         """后台完成资源/模型就绪，启动三个有界处理线程。"""
         from src.brain.lm_studio import LMStudioClient
         LMStudioClient(self.brain_url)  # 仅校验本机地址，不探测或加载大脑。
-        self.segmenter = VadSegmenter()
+        self.segmenter = VadSegmenter(on_start=self._response_started, on_discard=self._response_discarded)
         try:
             self.decoder.start()
         except (FileNotFoundError, ValueError) as error:
@@ -193,6 +215,10 @@ class TaskPipeline:
         with self.lock:
             self.generation += 1
             self.session, self.sequence, self.active = uuid4().hex, 0, True
+            self.response_sequence += 1
+            self.response_guard.set()
+            self.response_guard = threading.Event()
+            self.response_policy = "allow"
             self._drain(self.audio)
             self._drain(self.utterances)
 
@@ -202,6 +228,8 @@ class TaskPipeline:
             cancelled = self.active and self.busy
             self.generation += 1
             self.active = False
+            self.response_guard.set()
+            self.response_policy = "block"
             if self.on_invalidate is not None:
                 self.on_invalidate()
             for buffer in (self.audio, self.utterances):
@@ -221,10 +249,46 @@ class TaskPipeline:
                     and not self.segmenter.discarding
                     and time.monotonic() - self.segmenter.last_speech_at >= .8)
 
+    def _response_started(self):
+        """用户开始说话即撤销旧普通播放，转写判定前只在内存暂存新回复。"""
+        with self.lock:
+            self.response_sequence += 1
+            self.response_guard.set()
+            self.response_guard = threading.Event()
+            self.response_policy = "pending"
+            return self.response_sequence
+
+    def _response_discarded(self, sequence, code):
+        """无法确认的语音不放行模型自行作答，界面明确说明未执行查询。"""
+        with self.lock:
+            if sequence == self.response_sequence:
+                self.response_policy = "block"
+            self._notify("rejected", {"code": code})
+
+    def response_state(self):
+        """给 WS 返回普通回复权限；任务标记音频仍由独立证据队列核验。"""
+        with self.lock:
+            policy = self.response_policy
+            if not self.active or self.fault.is_set() or self.stopped.is_set():
+                policy = "block"
+            elif not self.audio.empty() or (self.segmenter is not None and self.segmenter.frames):
+                policy = "pending"
+            return self.response_sequence, policy, self.response_guard
+
+    def _response_decided(self, utterance, policy):
+        """旧转写不能解锁新一句话，也不能跨会话解锁播放。"""
+        with self.lock:
+            if self.current(utterance.generation) and utterance.response_sequence == self.response_sequence:
+                self.response_policy = policy
+                if policy == "block":
+                    self.response_guard.set()
+
     def _fail(self, code):
         """旁路故障关闭自动任务，通知 GUI，原音视频上行继续运行。"""
         self.fault.set()
         with self.lock:
+            self.response_policy = "block"
+            self.response_guard.set()
             self.counters[code] += 1
             if self.on_invalidate is not None:
                 self.on_invalidate()
@@ -261,18 +325,21 @@ class TaskPipeline:
                 continue
             if not self.current(generation):
                 continue
-            if generation != previous:
-                self.segmenter.reset()
-                previous = generation
             try:
-                for pcm, blocked, ended in self.segmenter.feed(samples, overlap, ended_at):
-                    with self.lock:
+                with self.lock:
+                    if not self.current(generation):
+                        continue
+                    if generation != previous:
+                        self.segmenter.reset()
+                        previous = generation
+                    results = self.segmenter.feed(samples, overlap, ended_at)
+                    for (pcm, blocked, ended), sequence in zip(results, self.segmenter.completed_sequences):
                         if not self.current(generation):
                             break
                         self.sequence += 1
                         identifier = f"{self.session}:{self.sequence}"
                         self.counters["utterances"] += 1
-                    self.utterances.put_nowait(Utterance(identifier, generation, ended, pcm, blocked))
+                        self.utterances.put_nowait(Utterance(identifier, generation, ended, pcm, blocked, sequence))
             except queue.Full:
                 self._fail("utterance_overflow")
             except Exception:
@@ -290,6 +357,8 @@ class TaskPipeline:
             if utterance.overlap:
                 with self.lock:
                     self.counters["playback_rejected"] += 1
+                self._response_decided(utterance, "block")
+                self._notify("rejected", {"code": "playback_overlap"})
                 continue
             try:
                 text = confirmed_text(self.decoder.transcribe(utterance.samples))
@@ -298,11 +367,14 @@ class TaskPipeline:
                 if time.monotonic() - utterance.ended_at > 15:
                     with self.lock:
                         self.counters["stale_rejected"] += 1
+                    self._response_decided(utterance, "block")
+                    self._notify("rejected", {"code": "stale_speech"})
                     continue
                 if text is None:
                     with self.lock:
                         self.counters["quality_rejected"] += 1
                     self._notify("rejected", {"code": "unclear_speech"})
+                    self._response_decided(utterance, "block")
                     continue
                 with self.lock:
                     if not self.current(utterance.generation):
@@ -310,8 +382,11 @@ class TaskPipeline:
                     self.counters["transcriptions"] += 1
                     self.callbacks.on_user_transcript(text)
                     fields = route_instruction(text)
+                    self._response_decided(utterance, "block" if fields or is_system_request(text) else "allow")
                     if fields:
                         self.submit(utterance, text, fields)
+                    elif is_system_request(text):
+                        self._notify("rejected", {"code": "unsupported_system_request"})
             except Exception:
                 if not self.stopped.is_set():
                     self._fail("whisper_error")
@@ -352,8 +427,14 @@ class TaskPipeline:
                         runner = BrainTaskRunner(LocalBrain(backend="lm_studio", lm_studio_url=self.brain_url))
                     else:
                         runner = self.runner_factory()
+                def tool_result(entry):
+                    """只有工具真实返回后才显示查询证据，旧代次不向界面发布。"""
+                    with self.lock:
+                        if self.current(utterance.generation):
+                            self.counters["tool_calls"] += 1
+                            self._notify("tool_completed", {"id": utterance.identifier, **entry})
                 result = runner.run(text, should_stop=lambda: not self.current(utterance.generation),
-                                    info_types=fields, publication_lock=self.lock)
+                                    info_types=fields, publication_lock=self.lock, on_tool_result=tool_result)
                 with self.lock:
                     if self.current(utterance.generation):
                         self.counters["tasks_completed"] += 1

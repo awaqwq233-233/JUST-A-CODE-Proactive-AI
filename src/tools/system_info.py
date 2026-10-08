@@ -21,6 +21,8 @@ def _get_battery():
             m = re.search(r"(\d+)%", out)
             if "discharging" in out:
                 state = "放电中"
+            elif "not charging" in out:
+                state = "已接入电源，未充电"
             elif "charging" in out:
                 state = "充电中"
             else:

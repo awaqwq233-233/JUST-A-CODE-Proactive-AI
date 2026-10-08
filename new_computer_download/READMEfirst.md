@@ -285,6 +285,8 @@ Windows 的独立大脑入口使用其项目解释器（不代表 Metal 后端�
 
 The default Gateway install now prepares the pinned multilingual Whisper small resources outside the repository and runs a CPU process self-check. Runtime transcription is offline. CPU VAD/Whisper and Qwen run beside the existing audio stream; the CLI/GUI open no second microphone. The user confirmed successful live voice-task text results on 2026-10-08. Native speech feedback is now connected through the updated, registered C++ patch; rebuild existing installations before enabling tasks.
 
+The later battery-response fix is client-only: restart the GUI. With transcription enabled, ordinary replies wait for classification; system requests use verified task speech. Failed or unmatched recognition explicitly reports no query. The GUI and report expose actual tool arguments, query time and raw evidence. Conversation gains transcription latency; input keeps streaming, while a transcription fault pauses unverified speech until restart.
+
 当前安装器默认安装 CPU 转写依赖，并下载锁定的 Whisper small 四项资源（约 487MB，仓库外 `~/.cache/jac/models/whisper-small`），逐文件 SHA256 和纯 CPU 自检通过才报成功。运行期不下载，不发送云端。下载采用 HTTPS 镜像/官方回退，持续过慢会切源，失败保留明确结果。根依赖和固定独立清单已同步，历史 requirements_fixed 不用于主程序。
 
 从项目根更新安装并自检：
@@ -326,6 +328,10 @@ GUI 内先启动后端再启动语音，戴耳机。第一轮使用明确短句�
 更新器核对固定 commit，只接受登记的旧音色补丁、当前完整补丁或干净源码。陌生改动不会覆盖；新补丁应用失败恢复原补丁。它不改模型或下载依赖。未保存 GUI 路径时先通过“后端路径设置”选择引擎目录；新机器仍按第 4 节应用最新完整组合补丁构建。构建后重新打开 GUI，先启动后端再启动语音。旧二进制缺少 `task_speech=1` 确认时，任务模式在开启设备前明确拒绝启动。
 
 原生结果播报只排一个短句，等待助手聆听、用户静音和播放空闲；等待 20 秒或已发 30 秒超时、会话剩余不足 15 秒时跳过，文字报告保留。任务 PCM 仍为 24k float32，复用原播放流及同一参考音；停止/重连取消剩余任务音频。GUI“结果音频已接收”确认字面文本及音频传输，不等于人工听感通过。
+
+2026-10-08 电池抢答修复只修改客户端，不需要再次编译后端：关闭并重新打开 GUI。启用“本地转写与系统任务”，戴耳机，等正在播放的语音结束后说“查一下电池电量”。界面应先显示确认的用户原话，再显示“大脑 · 工具已实际查询”、`get_system_info`、查询时间及真实百分比，随后生成报告并播报证据。只出现 J.A.C. 自称“正在查询”或一个数字不能证明工具已调用。
+
+普通回复在 VAD/Whisper 判定前有界暂存，系统查询丢弃模型抢答；普通聊天判定后恢复，因此回复会增加转写等待。识别成其他电池说法、播放重叠或识别失败会显示“未执行查询”，请按界面原话/原因复验，程序不会自动把同音错字改成工具指令。转写异常时感知上行保持，未核验播报暂停，请停止后重启。已播放的设备块无法收回。工具原始证据和调用参数/时间同时保存在报告，可点击“打开最新报告”核对。
 
 仅基础听看说的完整命令：
 

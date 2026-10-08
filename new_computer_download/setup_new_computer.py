@@ -547,6 +547,7 @@ def step_m0(args):
          "import verify_toolcall; "
          "import webrtcvad; from src.omni.task_pipeline import TaskPipeline; "
          "from src.omni.task_speech import TaskSpeechQueue; "
+         "from src.omni.response_gate import ResponseGate; "
          "from src.omni.realtime_protocol import require_task_speech; "
          "import new_computer_download.update_native_backend; "
          "from importlib.metadata import version; "
