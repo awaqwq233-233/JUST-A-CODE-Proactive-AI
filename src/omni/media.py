@@ -55,6 +55,7 @@ class LiveDevices:
         self.mic_rms_current = 0.0
         self.audio_tap = None
         self.playback_active_until = 0.0
+        self.pending_output_cancel = None
 
     def microphone_callback(self, data, frames, timing, status) -> None:
         """实时回调只复制入队；溢出显式失败，绝不悄悄丢弃用户语音。"""
@@ -73,9 +74,17 @@ class LiveDevices:
         output.fill(0)
         offset = 0
         while offset < frames:
+            if self.pending_output_cancel is not None and self.pending_output_cancel.is_set():
+                self.pending_output = np.zeros(0, dtype="float32")
+                self.pending_output_cancel = None
             if not len(self.pending_output):
                 try:
                     self.pending_output = self.playback.get_nowait()
+                    self.pending_output_cancel = None
+                    if isinstance(self.pending_output, tuple):
+                        self.pending_output, self.pending_output_cancel = self.pending_output
+                        if self.pending_output_cancel.is_set():
+                            continue
                 except queue.Empty:
                     return
             count = min(frames - offset, len(self.pending_output))
@@ -168,6 +177,10 @@ class LiveDevices:
         except queue.Full as error:
             raise RuntimeError("原生音频播放队列溢出") from error
         self.playback_queue_max = max(self.playback_queue_max, self.playback.qsize())
+
+    def enqueue_task_output(self, samples, cancellation) -> None:
+        """沿用同一播放流，取消标志使停止或重连后的排队任务块也不会发声。"""
+        self.enqueue_output((samples, cancellation))
 
     def latest_video(self) -> bytes | None:
         """在 Queue 自身互斥锁内读取最新帧，不暴露非线程安全的队列访问。"""

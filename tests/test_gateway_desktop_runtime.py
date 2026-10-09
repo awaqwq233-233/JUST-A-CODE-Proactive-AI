@@ -113,3 +113,17 @@ def test_callbacks_separate_reply_and_connection_state():
     callbacks.on_state("reconnecting")
     assert runtime.state == "reconnecting" and finishes
     assert not runtime.context.is_listening and not runtime.context.is_speaking
+
+
+def test_recognition_and_tool_progress_do_not_reset_running_brain():
+    """语音质量提示及工具进度与任务生命周期分开，查询过程中保持忙碌状态。"""
+    runtime = desktop.DesktopRuntime()
+    events = []
+    runtime.task_callback = lambda state, detail: events.append(state)
+    callbacks = desktop.DesktopCallbacks(runtime)
+    callbacks.on_task_event("running", {})
+    for state in ("transcription_rejected", "rejected", "tool_completed"):
+        callbacks.on_task_event(state, {})
+        assert runtime.context.is_thinking
+    callbacks.on_task_event("completed", {"path": "report.md"})
+    assert not runtime.context.is_thinking and events[-1] == "completed"

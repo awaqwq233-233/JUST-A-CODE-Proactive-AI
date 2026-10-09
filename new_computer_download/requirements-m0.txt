@@ -1,5 +1,5 @@
 # 当前主程序与固定后端的共同依赖，Python 3.11；根 requirements.txt 引用本清单。
-# Gateway / Worker / 探针均不加载 torch 模型。
+# Gateway / Worker / 探针均不加载 torch 模型；任务播报复用锁定 C++ 原生链路，无新增依赖。
 numpy==2.2.6
 soundfile==0.13.1
 sounddevice==0.5.5

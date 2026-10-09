@@ -49,7 +49,7 @@ def main(argv=None):
     parser.add_argument("--url", default="ws://127.0.0.1:8006")
     parser.add_argument("--brain-url", default="http://127.0.0.1:12345")
     parser.add_argument("--whisper-model-dir", type=Path, default=DEFAULT_MODEL_DIR)
-    parser.add_argument("--seconds", type=int, default=24)
+    parser.add_argument("--seconds", type=int, default=90)
     parser.add_argument("--report", type=Path, default=ROOT / "output/m2/gateway-tasks.json")
     args = parser.parse_args(argv)
     samples = np.concatenate((np.zeros(4 * 16000, dtype="float32"), load_audio(args.input_file)))
@@ -71,8 +71,10 @@ def main(argv=None):
         report.update(stats=client.stats(), counts=dict(callbacks.counts),
                       routed_fields=callbacks.fields, files=callbacks.files)
         if (callbacks.counts["task_completed"] != 1 or len(callbacks.files) != 1
+                or callbacks.counts["task_speech_completed"] != 1
+                or callbacks.counts["task_speech_failed"] or callbacks.counts["task_speech_skipped"]
                 or callbacks.counts["task_error"] or report["stats"].get("cleanup_failures")):
-            raise RuntimeError("未完成唯一真实任务或清理失败")
+            raise RuntimeError("未完成唯一真实任务、原生结果音频或清理失败")
         report["passed"] = True
         return 0
     except Exception as error:

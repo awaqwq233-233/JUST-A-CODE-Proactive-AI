@@ -184,6 +184,7 @@ def test_media_failure_cancels_task_before_receive_tail(tmp_path):
         """仅观察任务代次的生命周期。"""
         def __init__(self, *args):
             """不加载转写模型。"""
+            self.lock = threading.RLock()
         def start(self):
             """模拟 CPU 就绪。"""
         def begin_session(self):
@@ -194,6 +195,9 @@ def test_media_failure_cancels_task_before_receive_tail(tmp_path):
             state["active"] = False
         def offer_audio(self, *args):
             """模拟旁路入队。"""
+        def response_state(self):
+            """故障尾窗禁止普通回复，仍允许生命周期关闭事件。"""
+            return 1, "block", threading.Event()
         def request_stop(self):
             """取消旁路。"""
             self.invalidate()
@@ -221,7 +225,7 @@ def test_media_failure_cancels_task_before_receive_tail(tmp_path):
             await ws.send(json.dumps({"type": "session.queue_done"}))
             init = json.loads(await ws.recv())
             await ws.send(json.dumps({"type": "session.created", "session_id": "failure",
-                "mode": "full_duplex", "voice_conditioning": voice_ack(init)}))
+                "mode": "full_duplex", "capabilities": {"task_speech": 1}, "voice_conditioning": voice_ack(init)}))
             assert json.loads(await ws.recv())["type"] == "session.close"
             await ws.send(json.dumps({"type": "session.closed", "reason": "client_closed"}))
 

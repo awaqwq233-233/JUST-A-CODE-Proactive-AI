@@ -10,7 +10,7 @@ def verify():
         print(f'[模型] {client.require_loaded_model()}')
         reply = client.complete([{'role': 'user', 'content': '用一句简体中文介绍你自己。'}], max_tokens=256)
         print(reply.content)
-        print('[通过] Qwen 独立大脑可用；语音入口的升级仍待后续接入。')
+        print('[通过] Qwen 独立大脑可用；Gateway 语音任务与原生播报须通过各自闭环验证。')
         return 0
     except BrainError as exc:
         print(f'[未通过] {exc}')

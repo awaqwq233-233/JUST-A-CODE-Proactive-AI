@@ -25,7 +25,7 @@ DEFAULT_PROMPT = (
 TASK_PROMPT = (
     "本地大脑已支持查询本机时间、电池、CPU、内存并生成系统报告。"
     "这些明确指令由本地转写旁路交给大脑执行。遇到此类请求请简短说明交给大脑处理，"
-    "不要猜测状态数字，不声称已经完成。结果以界面的实际任务状态和文件为准。"
+    "不要猜测状态数字，不声称已经完成。实际结果由程序通过原生语音播报，完整内容保留在界面和文件。"
     "不要输出内部控制令牌。其他问题自然回应。"
 )
 
@@ -79,6 +79,9 @@ class GatewayClient:
         self.transcription_enabled, self.whisper_model_dir = transcription_enabled, whisper_model_dir
         self.brain_url, self.pipeline_factory = brain_url, pipeline_factory
         self._pipeline = None
+        self._speech = None
+        self._listening = False
+        self._last_assistant_output = 0.0
         self.callbacks = callbacks or GatewayCallbacks()
         self.consent_devices = consent_devices
         self.device_kwargs = dict(input_device=input_device, output_device=output_device,
@@ -131,34 +134,83 @@ class GatewayClient:
             self._recent.append(self._pending_text[-2000:])
         self._pending_text = ""
 
+    def _deliver_output(self, kind, value, devices, guard=None):
+        """只交付已放行普通回复或已核验任务结果，取消块不进入播放队列。"""
+        if self._stop.is_set() or (guard is not None and guard.is_set()):
+            return
+        if kind == "text":
+            self._pending_text = (self._pending_text + value)[-2000:]
+            with self._lock:
+                self._reply = (self._reply + value)[-8192:]
+            self.callbacks.on_text_delta(value)
+        else:
+            if guard is not None:
+                devices.enqueue_task_output(value, guard)
+            else:
+                devices.enqueue_output(value)
+            with self._lock:
+                self._stats["native_audio_samples"] += len(value)
+            self.callbacks.on_audio_chunk(value.tobytes())
+
     async def _receive(self, ws, devices, costs) -> str:
         """独立收取文本和原生音频；忽略视频双工中非可靠的 response.done。"""
+        from .response_gate import ResponseGate
+        gate = ResponseGate(self._pipeline, self.callbacks) if self._pipeline is not None else None
+        gate_counts = Counter()
         while True:
-            event = protocol.check_event(await ws.recv())
+            if gate is not None:
+                for kind, value, guard in gate.poll():
+                    self._deliver_output(kind, value, devices, guard)
+                with self._lock:
+                    self._stats.update({"ordinary_" + key: value - gate_counts[key]
+                                        for key, value in gate.counters.items()})
+                gate_counts = gate.counters.copy()
+            try:
+                event = protocol.check_event(await asyncio.wait_for(ws.recv(), .1))
+            except TimeoutError:
+                continue
             if event["type"] == "session.closed":
                 self._remember_text()
                 return event.get("reason", "unknown")
+            if event["type"] == "task.speech":
+                if self._speech is not None and not self._stop.is_set():
+                    self._speech.event(event)
+                continue
             if event["type"] != "response.output.delta":
                 continue
             kind = event.get("kind")
             if kind == "listen":
+                self._listening = True
                 self._remember_text()
                 self.callbacks.on_listen()
             elif kind == "text":
                 text = event.get("text")
                 if not isinstance(text, str):
                     raise ValueError("文本增量缺少 text")
-                self._pending_text = (self._pending_text + text)[-2000:]
-                with self._lock:
-                    self._reply = (self._reply + text)[-8192:]
-                self.callbacks.on_text_delta(text)
+                speech_id = event.get("task_speech_id")
+                if speech_id is not None:
+                    if self._speech is None or not self._speech.text_delta(speech_id, text):
+                        continue
+                    self._deliver_output("text", text, devices)
+                else:
+                    self._listening = False
+                    self._last_assistant_output = time.monotonic()
+                    for kind, value, guard in gate.offer("text", text) if gate else [("text", text, None)]:
+                        self._deliver_output(kind, value, devices, guard)
             elif kind == "audio":
                 samples = protocol.decode_pcm(event["audio"])
-                if not self._stop.is_set():
-                    devices.enqueue_output(samples)
-                with self._lock:
-                    self._stats["native_audio_samples"] += len(samples)
-                self.callbacks.on_audio_chunk(samples.tobytes())
+                speech_id = event.get("task_speech_id")
+                guard = None
+                if speech_id is not None:
+                    guard = self._speech.audio(speech_id, samples) if self._speech is not None else None
+                    if guard is None:
+                        continue
+                else:
+                    self._listening = False
+                    self._last_assistant_output = time.monotonic()
+                outputs = [("audio", samples, guard)] if speech_id is not None or gate is None else gate.offer("audio", samples)
+                for kind, value, guard in outputs:
+                    self._deliver_output(kind, value, devices, guard)
             else:
                 raise ValueError("未知输出类型")
             metrics = event.get("metrics") or {}
@@ -187,6 +239,10 @@ class GatewayClient:
                     if created.get("mode") != "full_duplex" or not created.get("session_id"):
                         raise ValueError("Gateway 未创建有效全双工会话")
                     protocol.require_voice_condition(created, init)
+                    if self._speech is not None:
+                        protocol.require_task_speech(created)
+                    self._listening = False
+                    self._last_assistant_output = time.monotonic()
                     if self._pipeline is not None:
                         self._pipeline.begin_session()
                         devices.audio_tap = self._pipeline.offer_audio
@@ -224,6 +280,13 @@ class GatewayClient:
                         # 保留真实音频；启动保护仅要求模型暂时聆听，不把用户音频换成静音。
                         if index < 4:
                             message["input"]["force_listen"] = True
+                        if self._speech is not None and index >= 4:
+                            idle = (self._listening and time.monotonic() - self._last_assistant_output >= .3
+                                    and devices.playback.empty() and not len(devices.pending_output)
+                                    and time.monotonic() >= getattr(devices, "playback_active_until", 0))
+                            speech = self._speech.next_input(idle, self.session_seconds - index)
+                            if speech is not None and not self._stop.is_set():
+                                message["input"]["task_speech"] = speech
                         await ws.send(json.dumps(message))
                         with self._lock:
                             self._stats["chunks_sent"] += 1
@@ -297,6 +360,10 @@ class GatewayClient:
                 from .task_pipeline import TaskPipeline, DEFAULT_MODEL_DIR
                 factory = self.pipeline_factory or TaskPipeline
                 self._pipeline = factory(self.callbacks, self.whisper_model_dir or DEFAULT_MODEL_DIR, self.brain_url)
+                from .task_speech import TaskSpeechQueue
+                self._speech = TaskSpeechQueue(self._pipeline, self.callbacks)
+                self._pipeline.on_result_speech = self._speech.offer
+                self._pipeline.on_invalidate = self._speech.cancel
                 pending = asyncio.create_task(asyncio.to_thread(self._pipeline.start))
                 try:
                     await asyncio.shield(pending)
@@ -310,6 +377,11 @@ class GatewayClient:
                 self._pipeline.request_stop()
                 await asyncio.to_thread(self._pipeline.stop)
                 counters = self._pipeline.stats()
+                if self._speech is not None:
+                    speech_counters = self._speech.stats()
+                    with self._lock:
+                        self._stats.update({"task_speech_" + key: value for key, value in speech_counters.items()})
+                    self._speech = None
                 with self._lock:
                     for key, value in counters.items():
                         self._stats["task_" + key] += value
@@ -367,7 +439,7 @@ class GatewayClient:
                 self.callbacks.on_state("closed")
             except Exception as error:
                 self.last_error = type(error).__name__
-                if isinstance(error, RuntimeError):
+                if isinstance(error, (RuntimeError, ValueError)):
                     self.last_error += ": " + str(error)[:300]
                 self.callbacks.on_error(self.last_error)
                 self.callbacks.on_state("error")
@@ -421,4 +493,7 @@ class GatewayClient:
         pipeline = self._pipeline
         if pipeline is not None:
             result.update({"task_" + key: value for key, value in pipeline.stats().items()})
+        speech = self._speech
+        if speech is not None:
+            result.update({"task_speech_" + key: value for key, value in speech.stats().items()})
         return result

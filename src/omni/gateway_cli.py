@@ -87,6 +87,9 @@ class ReplayDevices:
     def enqueue_output(self, samples):
         """文件验证只校验原生音频，不冒充实际播放。"""
 
+    def enqueue_task_output(self, samples, cancellation):
+        """文件探针校验任务音频归属，不打开扬声器或冒充实际播放。"""
+
 
 def main(argv=None) -> int:
     """解析独立 Gateway 参数，保存无原始媒体的 M1 运行报告。"""

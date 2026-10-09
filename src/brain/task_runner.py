@@ -65,7 +65,7 @@ class BrainTaskRunner:
         self.brain = brain if brain is not None else LocalBrain(backend="lm_studio")
         self.output_dir = Path(output_dir or ROOT / "output/m2/qwen").resolve()
 
-    def run(self, task, should_stop=None, info_types=None, publication_lock=None):
+    def run(self, task, should_stop=None, info_types=None, publication_lock=None, on_tool_result=None):
         """执行显式文本任务；错误、取消或无真实工具证据均不发布文件。"""
         if not isinstance(task, str) or not task.strip() or len(task) > 4000:
             raise ValueError("任务文字须为 1–4000 字")
@@ -87,7 +87,12 @@ class BrainTaskRunner:
             output = execute_tool(name, arguments)
             if output.startswith(("错误：", "工具 ")):
                 raise BrainError("系统查询工具执行失败")
-            trace.append(dict(name=name, arguments=dict(arguments), output=output))
+            check_cancelled(should_stop)
+            entry = dict(name=name, arguments=dict(arguments), output=output,
+                         queried_at=datetime.now().astimezone().isoformat(timespec="seconds"))
+            trace.append(entry)
+            if on_tool_result is not None:
+                on_tool_result(copy.deepcopy(entry))
             return output
 
         answer = "".join(self.brain.run_agentic(
@@ -99,7 +104,9 @@ class BrainTaskRunner:
             raise BrainError("未完成真实工具查询，不能发布状态报告")
         if len(answer) > 20000:
             raise BrainError("报告超过长度上限")
-        evidence = "\n\n".join(f"### 查询 {i}\n\n{entry['output']}" for i, entry in enumerate(trace, 1))
+        evidence = "\n\n".join(f"### 查询 {i}\n\n工具：{entry['name']}\n\n"
+                                f"参数：{entry['arguments']}\n\n查询时间：{entry['queried_at']}\n\n{entry['output']}"
+                                for i, entry in enumerate(trace, 1))
         content = (f"# J.A.C. 系统状态报告\n\n"
                    f"任务编号：{task_id}\n\n生成时间：{datetime.now().astimezone().isoformat(timespec='seconds')}\n\n"
                    f"## 请求\n\n{task.strip()}\n\n## 大脑回答\n\n{answer}\n\n"

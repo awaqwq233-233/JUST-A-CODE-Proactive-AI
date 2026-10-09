@@ -452,7 +452,7 @@ class MainWindow(QMainWindow):
         self.retry_spin = self._field(op, "异常重连次数", self._spin(0, 10, self.config.gateway_retry_limit))
         self.transcription_chk = QCheckBox("本地转写与系统任务")
         self.transcription_chk.setChecked(self.config.gateway_transcription_enabled)
-        self.transcription_chk.setToolTip("CPU 转写；明确查询时间、电池、CPU、内存或生成系统报告。结果为文字/文件。")
+        self.transcription_chk.setToolTip("CPU 转写；明确查询时间、电池、CPU、内存或生成系统报告。工具证据可查看，结果原生播报。")
         self._controls.append(self.transcription_chk)
         op.addWidget(self.transcription_chk)
         self.advanced_btn = QPushButton("设备、连接与音色  ▾")
@@ -622,15 +622,32 @@ class MainWindow(QMainWindow):
         if self._stopping or self._stop_requested:
             return
         labels = {"running": "大脑正在查询", "completed": "报告已生成", "error": "任务暂停或失败", "rejected": "任务未执行", "cancelled": "任务已取消"}
+        labels.update(speech_queued="结果等待播报", speech_sent="正在准备结果语音", speech_started="原生结果语音处理中",
+                      speech_completed="结果音频已接收", speech_failed="结果播报失败，文字报告仍可查看",
+                      speech_cancelled="结果播报已取消", speech_skipped="本次结果未播报，文字报告仍可查看")
+        labels["tool_completed"] = "工具已实际查询"
+        labels["transcription_rejected"] = "未确认"
         reasons = {"brain_busy": "大脑忙，请完成后再说", "unclear_speech": "没有听清，请重复", "brain_failed": "大脑不可用或任务失败",
                    "audio_overflow": "转写积压，请停止后重启", "utterance_overflow": "转写积压，请停止后重启",
                    "whisper_error": "转写异常，请停止后重启", "vad_error": "切句异常，请停止后重启",
                    "session_changed": "会话重连，请重新发出指令"}
+        reasons.update(speech_busy="已有播报任务", speech_timeout="等待播报超时", session_ending="会话即将重连",
+                       speech_failed="原生音频或文本校验失败", speech_text_mismatch="结果文本校验失败",
+                       speech_backend_failed="原生语音合成失败", speech_audio_mismatch="结果音频校验失败")
+        reasons.update(playback_overlap="与助手播放重叠，未执行查询；请等播报结束后重复",
+                       stale_speech="转写已过期，未执行查询，请重复", long_speech="语句过长，未执行查询，请简短重说",
+                       unsupported_system_request="未匹配系统指令，未执行查询；可说：查一下电池电量",
+                       response_wait_timeout="等待转写超时，普通回复未播放",
+                       response_buffer_full="等待转写时回复超限，普通回复未播放")
         message = labels.get(state, state)
         if detail.get("code"):
             message += "：" + reasons.get(detail["code"], "请查看连接状态")
         self._end_reply()
-        self._insert_text(self.console, "\n\n大脑 · " + message)
+        source = "语音" if state == "transcription_rejected" else "大脑"
+        self._insert_text(self.console, "\n\n" + source + " · " + message)
+        if state == "tool_completed":
+            self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]) +
+                              "\n查询时间：" + detail["queried_at"] + "\n" + detail["output"])
         if state == "completed":
             from pathlib import Path
             self._latest_report = Path(detail["path"])
