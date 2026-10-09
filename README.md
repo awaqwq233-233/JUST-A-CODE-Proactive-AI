@@ -78,6 +78,8 @@ Native speech uses a registered extension of the pinned C++ patch, not an upstre
 
 The 2026-10-08 battery test exposed an ordinary perception-model reply claiming 100% without a corresponding completed tool report; direct macOS and independent Qwen queries returned 80%. With transcription enabled, ordinary text/audio now waits in bounded memory for the user utterance to be classified. System requests discard that ordinary reply and use only verified task speech. Unmatched system wording, playback overlap or failed recognition explicitly reports that no query was executed. New user speech cancels queued ordinary playback; ordinary conversation resumes after a confirmed non-system utterance. This adds transcription latency to conversation. A transcription fault keeps perception input running but blocks unverified speech until restart. The GUI and report show the actual tool, arguments, query timestamp and raw evidence. The client fix needs a GUI restart; it does not require another backend rebuild.
 
+On 2026-10-09, the user confirmed the live battery query and native result speech returned the correct 80%. This accepts that command's result loop, not voice-clone similarity or long-term stability. Short VAD candidates with less than 300 ms of voiced audio now drop silently and do not cancel queued replies. Valid candidates retain their full onset audio and activate reply cancellation after 300 ms. Genuine transcription-quality failures appear separately as “语音 · 未确认”, at most once per 10 seconds of consecutive failures; confirmed transcription resets the notice cooldown. Failed utterances still cannot execute tools or authorize guessed status speech, and recognition notices do not change an ongoing brain task's state.
+
 Existing installations must rebuild the updated combined patch. `new_computer_download/update_native_backend.py --build` reads the saved GUI engine path, accepts only the pinned commit plus an approved old/current patch, and rolls back an application failure. Stop the backend before rebuilding, then reopen the GUI and start the backend again. Dependencies and official model hashes are unchanged.
 
 ### M2a: independent Qwen brain
@@ -155,6 +157,8 @@ GUI 独立显示用户原话、任务进度，完成后可点“打开最新报�
 原生播报使用已登记 C++ 补丁扩展，固定上游原协议没有此功能。任务开启时须在采集前确认 `session.created.capabilities.task_speech=1`，通过 `input.task_speech` 把有界字面短句附在真实音视频块上，复用同一 duplex LLM/TTS/Token2Wav。单项数字来自实际工具证据；综合报告只播报完成提示，不重新推理数字。带任务标识的文本、非静音 PCM 和末窗口样本计数必须一致。GUI“结果音频已接收”表示传输确认；文件探针只收不播放，真机听感单独验收。仅一个待播报，等待聆听、用户静音和播放空闲；等待过期或会话即将轮换时跳过播报，停止/重连使已排队任务音频也失效，文字报告仍可查看。
 
 2026-10-08 电池测试暴露普通感知回复在没有对应已完成工具报告时自称 100%；直接 macOS 与独立 Qwen 查询均返回 80%。启用转写时，普通文字/音频现先在有界内存等待用户句子判定；系统请求丢弃普通抢答，只通过已核验任务播报返回结果。未匹配的系统说法、播放重叠或识别失败明确提示未查询。新用户语音取消排队的普通播放，确认下一句为普通聊天后恢复；普通对话增加转写等待。转写故障保留感知上行，但暂停未核验播报直至重启。GUI 和报告显示真实工具名、参数、查询时间及原始证据。这次客户端修复只需重开 GUI，无需再次编译后端。
+
+2026-10-09，bo s s 确认电池真机查询及原生播报正确返回 80%，该指令结果闭环按用户反馈通过；不据此认定音色克隆相似度或长期稳定性通过。累计有声不足 300ms 的 VAD 短片段现静默丢弃，不取消排队回复；有效片段保留句首完整音频，在达到 300ms 后才激活回复取消。真正的转写质量失败独立显示“语音 · 未确认”，连续失败十秒最多一次，成功转写后重置提示间隔。失败语音仍不能执行工具或放行状态猜测，语音提示不会改变在途大脑任务状态。
 
 旧安装需重新编译更新后的组合补丁；`new_computer_download/update_native_backend.py --build` 默认读取已保存的 GUI 引擎路径，只接受固定 commit 的干净源码或登记补丁，陌生源码拒绝覆盖、应用失败回滚。先停止后端，再更新构建、重开 GUI 并启动后端；依赖版本与官方模型 SHA256 不变。
 

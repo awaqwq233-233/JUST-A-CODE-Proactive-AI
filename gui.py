@@ -626,6 +626,7 @@ class MainWindow(QMainWindow):
                       speech_completed="结果音频已接收", speech_failed="结果播报失败，文字报告仍可查看",
                       speech_cancelled="结果播报已取消", speech_skipped="本次结果未播报，文字报告仍可查看")
         labels["tool_completed"] = "工具已实际查询"
+        labels["transcription_rejected"] = "未确认"
         reasons = {"brain_busy": "大脑忙，请完成后再说", "unclear_speech": "没有听清，请重复", "brain_failed": "大脑不可用或任务失败",
                    "audio_overflow": "转写积压，请停止后重启", "utterance_overflow": "转写积压，请停止后重启",
                    "whisper_error": "转写异常，请停止后重启", "vad_error": "切句异常，请停止后重启",
@@ -642,7 +643,8 @@ class MainWindow(QMainWindow):
         if detail.get("code"):
             message += "：" + reasons.get(detail["code"], "请查看连接状态")
         self._end_reply()
-        self._insert_text(self.console, "\n\n大脑 · " + message)
+        source = "语音" if state == "transcription_rejected" else "大脑"
+        self._insert_text(self.console, "\n\n" + source + " · " + message)
         if state == "tool_completed":
             self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]) +
                               "\n查询时间：" + detail["queried_at"] + "\n" + detail["output"])

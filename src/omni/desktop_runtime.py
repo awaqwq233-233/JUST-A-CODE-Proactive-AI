@@ -60,12 +60,15 @@ class DesktopCallbacks(GatewayCallbacks):
 
     def on_task_event(self, state, detail):
         """同步大脑进度和真实报告；错误不宣称任务已完成。"""
-        if state != "rejected":
-            self.runtime.context.is_thinking = state == "running"
+        if state == "running":
+            self.runtime.context.is_thinking = True
+        elif state in ("completed", "error", "cancelled"):
+            self.runtime.context.is_thinking = False
         if self.runtime.task_callback:
             self.runtime.task_callback(state, detail)
         else:
-            print(f"\n[大脑] {state}" + (f"：{detail['path']}" if state == "completed" else ""), flush=True)
+            source = "语音" if state == "transcription_rejected" else "大脑"
+            print(f"\n[{source}] {state}" + (f"：{detail['path']}" if state == "completed" else ""), flush=True)
 
 
 class GatewayRuntime:

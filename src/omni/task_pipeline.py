@@ -47,6 +47,7 @@ class VadSegmenter:
         self.overlap, self.discarding = False, False
         self.last_speech_at = 0.0
         self.response_sequence = 0
+        self.response_started = False
         self.completed_sequences = []
 
     def feed(self, samples, overlap=False, ended_at=None):
@@ -77,10 +78,13 @@ class VadSegmenter:
                 self.frames = [f for f, _ in self.pre]
                 self.overlap = False
                 self.pre.clear()
-                self.response_sequence = self.on_start() if self.on_start else 0
+                self.response_sequence, self.response_started = 0, False
             self.frames.append(frame.copy())
             self.overlap |= blocked and speech
             self.voiced += bool(speech)
+            if self.voiced >= 10 and not self.response_started:
+                self.response_sequence = self.on_start() if self.on_start else 0
+                self.response_started = True
             self.quiet = 0 if speech else self.quiet + 1
             if len(self.frames) >= 400:
                 self.frames = []
@@ -95,7 +99,7 @@ class VadSegmenter:
                                     ended_at - len(self.pending) / 16000))
                     self.completed_sequences.append(self.response_sequence)
                 elif self.on_discard:
-                    self.on_discard(self.response_sequence, "unclear_speech")
+                    self.on_discard(self.response_sequence, "short_noise")
                 self.frames, self.voiced, self.quiet, self.overlap = [], 0, 0, False
         self.pending_overlap = overlap if len(self.pending) else False
         return results
@@ -180,6 +184,7 @@ class TaskPipeline:
         self.on_result_speech = self.on_invalidate = None
         self.response_sequence, self.response_policy = 0, "allow"
         self.response_guard = threading.Event()
+        self._last_recognition_notice = float("-inf")
 
     def start(self):
         """后台完成资源/模型就绪，启动三个有界处理线程。"""
@@ -219,6 +224,7 @@ class TaskPipeline:
             self.response_guard.set()
             self.response_guard = threading.Event()
             self.response_policy = "allow"
+            self._last_recognition_notice = float("-inf")
             self._drain(self.audio)
             self._drain(self.utterances)
 
@@ -250,7 +256,7 @@ class TaskPipeline:
                     and time.monotonic() - self.segmenter.last_speech_at >= .8)
 
     def _response_started(self):
-        """用户开始说话即撤销旧普通播放，转写判定前只在内存暂存新回复。"""
+        """累计 300ms 有声后撤销旧普通播放；短噪声不取消正在排队的回复。"""
         with self.lock:
             self.response_sequence += 1
             self.response_guard.set()
@@ -259,11 +265,25 @@ class TaskPipeline:
             return self.response_sequence
 
     def _response_discarded(self, sequence, code):
-        """无法确认的语音不放行模型自行作答，界面明确说明未执行查询。"""
+        """短候选只统计；长句保持禁猜并明确拒绝，不取消已有大脑任务。"""
         with self.lock:
+            if code == "short_noise":
+                self.counters["short_noise_ignored"] += 1
+                return
             if sequence == self.response_sequence:
                 self.response_policy = "block"
             self._notify("rejected", {"code": code})
+
+    def _notify_unclear_speech(self):
+        """完整句识别失败单独提示；连续失败十秒内只显示一次，不改质量门槛。"""
+        with self.lock:
+            now = time.monotonic()
+            if now - self._last_recognition_notice < 10:
+                self.counters["recognition_notice_suppressed"] += 1
+                return
+            self._last_recognition_notice = now
+            self.counters["recognition_notices"] += 1
+            self._notify("transcription_rejected", {"code": "unclear_speech"})
 
     def response_state(self):
         """给 WS 返回普通回复权限；任务标记音频仍由独立证据队列核验。"""
@@ -373,13 +393,14 @@ class TaskPipeline:
                 if text is None:
                     with self.lock:
                         self.counters["quality_rejected"] += 1
-                    self._notify("rejected", {"code": "unclear_speech"})
+                    self._notify_unclear_speech()
                     self._response_decided(utterance, "block")
                     continue
                 with self.lock:
                     if not self.current(utterance.generation):
                         continue
                     self.counters["transcriptions"] += 1
+                    self._last_recognition_notice = float("-inf")
                     self.callbacks.on_user_transcript(text)
                     fields = route_instruction(text)
                     self._response_decided(utterance, "block" if fields or is_system_request(text) else "allow")

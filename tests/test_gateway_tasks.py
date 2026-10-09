@@ -61,6 +61,21 @@ def test_vad_waits_for_complete_utterance():
     assert len(results) == 1 and len(results[0][0]) == 50 * 480
 
 
+def test_vad_does_not_activate_response_for_short_noise_but_keeps_first_syllable():
+    """270ms 不取消回复；300ms 激活一次，句首完整 PCM 仍进入转写。"""
+    started, discarded = [], []
+    vad = VadSegmenter(Detector(), on_start=lambda: started.append(True) or 42,
+                       on_discard=lambda sequence, code: discarded.append((sequence, code)))
+    assert vad.feed(audio(9)) == [] and not started
+    assert vad.feed(audio(20, False)) == []
+    assert discarded == [(0, "short_noise")]
+    assert vad.feed(audio(9)) == [] and not started
+    assert vad.feed(audio(1)) == [] and started == [True]
+    results = vad.feed(audio(20, False))
+    assert len(results) == 1 and vad.completed_sequences == [42]
+    assert np.count_nonzero(results[0][0]) == 10 * 480
+
+
 def test_silence_short_noise_and_long_speech_do_not_become_tasks():
     """静音/短噪声没有句子，超过上限的长句不会截成指令。"""
     vad = VadSegmenter(Detector())
@@ -141,6 +156,85 @@ class Callbacks(GatewayCallbacks):
         self.events.append((state, detail))
         if state == "completed":
             self.finished.set()
+
+
+@pytest.mark.parametrize("policy", ["allow", "block"])
+def test_short_noise_does_not_warn_transcribe_or_change_reply_permission(policy):
+    """旁路线程静默丢弃短噪声；不解锁旧系统抢答，也不打断普通回复。"""
+    callbacks = Callbacks()
+
+    class NoDecoder(Decoder):
+        """噪声不能到达模型或工具。"""
+        def transcribe(self, samples):
+            """到达此处代表切句过滤失效。"""
+            pytest.fail("短噪声不应转写")
+
+    pipeline = TaskPipeline(callbacks, decoder_factory=NoDecoder)
+    try:
+        pipeline.start()
+        pipeline.segmenter.detector = Detector()
+        pipeline.begin_session()
+        pipeline.response_policy = policy
+        sequence, _, guard = pipeline.response_state()
+        pipeline.offer_audio(audio(9))
+        pipeline.offer_audio(audio(20, False))
+        deadline = time.monotonic() + 2
+        while not pipeline.stats().get("short_noise_ignored") and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert pipeline.stats()["short_noise_ignored"] == 1
+        assert pipeline.response_state() == (sequence, policy, guard)
+        assert not guard.is_set() and not callbacks.events and not callbacks.texts
+        assert not pipeline.stats().get("utterances") and pipeline.tasks.empty()
+    finally:
+        pipeline.stop()
+
+
+def test_complete_unclear_utterances_still_fail_closed_without_notification_spam(monkeypatch):
+    """完整句仍逐句拒绝执行，只合并重复通知，绝不放宽置信度或播报权限。"""
+    callbacks = Callbacks()
+
+    class UnclearDecoder(Decoder):
+        """模拟 VAD 有声但 Whisper 没有可靠文字。"""
+        def transcribe(self, samples):
+            """明确返回质量不合格的指令候选。"""
+            return [dict(text="查一下电池电量", avg_logprob=-1, no_speech_prob=.01, compression_ratio=1)]
+
+    pipeline = TaskPipeline(callbacks, decoder_factory=UnclearDecoder)
+    try:
+        pipeline.start()
+        pipeline.segmenter.detector = Detector()
+        pipeline.begin_session()
+        pipeline.busy = True  # 提示不得改变在途任务状态。
+        for count in range(1, 4):
+            pipeline.offer_audio(audio(12))
+            pipeline.offer_audio(audio(20, False))
+            deadline = time.monotonic() + 2
+            while pipeline.stats().get("quality_rejected", 0) < count and time.monotonic() < deadline:
+                time.sleep(.01)
+            assert pipeline.stats()["quality_rejected"] == count
+        assert callbacks.events == [("transcription_rejected", {"code": "unclear_speech"})]
+        assert pipeline.stats()["recognition_notice_suppressed"] == 2
+        assert pipeline.response_state()[1] == "block" and pipeline.busy and pipeline.tasks.empty()
+    finally:
+        pipeline.stop()
+
+
+def test_recognition_notice_cooldown_expires_and_resets_between_sessions(monkeypatch):
+    """持续识别失败十秒后仍能提示，重连也不会永久隐藏真正的问题。"""
+    pipeline = TaskPipeline(Callbacks(), decoder_factory=Decoder)
+    pipeline.begin_session()
+    clock = [100.0]
+    monkeypatch.setattr("src.omni.task_pipeline.time.monotonic", lambda: clock[0])
+    pipeline._notify_unclear_speech()
+    clock[0] = 109.9
+    pipeline._notify_unclear_speech()
+    clock[0] = 110.0
+    pipeline._notify_unclear_speech()
+    assert pipeline.stats()["recognition_notices"] == 2
+    pipeline.invalidate()
+    pipeline.begin_session()
+    pipeline._notify_unclear_speech()
+    assert pipeline.stats()["recognition_notices"] == 3
 
 
 def test_parallel_pipeline_delivers_file_once(tmp_path):
