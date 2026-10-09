@@ -26,7 +26,7 @@ The target capture pipeline uses SoundDevice and background OpenCV capture at 64
 
 Target memory uses JSON as the structured source of truth, ChromaDB as a rebuildable index, and BGE-Small-ZH-v1.5 ONNX INT8 embeddings. Summaries are batch-written every five records or on session end. Retrieval runs at session initialization and completed user utterances, using parallel local transcription where needed.
 
-**M0 is accepted with the 30-minute soak explicitly waived. M1 live listening/vision/speech, GUI preview and manual restart were accepted by the user on 2026-10-07.** The production Gateway SDK, SoundDevice capture/native playback and background 640×480 OpenCV capture are available through `main.py --gateway`, with a lightweight GUI via `--gui`. M2a independent Qwen read-only tool execution and Chinese file output are now verified. M2b now connects parallel VAD/Whisper transcription and explicit read-only system tasks to the Gateway CLI/GUI; the user confirmed successful live text results on 2026-10-08. Native task-result speech is now connected; ChromaDB and cloud tasks are still pending. This acceptance does not establish unlimited sessions or long-term stability.
+**M0 is accepted with the 30-minute soak explicitly waived. M1 live listening/vision/speech, GUI preview and manual restart were accepted by the user on 2026-10-07.** The production Gateway SDK, SoundDevice capture/native playback and background 640×480 OpenCV capture are available through `main.py --gateway`, with a lightweight GUI via `--gui`. M2a independent Qwen read-only tool execution and Chinese file output are now verified. M2b now connects parallel VAD/Whisper transcription and explicit read-only system tasks and web searches to the Gateway CLI/GUI; the user confirmed successful live text results on 2026-10-08. Native task-result speech is now connected; ChromaDB and cloud tasks are still pending. This acceptance does not establish unlimited sessions or long-term stability.
 
 The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds. M1 rotates video sessions after 240 input seconds, closes/releases devices and reconnects with the reference voice and bounded assistant history plus supplied confirmed context. Capture visibly pauses during reconnection. It does not reconstruct untranscribed user speech or provide seamless audio across the gap.
 
@@ -90,6 +90,16 @@ LM Studio 0.4.8+ is required for the native model capability check and `reasonin
 
 The three native validation cases completed in 2.02 / 1.69 / 6.04 seconds, each with one real tool call. These are standalone Qwen measurements, not concurrent MiniCPM/Qwen or live voice performance. macOS memory reports use `vm_stat`'s actual page size and label active+wired pages separately from total memory usage. No new runtime dependency is needed; the installer checks the independent Qwen imports without network or device access.
 
+### Web search (2026-10-09)
+
+Say “上网搜索上海明天的天气” or “联网查询 Python asyncio 官方文档” after starting voice with local transcription enabled. Confirmed city-weather questions can also route to search. The local Qwen receives only one search tool with the user's exact query; computer actions remain unavailable. Bing's China RSS search endpoint is tried first, then the fixed global endpoint on failure. This keyless endpoint is not a guaranteed public API; network blocks, verification pages or format changes fail explicitly.
+
+Up to five links and three static source pages are retrieved with existing httpx and Python's standard library. Every URL, IPv4 DNS result and redirect must be public; the connection uses a validated IP with the original Host/TLS SNI and certificate verification. No scripts, browser login, cookies or environment proxies are used. Network work runs in the brain thread with a 25-second deadline and cancellation; audio/video input continues.
+
+Fixed query formatting preserves the original and effective search terms. Qwen selects numbered passages from actual source pages, with target weather dates and specific English terms filtering unrelated passages. The program checks the selection and delivers those source excerpts, preserving their numbers and dates instead of accepting freely generated facts. This first version provides excerpts rather than free paraphrases or translations. Excerpt matching cannot establish source truth, freshness or relevance. Unread pages remain marked as snippets; retrieval time is not publication time. The GUI shows real search evidence and source links; the local report preserves full evidence and native speech reads a bounded excerpt. Only the query goes to the search service, with source-page GET requests afterward; conversation history, audio/video and the reference voice stay local.
+
+Run `.cache/m0/venv/bin/python verify_web_search.py --query "上海明天天气"` from the project root for the independent real Qwen/file check, or add `--search-only` to test only search and source access. These checks use no devices. Reports go to ignored `output/m2/search/`; production reports remain in `output/m2/qwen/`. No new dependency, API key or backend rebuild is required; reopen the GUI to load this client update.
+
 ## 中文说明
 
 J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS。目标是持续感知环境、提前规划与预警，并主动完成任务。智能眼镜、AR 和 Vision Pro 是可选终端，核心是 AI 系统与主动服务框架。当前主要开发平台为 macOS Apple Silicon。
@@ -135,7 +145,7 @@ GUI 内可直接启动固定后端，也可独立启动后端后使用 Python 3.
 
 用户已确认真机听看说正常。2026-10-07 重启复验暴露了残影和过早断链导致 Worker/C++ 后端仍忙的问题：预览现完整重绘并清除上一帧，停止在后台执行，清理完成前禁止重启。手动停止与会话轮换使用相同的 8 秒接收尾窗，等待 `session.closed` 和连接关闭后再冷却 1 秒，通常约 9 秒；GUI 保持响应。真实后端合成帧/静音三次启停通过后，bo s s 又确认真实 GUI「这次完全正常」。这些是客户端兼容处理，不声称上游底层竞争已由源码修复。已受旧版本影响的后端先重启一次，再关闭重开 GUI 加载修复，无需重装依赖。
 
-GUI 已按 bo s s 最新要求改为深蓝渐变科技风格，配青色高光与细网格。「调节参数」按钮在面板展开时持续高亮，收起时恢复暗色，并有悬停/按压反馈。摄像头按真实比例完整嵌入且无黑边；对话区域扩大、流式文本连续拼接，连接日志可单独折叠，顶部只保留一个状态提示。移除文字输入/发送、显示分辨率/缩放和旧模型开关。顶部「启动后端」异步调用固定启动器，校验版本、模型与端口，并收到明确就绪事件后才允许「启动语音」。停止后端先关闭音视频会话，再回收本窗口启动的三进程；退出窗口等待两者完成。外部已运行的后端仅探测和复用，不会由 GUI 终止。「后端路径设置」可选择 Demo / 引擎 / 仓库外模型目录及 SHA256 校验选项，路径仅保存在忽略的 `.cache/gui/backend.json`，也可通过 `JAC_DEMO_DIR` / `JAC_ENGINE_DIR` / `JAC_MODEL_DIR` 指定。启动语音前可调麦克风增益、采集帧率（5–10fps）、会话轮换（5–240 秒）、异常重连次数、音频设备、相机编号、本机 Gateway 与参考 WAV，运行中锁定。图像仍固定每秒上行最新一帧；新增实际生效的“本地转写与系统任务”开关和本地模型/大脑路径，仍在运行中锁定。`main.py --gui` 与 `python -m src.omni --gui` 使用同一 Gateway 路径，`--gateway` 参数仍兼容，无需新增 GUI 依赖。上一阶段测试共 138 项已分批验证通过（初次全套 136 通过，1 项写真实主目录的旧测试改为隔离目录后通过，再新增 1 项异常清理回归通过）；1440×880 与 1100×700 合成帧预览已检查，未新增真机听感验收。
+GUI 已按 bo s s 最新要求改为深蓝渐变科技风格，配青色高光与细网格。「调节参数」按钮在面板展开时持续高亮，收起时恢复暗色，并有悬停/按压反馈。摄像头按真实比例完整嵌入且无黑边；对话区域扩大、流式文本连续拼接，连接日志可单独折叠，顶部只保留一个状态提示。移除文字输入/发送、显示分辨率/缩放和旧模型开关。顶部「启动后端」异步调用固定启动器，校验版本、模型与端口，并收到明确就绪事件后才允许「启动语音」。停止后端先关闭音视频会话，再回收本窗口启动的三进程；退出窗口等待两者完成。外部已运行的后端仅探测和复用，不会由 GUI 终止。「后端路径设置」可选择 Demo / 引擎 / 仓库外模型目录及 SHA256 校验选项，路径仅保存在忽略的 `.cache/gui/backend.json`，也可通过 `JAC_DEMO_DIR` / `JAC_ENGINE_DIR` / `JAC_MODEL_DIR` 指定。启动语音前可调麦克风增益、采集帧率（5–10fps）、会话轮换（5–240 秒）、异常重连次数、音频设备、相机编号、本机 Gateway 与参考 WAV，运行中锁定。图像仍固定每秒上行最新一帧；新增实际生效的“本地转写与查询任务”开关和本地模型/大脑路径，仍在运行中锁定。`main.py --gui` 与 `python -m src.omni --gui` 使用同一 Gateway 路径，`--gateway` 参数仍兼容，无需新增 GUI 依赖。上一阶段测试共 138 项已分批验证通过（初次全套 136 通过，1 项写真实主目录的旧测试改为隔离目录后通过，再新增 1 项异常清理回归通过）；1440×880 与 1100×700 合成帧预览已检查，未新增真机听感验收。
 
 VS Code 请选择项目解释器 `.cache/m0/venv/bin/python`，并带 `--gui` 启动。本机已配置忽略的 F5 项「J.A.C. · Gateway GUI」；右上角「运行 Python 文件」不使用 launch.json 的参数，系统 Python 缺少 numpy 时应切换环境。完整步骤见安装指南第 10 节。
 
@@ -145,9 +155,9 @@ VS Code 请选择项目解释器 `.cache/m0/venv/bin/python`，并带 `--gui` �
 
 `transcription.lock.json` 锁定官方转换仓库版本与四项 SHA256，模型默认放在仓库外 `~/.cache/jac/models/whisper-small`。安装器 `--only gateway` 已增加固定依赖、资源下载和 CPU 自检；HTTPS 国内镜像失败或持续过慢时回退官方，下载有时限。`--skip-transcription-model` 只跳过资源阶段，资源未就绪时须先关闭转写才能启动语音，运行期不联网下载。转写不加载 torch/MPS；等价 mel 矩阵求和增加有限值校验，规避本机 Accelerate 浮点状态误报。
 
-首批指令为“查询电脑状态”“查一下电池电量”“查询本机当前时间”“检查内存占用”“生成一份系统状态报告”。仅开放 `get_system_info`，完整句匹配拒绝聊天、否定、转述和未开放的复合操作。句子按会话代次/编号去重；低置信度、与助手播放重叠、超过 15 秒的转写或大脑忙时的新增指令不执行。VAD 在句末静音 600ms 后提交，超过 12 秒的长句直接拒绝，不拆成多个任务。停止/重连取消旧任务及发布；积压/转写异常明确暂停任务和未核验播报，感知上行继续运行。
+首批指令为“查询电脑状态”“查一下电池电量”“查询本机当前时间”“检查内存占用”“生成一份系统状态报告”。系统查询开放 `get_system_info`；联网查询单独开放 `search_web`（见下节），完整句匹配拒绝聊天、否定、转述和未开放的复合操作。句子按会话代次/编号去重；低置信度、与助手播放重叠、超过 15 秒的转写或大脑忙时的新增指令不执行。VAD 在句末静音 600ms 后提交，超过 12 秒的长句直接拒绝，不拆成多个任务。停止/重连取消旧任务及发布；积压/转写异常明确暂停任务和未核验播报，感知上行继续运行。
 
-GUI 独立显示用户原话、任务进度，完成后可点“打开最新报告”。真实 UTF-8 报告保存在忽略的 `output/m2/qwen/`，包含该任务的转写及工具证据；一般对话转写仅保留有界内存，运行统计不含正文/PCM。任务完成后由同一原生音色/播放流播报实际工具证据短句；综合报告播报完成提示，完整文字与文件继续保留。启动前可关闭“本地转写与系统任务”或指定本地目录/大脑地址；CLI 对应 `--no-transcription` / `--whisper-model-dir` / `--brain-url`。SDK 默认不启用旁路，文件回放需显式 `--transcription`。
+GUI 独立显示用户原话、任务进度，完成后可点“打开最新报告”。真实 UTF-8 报告保存在忽略的 `output/m2/qwen/`，包含该任务的转写及工具证据；一般对话转写仅保留有界内存，运行统计不含正文/PCM。任务完成后由同一原生音色/播放流播报实际工具证据短句；综合报告播报完成提示，完整文字与文件继续保留。启动前可关闭“本地转写与查询任务”或指定本地目录/大脑地址；CLI 对应 `--no-transcription` / `--whisper-model-dir` / `--brain-url`。SDK 默认不启用旁路，文件回放需显式 `--transcription`。
 
 固定后端、CPU Whisper、已加载 Qwen 的 60 秒合成文件验证完成唯一系统查询和报告，关闭清理成功；前一段 24 秒验证在会话结束取消未完成任务。该合成文件验证未打开设备，不替代真机识别或长时并行验收。
 
@@ -175,3 +185,13 @@ GUI 独立显示用户原话、任务进度，完成后可点“打开最新报�
 [AGENTS.md](AGENTS.md) 是开发者契约；[CHANGELOG.md](CHANGELOG.md) 记录变更和迁移差距。已确认的方案 B 权威 DOCX 在本机 `brainstorming_projectPLAN/` 维护，整个目录不进 Git、不推送。Agent 已获准按确认的架构决策同步该本地目录。模板 `voices/silverwalf_voice.wav` 经 bo s s 明确允许公开推送；模型和实际测试录音录像不推送。`codinglog_by_awaqwq233/` 仍仅由 bo s s 手动维护且不进 Git。
 
 未来可接入全屋摄像头、智能眼镜第一视角，以及 AR / Vision Pro 空间 GUI。
+
+### 联网搜索（2026-10-09）
+
+启动语音并启用“本地转写与查询任务”后，可说“上网搜索上海明天的天气”“联网查询 Python asyncio 官方文档”，也支持明确城市天气问句。由本地 Qwen 调用搜索，默认先国内必应 RSS、失败再试固定全球入口，免 API 密钥。该入口不是承诺稳定的公开 API；网络受限、验证页、格式变化或无结果会明确失败。
+
+每次最多返回 5 个来源，前三页并发读取静态正文。使用现有 httpx 与标准库；公网 URL、IPv4 DNS 和逐跳重定向核验后连接已核验 IP，保留原始 Host/TLS SNI 和证书验证。不会执行网页脚本，不携带浏览器登录、Cookie 或环境代理。网络工作在后台大脑线程，整次 25 秒上限并可取消，音视频上行保持原节拍。
+
+固定规则分隔天气词与文档词，原话和实际搜索词都保存。Qwen 仅能对用户本句关键词搜索一次，目标天气日期与英文具体词筛选后选择已读段落编号；程序核对后交付原文，保留数字、日期和来源。首版提供来源摘录，尚无自由改写/翻译；原文一致不代表网站内容真实、时效或相关性。来源未读、信息不足会明确说明，抓取时间不是发布时间。GUI 展示实际 `search_web` 调用与来源/读取状态，报告保存链接和原始证据，原生语音读有界摘录。仅搜索关键词发给搜索服务，随后请求结果来源页；对话历史、音视频和参考音不出网。
+
+项目根目录运行 `.cache/m0/venv/bin/python verify_web_search.py --query "上海明天天气"` 可验证真实 Qwen → 搜索/来源 → 文件；加 `--search-only` 仅检验联网。不会打开设备，独立报告保存在忽略的 `output/m2/search/`，生产报告仍在 `output/m2/qwen/`。没有新增依赖、API 密钥或后端重新编译要求，重开 GUI 加载本轮客户端更新。

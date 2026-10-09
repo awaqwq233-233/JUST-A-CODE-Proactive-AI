@@ -450,7 +450,7 @@ class MainWindow(QMainWindow):
         self.session_spin = self._field(op, "会话轮换时长", self._spin(5, 240, self.config.gateway_session_seconds, " 秒"),
             "轮换时暂停采集，恢复有限上下文。")
         self.retry_spin = self._field(op, "异常重连次数", self._spin(0, 10, self.config.gateway_retry_limit))
-        self.transcription_chk = QCheckBox("本地转写与系统任务")
+        self.transcription_chk = QCheckBox("本地转写与查询任务")
         self.transcription_chk.setChecked(self.config.gateway_transcription_enabled)
         self.transcription_chk.setToolTip("CPU 转写；明确查询时间、电池、CPU、内存或生成系统报告。工具证据可查看，结果原生播报。")
         self._controls.append(self.transcription_chk)
@@ -637,6 +637,8 @@ class MainWindow(QMainWindow):
         reasons.update(playback_overlap="与助手播放重叠，未执行查询；请等播报结束后重复",
                        stale_speech="转写已过期，未执行查询，请重复", long_speech="语句过长，未执行查询，请简短重说",
                        unsupported_system_request="未匹配系统指令，未执行查询；可说：查一下电池电量",
+                       unsupported_web_request="未匹配联网指令；可说：上网搜索上海明天的天气",
+                       web_failed="联网查询未完成，请检查网络、Qwen 或换个关键词；未发布结果",
                        response_wait_timeout="等待转写超时，普通回复未播放",
                        response_buffer_full="等待转写时回复超限，普通回复未播放")
         message = labels.get(state, state)
@@ -646,8 +648,16 @@ class MainWindow(QMainWindow):
         source = "语音" if state == "transcription_rejected" else "大脑"
         self._insert_text(self.console, "\n\n" + source + " · " + message)
         if state == "tool_completed":
+            output = detail["output"]
+            if detail["name"] == "search_web":
+                import json
+                data = json.loads(output)
+                page_states = {"read": "已读取", "unavailable": "无法读取", "not_read": "未读取，仅有摘要"}
+                output = "搜索来源：" + data["provider"] + "\n" + "\n".join(
+                    f"[{item['id']}] {item['title']}\n{item['url']}\n正文：{page_states[item['page']['status']]}"
+                    for item in data["results"])
             self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]) +
-                              "\n查询时间：" + detail["queried_at"] + "\n" + detail["output"])
+                              "\n查询时间：" + detail["queried_at"] + "\n" + output)
         if state == "completed":
             from pathlib import Path
             self._latest_report = Path(detail["path"])

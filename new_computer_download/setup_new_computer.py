@@ -544,6 +544,7 @@ def step_m0(args):
          "from src.omni.backend_control import BackendController; import httpx, fastapi, uvicorn; "
          "import onnxruntime, kaldi_native_fbank; from src.omni.voice_conditioning import prepare_voice; "
          "from src.brain.lm_studio import LMStudioClient; from src.brain.task_runner import BrainTaskRunner; "
+         "from src.tools.web_search import WebSearchClient; import verify_web_search; "
          "import verify_toolcall; "
          "import webrtcvad; from src.omni.task_pipeline import TaskPipeline; "
          "from src.omni.task_speech import TaskSpeechQueue; "

@@ -10,6 +10,19 @@ import time
 def speech_summary(result, fields):
     """从已交付的工具证据生成短句，不让感知模型重新推理或编造数字。"""
     message = "系统状态查询已完成，报告已生成，请查看界面中的完整结果。"
+    if fields[0] == "web":
+        # 仅使用已经交付的 Qwen 回答，完整来源和摘录仍留在报告。
+        answer = re.sub(r"\[[^\]]*\]\(https?://[^)]*\)|https?://\S+|\[\d+\]", "", result.answer)
+        answer = re.sub(r"bo\s*s\s*s[，,：:\s]*", "", answer, flags=re.I)
+        answer = re.sub(r"[#*`\n\r\t]+", " ", answer).strip()
+        if answer and not any(ord(c) < 32 or ord(c) == 127 for c in answer) and "<" not in answer and ">" not in answer:
+            short = answer[:180]
+            if len(answer) > 180 and re.search(r"[。！？]", short):
+                short = short[:max(short.rfind(c) for c in "。！？") + 1]
+            message = "联网查询已完成。" + short.rstrip("。") + "。详细结果和来源已保存。"
+        else:
+            message = "联网查询已完成，详细结果和来源已保存，请查看报告。"
+        return "bo s s，" + message
     if len(fields) == 1 and fields[0] != "all":
         outputs = [item.get("output") for item in result.trace
                    if item.get("name") == "get_system_info"

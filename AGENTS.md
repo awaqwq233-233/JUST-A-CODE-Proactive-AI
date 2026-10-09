@@ -18,7 +18,7 @@ J.A.C. = "Just A Code"。这是一个**本地优先的多模态 AI 管家原型*
 
 ## 新架构（2026-10-01 定案，2026-10-06 方案 B 修订）
 
-> bo s s 已确认方案 B：保留三层模型架构，第一层使用固定版本官方 MiniCPM-o-Demo Gateway / Worker 与 `tc-mb/llama.cpp-omni` Metal。权威 DOCX 为 `brainstorming_projectPLAN/10月1日新架构.docx`，精确版本、模型 SHA256 和协议参数记录在 `backend.lock.json`。**M0 经用户确认通过并免做 30 分钟长测；M1 生产听看说、GUI 与启停已获用户验收，M2a 独立 Qwen 只读调用/文件输出已验证；M2b 已接入语音转写/只读路由，2026-10-08 真机文字结果已获用户确认；原生结果播报已接入，通用工具、记忆与云端仍待迁移。**
+> bo s s 已确认方案 B：保留三层模型架构，第一层使用固定版本官方 MiniCPM-o-Demo Gateway / Worker 与 `tc-mb/llama.cpp-omni` Metal。权威 DOCX 为 `brainstorming_projectPLAN/10月1日新架构.docx`，精确版本、模型 SHA256 和协议参数记录在 `backend.lock.json`。**M0 经用户确认通过并免做 30 分钟长测；M1 生产听看说、GUI 与启停已获用户验收，M2a 独立 Qwen 只读调用/文件输出已验证；M2b 已接入语音转写/只读路由，2026-10-08 真机文字结果已获用户确认；原生结果播报已接入，联网搜索已接入本地 Qwen；通用电脑操作、记忆与云端仍待迁移。**
 
 ### 一、三层模型架构
 
@@ -147,7 +147,8 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 
 > **M0 已通过且 30 分钟长测免测；M1 基础听看说、GUI 和手动启停已由 bo s s 真机验收。** M2a Qwen 独立只读工具/文件闭环已验证；M2b 已接入并行转写与 Gateway 只读任务路由，2026-10-08 真机文字结果已获用户确认；原生任务播报已接入，音色听感待确认。旧 MiniCPM 及传统运行入口已删除，云端和记忆尚未迁移。
 
-- **M2b 并行转写/任务**：`src/omni/task_pipeline.py` 与 `transcription_worker.py` 在同一份重采样 PCM 上旁路 VAD → Whisper → Qwen，只在后台工作；麦克风回调仍只复制至主队列。WebRTC 30ms、300ms 预留、600ms 句末，至少 300ms 有声段，12 秒长句拒绝。Whisper small 在独立解释器 CPU INT8/2 线程运行，主进程不导入 faster-whisper/CTranslate2/PyAV；UTF-8 管道有界，无 PCM 文件、torch/MPS 或运行期下载。资源与独立 SHA256 见 `transcription.lock.json`，默认仓库外 `~/.cache/jac/models/whisper-small`。仅通过置信度校验的完整、无播放重叠的用户指令进入显式白名单，转写原话显示与下一会话上下文同步；不依赖助手输出或旧 CALL_QWEN 令牌。只开放系统状态查询/报告，尚无通用电脑控制/云端工具。句子代次/ID 去重，15 秒过期、忙碌不排队；重连/停止取消旧 HTTP/任务/文件发布，原子发布与代次共锁。旁路故障明确暂停任务且保留感知上行。GUI/真实 CLI 默认开启，SDK opt-in、文件验证显式 `--transcription`，可用 `--no-transcription` 保留基础交互。GUI 显示用户转写、任务进度和真实报告入口，任务文本/证据仅写到本机报告，统计不含正文。原生结果播报使用实际工具证据短句（综合报告播报完成提示），与真实 PCM 同块上行，经既有 LLM 隐藏状态 → TTS → Token2Wav 生成 24k PCM；不让感知模型重新推理状态数值。真实后端 60 秒合成文件闭环通过：唯一转写/任务/报告，关闭确认与清理成功；该合成文件验证没有打开真实设备。2026-10-08 bo s s 反馈“测试成功，能正常输出文字结果”，真机语音任务文字结果按用户反馈验收通过；未新增具体指令、次数、时长、延迟或报告内容核对记录，音色听感未由该反馈确认。VAD/置信度不等于说话人识别或绝对准确，长时稳定性不从短测或合成文件推定。
+- **M2b 并行转写/任务**：`src/omni/task_pipeline.py` 与 `transcription_worker.py` 在同一份重采样 PCM 上旁路 VAD → Whisper → Qwen，只在后台工作；麦克风回调仍只复制至主队列。WebRTC 30ms、300ms 预留、600ms 句末，至少 300ms 有声段，12 秒长句拒绝。Whisper small 在独立解释器 CPU INT8/2 线程运行，主进程不导入 faster-whisper/CTranslate2/PyAV；UTF-8 管道有界，无 PCM 文件、torch/MPS 或运行期下载。资源与独立 SHA256 见 `transcription.lock.json`，默认仓库外 `~/.cache/jac/models/whisper-small`。仅通过置信度校验的完整、无播放重叠的用户指令进入显式白名单，转写原话显示与下一会话上下文同步；不依赖助手输出或旧 CALL_QWEN 令牌。开放系统状态查询/报告与明确联网搜索；尚无通用电脑控制/云端工具。句子代次/ID 去重，15 秒过期、忙碌不排队；重连/停止取消旧 HTTP/任务/文件发布，原子发布与代次共锁。旁路故障明确暂停任务且保留感知上行。GUI/真实 CLI 默认开启，SDK opt-in、文件验证显式 `--transcription`，可用 `--no-transcription` 保留基础交互。GUI 显示用户转写、任务进度和真实报告入口，任务文本/证据仅写到本机报告，统计不含正文。原生结果播报使用实际工具证据短句（综合报告播报完成提示），与真实 PCM 同块上行，经既有 LLM 隐藏状态 → TTS → Token2Wav 生成 24k PCM；不让感知模型重新推理状态数值。真实后端 60 秒合成文件闭环通过：唯一转写/任务/报告，关闭确认与清理成功；该合成文件验证没有打开真实设备。2026-10-08 bo s s 反馈“测试成功，能正常输出文字结果”，真机语音任务文字结果按用户反馈验收通过；未新增具体指令、次数、时长、延迟或报告内容核对记录，音色听感未由该反馈确认。VAD/置信度不等于说话人识别或绝对准确，长时稳定性不从短测或合成文件推定。
+- **联网查询（2026-10-09）**：`src/tools/web_search.py` 使用现有 httpx 与标准库，默认国内必应 RSS，失败再试固定全球入口；免密钥、不绕验证码、不保证未公开搜索接口永久有效。每次至多 5 条结果；固定规则分隔天气词/文档词，记录原话与实际搜索词；前三个公网来源并发读静态正文，整次网络 25 秒、每页 6 秒、512KiB 解压后字节上限、3500 字正文及最多 30 个有界段落。URL/逐跳 IPv4 DNS 公网核验后连接已核验 IP，并保留 Host/TLS SNI 及证书验证；不访问本机/内网或继承代理/Cookie。Qwen 仅可对本句关键词调用一次 `search_web`，只选择已读来源的段落编号；目标天气日期与英文具体词先筛选候选，程序核对原文再交付，不接纳自由生成的联网事实、链接或发布时间。结果采用来源摘录，未提供自由改写/翻译；原文一致不证明网站内容真实、时效或相关性。语音支持“上网搜索…”及明确城市天气问句，保留置信度/代次/忙碌/播放重叠约束，联网意图阻止普通模型抢答。GUI 显示实际工具/来源/正文读取状态，UTF-8 报告保存链接、抓取时间及原始证据；原生播报使用已核对的有界摘录。仅查询词出网，不上传对话历史、参考音或音视频。实际语音入口听感须另做用户验收；独立验收使用 `verify_web_search.py`，不打开设备。
 - **M2a 独立 Qwen**：`verify_toolcall.py` 使用同一 Python 3.11 环境与已有 httpx，只开放 `get_system_info`；`--task` 是独立终端显式任务，不是生产语音入口。`src/brain/lm_studio.py` 核对 `/api/v1/models` 的精确已加载实例及能力，要求 LM Studio 0.4.8+，请求使用 `reasoning_effort="none"`，不移除参数后默默重试、不恢复思考尾段、不自动加载或回退其他模型。`BrainTaskRunner` 将真实证据和最终回答原子发布到忽略的 `output/m2/qwen/`；错误/取消不发布未完成文件。单次 HTTP 90 秒、整个任务 120 秒、最多 4 轮；等待中每 100ms 检查取消，各工具执行前再检查。已开始的只读系统查询有自身超时，不能声称任意工具可抢占终止。普通聊天 SSE 保留，agent 最终回答不再额外生成一次。三项独立真实只读验证通过；M2b 合成文件验证已与 MiniCPM/CPU Whisper 同跑并交付系统报告，仅代表这段测量，不推定真机或长时性能。M2b 已在语音旁路接入来源校验与 GUI 只读路由，并接入原生结果播报；完整报告仍保留文字和工具证据。
 - **M1 Gateway 入口**：`main.py --gateway`（终端）、`main.py --gateway --gui`（GUI），使用 Python 3.11 独立环境；GUI 可异步调用固定启动器启动/回收自己拥有的后端；外部已运行服务只探测与复用，不接管。收到启动器就绪事件后才开放语音，停止后端/关闭窗口先等待音视频会话清理，再回收所属后端。GUI 仅使用 Gateway，不依赖旧 torch/PyAudio/Voicebox/YOLO。`omni_backend` 只接受 `gateway`；`legacy` 会明确报错。`main.py --gui` 与 `python -m src.omni --gui` 同样进入 Gateway，`--gateway` 保留兼容。
 - **GUI 后端控制**：`src/omni/backend_control.py` 使用 QProcess 与启动器 `--events-json` 事件管理固定三进程，健康检查在后台且只访问本机；启动/停止/取消/异常均反馈至 GUI，窗口退出等待清理。设置不改变固定版本、端口、模型清单和构建参数。
@@ -183,6 +184,7 @@ JSON 是结构化事实真源，ChromaDB 是可从 JSON 重建的索引；批量
 - `src/omni/task_speech.py`：单个待播报队列、实际证据短句、任务代次与字面文本/音频归属校验；不保存 PCM。
 - `new_computer_download/update_native_backend.py`：仅升级登记的旧补丁或干净固定源码，可重新编译；陌生源码拒绝覆盖，应用失败回滚。
 - `transcription.lock.json` / `new_computer_download/prepare_transcription.py`：仓库外 Whisper small 资源锁与 HTTPS 下载/CPU 自检。
+- `src/tools/web_search.py` / `verify_web_search.py`：免密钥必应搜索、公网来源读取与独立 Qwen 文件验收；联网报告和测试产物仍保存在忽略的 output/。
 - `verify_toolcall.py`：M2a 独立精确 Qwen 只读工具/文件验收；不启动设备或 Gateway。
 - `src/brain/lm_studio.py` / `task_runner.py`：本机严格大脑契约与独立报告文件交付。
 - `verify_duplex.py`：独立 M0 协议/媒体文件探针，不调用生产运行时，也不打开麦克风或摄像头。
@@ -243,7 +245,7 @@ VS Code 本机调试配置为忽略的 `.vscode/launch.json`「J.A.C. · Gateway
 
 ## 已知限制（当前代码，待新架构落地后重新评估）
 
-- Gateway 已接入听看说与新 GUI；旧 `:9060`、轮询判断模型和传统运行入口已删除。M2b 已接入并行转写和 Qwen 明确只读任务；通用工具、ChromaDB 和 OpenClaw 尚未接入；原生结果播报已接入。未迁移通用音频/记忆/检测组件保留，无生产入口。
+- Gateway 已接入听看说与新 GUI；旧 `:9060`、轮询判断模型和传统运行入口已删除。M2b 已接入并行转写和 Qwen 明确只读任务；公网搜索已接入；通用电脑操作、ChromaDB 和 OpenClaw 尚未接入；原生结果播报已接入。未迁移通用音频/记忆/检测组件保留，无生产入口。
 - 运行依赖外部软件（LM Studio / 固定版本 Gateway、Worker、llama-omni-server / 可选云端 OpenClaw）。
 - M0 基于已有真机验证与 bo s s 明确验收通过；30 分钟稳定性免测，不作为阻塞项。M1 文件回放不等于新增生产 GUI/设备的真机听感验收。
 - M2b 已展示确认的 Whisper 用户转写，并注入后续会话的有界上下文；被拒绝或未经转写的语音不恢复，重连仍有采集间隙。

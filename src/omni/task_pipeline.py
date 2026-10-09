@@ -112,8 +112,44 @@ def normalize_transcript(text):
     return re.sub(r"[\s，。！？、,.!?：:；;]", "", text.translate(table)).replace("记忆体", "内存")
 
 
+def route_web_instruction(text):
+    """完整匹配用户联网指令，保留关键词空格；天气问句可直接进入只读搜索。"""
+    text = unicodedata.normalize("NFKC", text).strip().strip("，。！？,.!? ")
+    text = text.translate(str.maketrans("網絡搜尋幫請氣預報麼樣嗎後開刪執", "网络搜寻帮请气预报么样吗后开删执"))
+    prefix = r"(?:(?:请你|请|帮我|麻烦你|麻烦|给我|jac|贾维斯)[，,\s]*){0,3}"
+    action = r"(?>搜索一下|搜索|搜一下|搜寻|查询一下|查询|查一下|查下|查|搜)"
+    match = re.fullmatch(prefix + r"(?:(?:在)?(?:网上|网络|网页|互联网)|上网|联网)\s*" + action + r"\s*(.{2,200})", text, re.I)
+    if match is None:
+        match = re.fullmatch(prefix + action + r"\s*(?:一下)?(?:在)?(?:网上|网络|互联网|网页)(?:的)?\s*(.{2,200})", text, re.I)
+    query = match.group(1).strip() if match else None
+    if query is None:
+        weather = re.fullmatch(prefix + r"(?:" + action + r")?\s*(.{1,25}?(?:今天|明天|后天|本周|周末|未来\d+天)?(?:的)?天气(?:预报)?)(?:怎么样|如何|怎样|是什么|会下雨吗)?", text, re.I)
+        if weather is None:
+            weather = re.fullmatch(prefix + r"(?:" + action + r")?\s*([\u4e00-\u9fffA-Za-z ]{2,16}?(?:今天|明天|后天|本周|周末)(?:会不会下雨|会下雨吗|下雨吗|有没有雨|气温多少(?:度)?|温度多少(?:度)?))", text, re.I)
+        if weather and not re.search(r"不要|别|他说|我说|我喜欢|我觉得|刚才|原理|科普|定义|什么是|为什么", text):
+            query = weather.group(1).strip()
+            location = re.split(r"今天|明天|后天|本周|周末|未来\d+天|天气", query)[0].rstrip("的")
+            if location in {"", "查", "查询", "查一下", "看看"}:
+                query = None
+    if (not query or not 2 <= len(query) <= 200 or any(ord(c) < 32 for c in query)
+            or re.search(r"[<>]|(?:然后|并且|同时|再)(?:帮我|请)?(?:打开|删除|运行|执行|发送|上传|下载)", query)):
+        return None
+    return ("web", query)
+
+
+def is_online_request(text):
+    """联网意图只用于禁止普通模型猜测；此分类本身不授予工具执行权限。"""
+    text = normalize_transcript(text)
+    explicit = re.search(r"上网|联网|网上|网络搜索|网页搜索|互联网|最新新闻|实时新闻", text)
+    weather = re.search(r"天气|下雨|气温", text) and re.search(r"查询|查|预报|怎么样|如何|怎样|多少|几度|温度|是什么|吗", text)
+    return bool(explicit or weather)
+
+
 def route_instruction(text):
-    """仅完整匹配显式系统查询/报告指令；转述、否定和普通聊天不执行。"""
+    """完整匹配显式系统或联网查询；不把助手输出、转述或否定当成指令。"""
+    web = route_web_instruction(text)
+    if web:
+        return web
     text = normalize_transcript(text)
     prefix = r"(?:(?:请你|请|帮我|麻烦你|麻烦|给我|现在|jac|贾维斯)[,，]?){0,3}"
     report = r"(?:并|然后)?(?:生成|写|保存)(?:一份|一个)?(?:中文)?(?:系统状态|电脑状态|系统)?报告"
@@ -403,11 +439,13 @@ class TaskPipeline:
                     self._last_recognition_notice = float("-inf")
                     self.callbacks.on_user_transcript(text)
                     fields = route_instruction(text)
-                    self._response_decided(utterance, "block" if fields or is_system_request(text) else "allow")
+                    self._response_decided(utterance, "block" if fields or is_system_request(text) or is_online_request(text) else "allow")
                     if fields:
                         self.submit(utterance, text, fields)
                     elif is_system_request(text):
                         self._notify("rejected", {"code": "unsupported_system_request"})
+                    elif is_online_request(text):
+                        self._notify("rejected", {"code": "unsupported_web_request"})
             except Exception:
                 if not self.stopped.is_set():
                     self._fail("whisper_error")
@@ -454,8 +492,9 @@ class TaskPipeline:
                         if self.current(utterance.generation):
                             self.counters["tool_calls"] += 1
                             self._notify("tool_completed", {"id": utterance.identifier, **entry})
+                scope = {"web_query": fields[1]} if fields[0] == "web" else {"info_types": fields}
                 result = runner.run(text, should_stop=lambda: not self.current(utterance.generation),
-                                    info_types=fields, publication_lock=self.lock, on_tool_result=tool_result)
+                                    publication_lock=self.lock, on_tool_result=tool_result, **scope)
                 with self.lock:
                     if self.current(utterance.generation):
                         self.counters["tasks_completed"] += 1
@@ -471,7 +510,7 @@ class TaskPipeline:
                 if self.current(utterance.generation):
                     with self.lock:
                         self.counters["tasks_failed"] += 1
-                    self._notify("error", {"code": "brain_failed"})
+                    self._notify("error", {"code": "web_failed" if fields[0] == "web" else "brain_failed"})
                     runner = None
             finally:
                 with self.lock:
