@@ -12,6 +12,7 @@ from uuid import uuid4
 import numpy as np
 
 from .transcription_worker import WhisperProcess, DEFAULT_MODEL_DIR
+from src.tools.search_query import web_instruction
 
 
 @dataclass
@@ -113,35 +114,15 @@ def normalize_transcript(text):
 
 
 def route_web_instruction(text):
-    """完整匹配用户联网指令，保留关键词空格；天气问句可直接进入只读搜索。"""
-    text = unicodedata.normalize("NFKC", text).strip().strip("，。！？,.!? ")
-    text = text.translate(str.maketrans("網絡搜尋幫請氣預報麼樣嗎後開刪執", "网络搜寻帮请气预报么样吗后开删执"))
-    prefix = r"(?:(?:请你|请|帮我|麻烦你|麻烦|给我|jac|贾维斯)[，,\s]*){0,3}"
-    action = r"(?>搜索一下|搜索|搜一下|搜寻|查询一下|查询|查一下|查下|查|搜)"
-    match = re.fullmatch(prefix + r"(?:(?:在)?(?:网上|网络|网页|互联网)|上网|联网)\s*" + action + r"\s*(.{2,200})", text, re.I)
-    if match is None:
-        match = re.fullmatch(prefix + action + r"\s*(?:一下)?(?:在)?(?:网上|网络|互联网|网页)(?:的)?\s*(.{2,200})", text, re.I)
-    query = match.group(1).strip() if match else None
-    if query is None:
-        weather = re.fullmatch(prefix + r"(?:" + action + r")?\s*(.{1,25}?(?:今天|明天|后天|本周|周末|未来\d+天)?(?:的)?天气(?:预报)?)(?:怎么样|如何|怎样|是什么|会下雨吗)?", text, re.I)
-        if weather is None:
-            weather = re.fullmatch(prefix + r"(?:" + action + r")?\s*([\u4e00-\u9fffA-Za-z ]{2,16}?(?:今天|明天|后天|本周|周末)(?:会不会下雨|会下雨吗|下雨吗|有没有雨|气温多少(?:度)?|温度多少(?:度)?))", text, re.I)
-        if weather and not re.search(r"不要|别|他说|我说|我喜欢|我觉得|刚才|原理|科普|定义|什么是|为什么", text):
-            query = weather.group(1).strip()
-            location = re.split(r"今天|明天|后天|本周|周末|未来\d+天|天气", query)[0].rstrip("的")
-            if location in {"", "查", "查询", "查一下", "看看"}:
-                query = None
-    if (not query or not 2 <= len(query) <= 200 or any(ord(c) < 32 for c in query)
-            or re.search(r"[<>]|(?:然后|并且|同时|再)(?:帮我|请)?(?:打开|删除|运行|执行|发送|上传|下载)", query)):
-        return None
-    return ("web", query)
+    """使用共享的完整语法；天气缺少地区只产生本地追问，不调用搜索。"""
+    return web_instruction(text)
 
 
 def is_online_request(text):
     """联网意图只用于禁止普通模型猜测；此分类本身不授予工具执行权限。"""
     text = normalize_transcript(text)
     explicit = re.search(r"上网|联网|网上|网络搜索|网页搜索|互联网|最新新闻|实时新闻", text)
-    weather = re.search(r"天气|下雨|气温", text) and re.search(r"查询|查|预报|怎么样|如何|怎样|多少|几度|温度|是什么|吗", text)
+    weather = re.search(r"天气|下雨|气温", text) and re.search(r"查询|查|一下|预报|怎么样|如何|怎样|多少|几度|温度|是什么|吗", text)
     return bool(explicit or weather)
 
 
@@ -181,22 +162,34 @@ def is_system_request(text):
     return bool(topic and (state_intent or not educational))
 
 
-def confirmed_text(segments):
-    """拒绝低置信度、无语音概率高或重复压缩异常的 Whisper 结果。"""
+def transcription_quality(segments):
+    """保留原质量门槛并返回具体拒绝原因；不保存未确认文字或原始媒体。"""
     if not isinstance(segments, list) or not segments:
-        return None
+        return None, "no_transcription"
     texts = []
     for segment in segments:
         if not isinstance(segment, dict) or not isinstance(segment.get("text"), str):
-            return None
+            return None, "invalid_transcription"
         values = [segment.get(k) for k in ("avg_logprob", "no_speech_prob", "compression_ratio")]
         if any(not isinstance(v, (float, int)) or not np.isfinite(v) for v in values):
-            return None
-        if values[0] < -.75 or values[1] > .45 or values[2] > 2.4:
-            return None
+            return None, "invalid_transcription"
+        for rejected, code in ((values[0] < -.75, "low_confidence"), (values[1] > .45, "no_speech"), (values[2] > 2.4, "repetitive_transcription")):
+            if rejected:
+                return None, code
         texts.append(segment["text"].strip())
     text = "".join(texts).strip()
-    return text if text and len(text) <= 400 else None
+    return (text, None) if text and len(text) <= 400 else (None, "invalid_transcription")
+
+
+def confirmed_text(segments):
+    """兼容原校验入口，只有所有片段合格才返回用户文字。"""
+    return transcription_quality(segments)[0]
+
+
+def visual_question_key(text):
+    """只识别中性的当前画面问句，繁简/标点统一后用于两次转写一致性核对。"""
+    key = normalize_transcript(text).translate(str.maketrans({"麼": "么", "麽": "么", "見": "见"}))
+    return key if re.fullmatch(r"(?:请|请你)?(?:描述一下)?(?:你现在|现在你|你|现在)?(?:看到了|看见了|看到|看见)(?:什么)", key) else None
 
 
 class TaskPipeline:
@@ -310,7 +303,7 @@ class TaskPipeline:
                 self.response_policy = "block"
             self._notify("rejected", {"code": code})
 
-    def _notify_unclear_speech(self):
+    def _notify_unclear_speech(self, utterance=None, reason=None):
         """完整句识别失败单独提示；连续失败十秒内只显示一次，不改质量门槛。"""
         with self.lock:
             now = time.monotonic()
@@ -319,7 +312,57 @@ class TaskPipeline:
                 return
             self._last_recognition_notice = now
             self.counters["recognition_notices"] += 1
-            self._notify("transcription_rejected", {"code": "unclear_speech"})
+            detail = {"code": "unclear_speech"}
+            if utterance is not None:
+                detail.update(id=utterance.identifier, sequence=utterance.response_sequence, reason=reason)
+            self._notify("transcription_rejected", detail)
+
+    def _current_utterance(self, utterance, count=True):
+        """用户新句已取代旧句时，旧识别不能显示原话、错误提示或触发工具。"""
+        with self.lock:
+            if not self.current(utterance.generation):
+                return False
+            if utterance.response_sequence != self.response_sequence:
+                if count:
+                    self.counters["superseded_transcriptions"] += 1
+                return False
+            return True
+
+    def _retry_visual_question(self, utterance, segments, reason):
+        """短视觉候选保留全 PCM 仅加不同前导静音；两次原阈值合格且逐字一致才恢复。"""
+        if reason not in {"low_confidence", "no_speech"} or len(utterance.samples) > 4 * 16000:
+            return None
+        if any(not isinstance(s, dict) or not isinstance(s.get("text"), str) for s in segments):
+            return None
+        candidate = "".join(s.get("text", "") for s in segments)
+        key = normalize_transcript(candidate).translate(str.maketrans({"麼": "么", "麽": "么", "見": "见"}))
+        if (len(key) > 20 or not re.search(r"(?:看到|看见).*什么", key)
+                or is_system_request(candidate) or is_online_request(candidate)):
+            return None
+        accepted, keys = [], []
+        for length in (4800, 9600):
+            with self.lock:
+                if not self._current_utterance(utterance, count=False) or time.monotonic() - utterance.ended_at > 15:
+                    return None
+                self.counters["visual_retry_attempts"] += 1
+            pcm = np.concatenate((np.zeros(length, dtype="float32"), utterance.samples))
+            text = confirmed_text(self.decoder.transcribe(pcm))
+            current_key = visual_question_key(text) if text is not None else None
+            if current_key is None:
+                with self.lock:
+                    self.counters["visual_retry_rejected"] += 1
+                return None
+            accepted.append(text)
+            keys.append(current_key)
+        if keys[0] != keys[1]:
+            with self.lock:
+                self.counters["visual_retry_disagreement"] += 1
+            return None
+        with self.lock:
+            if not self._current_utterance(utterance, count=False) or time.monotonic() - utterance.ended_at > 15:
+                return None
+            self.counters["visual_retry_confirmed"] += 1
+        return accepted[0]
 
     def response_state(self):
         """给 WS 返回普通回复权限；任务标记音频仍由独立证据队列核验。"""
@@ -408,32 +451,34 @@ class TaskPipeline:
                 utterance = self.utterances.get(timeout=.1)
             except queue.Empty:
                 continue
-            if not self.current(utterance.generation):
+            if not self._current_utterance(utterance):
                 continue
             if utterance.overlap:
                 with self.lock:
+                    if not self._current_utterance(utterance):
+                        continue
                     self.counters["playback_rejected"] += 1
-                self._response_decided(utterance, "block")
-                self._notify("rejected", {"code": "playback_overlap"})
+                    self._response_decided(utterance, "block")
+                    self._notify("rejected", {"code": "playback_overlap"})
                 continue
             try:
-                text = confirmed_text(self.decoder.transcribe(utterance.samples))
-                if not self.current(utterance.generation):
-                    continue
-                if time.monotonic() - utterance.ended_at > 15:
-                    with self.lock:
-                        self.counters["stale_rejected"] += 1
-                    self._response_decided(utterance, "block")
-                    self._notify("rejected", {"code": "stale_speech"})
-                    continue
+                segments = self.decoder.transcribe(utterance.samples)
+                text, reason = transcription_quality(segments)
                 if text is None:
-                    with self.lock:
-                        self.counters["quality_rejected"] += 1
-                    self._notify_unclear_speech()
-                    self._response_decided(utterance, "block")
-                    continue
+                    text = self._retry_visual_question(utterance, segments, reason)
                 with self.lock:
-                    if not self.current(utterance.generation):
+                    if not self._current_utterance(utterance):
+                        continue
+                    if time.monotonic() - utterance.ended_at > 15:
+                        self.counters["stale_rejected"] += 1
+                        self._response_decided(utterance, "block")
+                        self._notify("rejected", {"code": "stale_speech"})
+                        continue
+                    if text is None:
+                        self.counters["quality_rejected"] += 1
+                        self.counters["quality_" + reason] += 1
+                        self._notify_unclear_speech(utterance, reason)
+                        self._response_decided(utterance, "block")
                         continue
                     self.counters["transcriptions"] += 1
                     self._last_recognition_notice = float("-inf")
@@ -478,8 +523,12 @@ class TaskPipeline:
             try:
                 if not self.current(utterance.generation):
                     continue
-                self._notify("running", {"id": utterance.identifier})
-                if runner is None:
+                if fields[0] == "weather_city":
+                    from src.brain.task_runner import TaskResult, WEATHER_CITY_PROMPT
+                    result = TaskResult(utterance.identifier, None, WEATHER_CITY_PROMPT, [], 0, "needs_input")
+                else:
+                    self._notify("running", {"id": utterance.identifier})
+                if fields[0] != "weather_city" and runner is None:
                     if self.runner_factory is None:
                         from src.brain.llm import LocalBrain
                         from src.brain.task_runner import BrainTaskRunner
@@ -492,14 +541,18 @@ class TaskPipeline:
                         if self.current(utterance.generation):
                             self.counters["tool_calls"] += 1
                             self._notify("tool_completed", {"id": utterance.identifier, **entry})
-                scope = {"web_query": fields[1]} if fields[0] == "web" else {"info_types": fields}
-                result = runner.run(text, should_stop=lambda: not self.current(utterance.generation),
-                                    publication_lock=self.lock, on_tool_result=tool_result, **scope)
+                if fields[0] != "weather_city":
+                    scope = {"web_query": fields[1]} if fields[0] == "web" else {"info_types": fields}
+                    result = runner.run(text, should_stop=lambda: not self.current(utterance.generation),
+                                        publication_lock=self.lock, on_tool_result=tool_result, **scope)
                 with self.lock:
                     if self.current(utterance.generation):
-                        self.counters["tasks_completed"] += 1
-                        self._notify("completed", {"id": utterance.identifier,
-                            "path": str(result.path), "answer": result.answer})
+                        status = getattr(result, "status", "completed")
+                        self.counters["tasks_" + status] += 1
+                        detail = {"id": utterance.identifier, "answer": result.answer}
+                        if result.path is not None:
+                            detail["path"] = str(result.path)
+                        self._notify(status, detail)
                         if self.on_result_speech is not None:
                             try:
                                 self.on_result_speech(utterance.identifier, utterance.generation, result, fields)

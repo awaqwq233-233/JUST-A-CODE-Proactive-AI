@@ -627,6 +627,11 @@ class MainWindow(QMainWindow):
                       speech_cancelled="结果播报已取消", speech_skipped="本次结果未播报，文字报告仍可查看")
         labels["tool_completed"] = "工具已实际查询"
         labels["transcription_rejected"] = "未确认"
+        labels.update(no_answer="未取得答案，查询记录已保存", needs_input="需要补充信息")
+        if detail.get("purpose") == "clarification":
+            labels.update(speech_queued="追问等待播报", speech_sent="正在准备追问语音", speech_started="原生追问语音处理中",
+                          speech_completed="追问音频已接收", speech_failed="追问播报失败，请查看上方提示",
+                          speech_cancelled="追问播报已取消", speech_skipped="本次追问未播报，请查看上方提示")
         reasons = {"brain_busy": "大脑忙，请完成后再说", "unclear_speech": "没有听清，请重复", "brain_failed": "大脑不可用或任务失败",
                    "audio_overflow": "转写积压，请停止后重启", "utterance_overflow": "转写积压，请停止后重启",
                    "whisper_error": "转写异常，请停止后重启", "vad_error": "切句异常，请停止后重启",
@@ -644,6 +649,11 @@ class MainWindow(QMainWindow):
         message = labels.get(state, state)
         if detail.get("code"):
             message += "：" + reasons.get(detail["code"], "请查看连接状态")
+        if state == "transcription_rejected" and detail.get("reason"):
+            quality = {"low_confidence":"识别置信度不足", "no_speech":"有效人声不足",
+                       "repetitive_transcription":"识别内容重复异常", "no_transcription":"未识别到文字",
+                       "invalid_transcription":"识别结果不完整"}
+            message += "（语句 " + str(detail.get("sequence", "")) + "，" + quality.get(detail["reason"], "识别未通过") + "）"
         self._end_reply()
         source = "语音" if state == "transcription_rejected" else "大脑"
         self._insert_text(self.console, "\n\n" + source + " · " + message)
@@ -653,12 +663,14 @@ class MainWindow(QMainWindow):
                 import json
                 data = json.loads(output)
                 page_states = {"read": "已读取", "unavailable": "无法读取", "not_read": "未读取，仅有摘要"}
-                output = "搜索来源：" + data["provider"] + "\n" + "\n".join(
+                output = "实际搜索词：" + data.get("search_query", data["query"]) + "\n搜索来源：" + data["provider"] + "\n" + "\n".join(
                     f"[{item['id']}] {item['title']}\n{item['url']}\n正文：{page_states[item['page']['status']]}"
                     for item in data["results"])
             self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]) +
                               "\n查询时间：" + detail["queried_at"] + "\n" + output)
-        if state == "completed":
+        if state == "needs_input":
+            self._insert_text(self.console, "\n" + detail["answer"])
+        if state in ("completed", "no_answer"):
             from pathlib import Path
             self._latest_report = Path(detail["path"])
             self.open_report_btn.setEnabled(self._latest_report.is_file())

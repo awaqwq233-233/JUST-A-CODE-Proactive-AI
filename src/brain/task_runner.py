@@ -19,6 +19,8 @@ from src.tools.registry import get_tool_schemas
 from src.tools.web_search import WebSearchClient
 
 ROOT = Path(__file__).resolve().parents[2]
+NO_WEB_ANSWER = "bo s s，本次搜索未取得足以回答问题的来源正文，暂时无法核实。请换个关键词或稍后重试；查询记录和来源链接已保存。"
+WEATHER_CITY_PROMPT = "bo s s，要查哪个城市的天气？请说完整地点和日期，例如：海口明天的天气。"
 SYSTEM_PROMPT = (
     "你是 J.A.C. 本地大脑，称呼用户为 bo s s，输出简体中文。"
     "本阶段只允许查询系统时间、电池、CPU、内存。涉及实时状态必须先调用 get_system_info。"
@@ -57,7 +59,7 @@ def grounded_web_answer(raw, results):
     if not isinstance(selections, list) or len(selections) > 3 or set(data) != {"selections"}:
         raise BrainError("联网摘录格式不符合约定")
     if not selections:
-        return "bo s s，本次搜索未取得足以回答问题的来源正文，暂时无法核实。请补充城市、日期或更具体的关键词；已找到的链接保存在报告中。"
+        return NO_WEB_ANSWER
     by_id, excerpts, total = {item["id"]: item for item in results}, [], 0
     for selection in selections:
         if not isinstance(selection, dict) or set(selection) != {"source_id", "passage_id"}:
@@ -85,10 +87,11 @@ class TaskResult:
     """任务交付信息；工具证据只保存到调用者指定的本机目录。"""
 
     task_id: str
-    path: Path
+    path: Path | None
     answer: str
     trace: list
     elapsed_seconds: float
+    status: str = "completed"
 
 
 def atomic_write(path, content, should_stop=None, publication_lock=None):
@@ -200,7 +203,8 @@ class BrainTaskRunner:
             return (f"### 查询 {i}\n\n工具：{entry['name']}\n\n参数：{entry['arguments']}\n\n"
                     f"查询时间：{entry['queried_at']}\n\n{output}")
         evidence = "\n\n".join(evidence_text(i, entry) for i, entry in enumerate(trace, 1))
-        content = (f"# J.A.C. {'联网查询' if web_query is not None else '系统状态'}报告\n\n"
+        status = "no_answer" if answer == NO_WEB_ANSWER else "completed"
+        content = (f"# J.A.C. {'联网查询' if web_query is not None else '系统状态'}{'记录（未取得答案）' if status == 'no_answer' else '报告'}\n\n"
                    f"任务编号：{task_id}\n\n生成时间：{datetime.now().astimezone().isoformat(timespec='seconds')}\n\n"
                    f"## 请求\n\n{task.strip()}\n\n## 大脑回答\n\n{answer}\n\n"
                    f"{sources}\n\n## 实际工具返回\n\n{evidence}\n\n" +
@@ -208,4 +212,4 @@ class BrainTaskRunner:
                     "数据仅代表查询时刻。内存数值为活跃与有线页合计，不代表完整内存占用。\n"))
         path = self.output_dir / f"{'web-search' if web_query is not None else 'system-status'}-{task_id}.md"
         atomic_write(path, content, cancelled, publication_lock)
-        return TaskResult(task_id, path, answer, trace, time.monotonic() - started)
+        return TaskResult(task_id, path, answer, trace, time.monotonic() - started, status)

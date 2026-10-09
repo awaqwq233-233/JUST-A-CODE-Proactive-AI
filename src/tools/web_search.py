@@ -14,6 +14,7 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree
 
 import httpx
+from .search_query import weather_query
 
 DNS_SLOTS = threading.BoundedSemaphore(4)
 
@@ -179,8 +180,11 @@ def page_passages(page, excerpt):
 def relevant_passages(query, page):
     """实时天气只提供目标日期的完整预报候选，英文具体词过滤无关导航。"""
     passages = page.get("passages", [])
-    if re.search(r"天气|下雨|气温", query):
-        offset = 2 if "后天" in query else 1 if "明天" in query else 0 if "今天" in query else None
+    weather = weather_query(query)
+    if weather is not None:
+        if weather.location.rstrip("市") not in page.get("text", ""):
+            return []
+        offset = weather.offset
         if offset is not None:
             target = datetime.now().astimezone().date() + timedelta(days=offset)
             day = rf"(?<!\d)0?{target.day}日|0?{target.month}月0?{target.day}日|{target.isoformat()}"
@@ -192,12 +196,13 @@ def relevant_passages(query, page):
 
 
 def format_query(query):
-    """确定性分隔中文天气词与文档关键词；原话和实际发出的查询都保留。"""
+    """城市天气以城市开头检索；日期用于正文筛选，避免必应把明天当小说名。"""
     effective = query
-    if re.search(r"天气|下雨|气温", query):
-        effective = re.sub(r"(今天|明天|后天|本周|周末|天气|气温)", r" \1 ", effective)
-        effective = re.sub(r"会不会下雨|会下雨吗|下雨吗|有没有雨", " 天气 ", effective)
-        effective = re.sub(r"的(?=\s*天气)", " ", effective)
+    weather = weather_query(query)
+    if weather is not None:
+        if not weather.location:
+            raise SearchError("天气查询需要城市，请补充地区")
+        effective = weather.location + "天气"
     if re.search(r"[A-Za-z]", query):
         effective = effective.replace("官方文档", "documentation")
     return re.sub(r"\s+", " ", effective).strip()
@@ -284,18 +289,31 @@ class WebSearchClient:
     async def _search(self, query):
         """先国内必应入口，再固定全球入口；验证码和无结果不会作为正文交付。"""
         results = None
+        last_failure = None
         effective = format_query(query)
         for host in ("cn.bing.com", "www.bing.com"):
             try:
                 url = str(httpx.URL(f"https://{host}/search", params={"q": effective, "format": "rss"}))
                 _, body, _ = await self._get(url, 8, rss=True)
-                results = parse_results(body, 5)
+                candidates = parse_results(body, 20)
+                weather = weather_query(query)
+                if weather is not None:
+                    candidates = [item for item in candidates
+                        if weather.location.rstrip("市") in item["title"] + item["snippet"]
+                        and re.search(r"天气|预报|气温|降雨", item["title"] + item["snippet"])]
+                if not candidates:
+                    raise SearchError("搜索未返回该城市的相关天气来源")
+                results = candidates[:5]
+                for index, item in enumerate(results, 1):
+                    item["id"] = index
                 provider = host
                 break
-            except SearchError:
+            except SearchError as error:
+                last_failure = str(error)
+                results = None
                 continue
         if results is None:
-            raise SearchError("必应搜索不可用或没有结果，请检查网络后重试")
+            raise SearchError("必应搜索未取得可用来源：" + str(last_failure))
         async def read_page(item):
             """最多三个来源并发读取，一个页面失败仍保留其他来源与明确状态。"""
             try:

@@ -104,6 +104,16 @@ def complete(queue, mismatch=False, silent=False):
     return guard
 
 
+def test_weather_clarification_uses_native_queue_without_fake_result_evidence():
+    """固定本地追问沿用原生队列和取消校验，事件明确标为追问。"""
+    queue, events, _ = make_queue()
+    queue.offer('city:1', 1, SimpleNamespace(), ('weather_city',))
+    assert '哪个城市' in queue.pending.text and '查询已完成' not in queue.pending.text
+    complete(queue)
+    assert events.events[-1][0] == 'speech_completed'
+    assert all(detail.get('purpose') == 'clarification' for _, detail in events.events)
+
+
 def test_completion_requires_exact_text_audio_identity_and_real_samples():
     """完成确认须对应实际文本和音频，未知播报不进入播放流。"""
     queue, events, _ = make_queue()

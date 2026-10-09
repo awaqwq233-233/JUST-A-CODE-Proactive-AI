@@ -43,8 +43,8 @@ def main(argv=None):
             result = BrainTaskRunner(brain, args.output_dir).run(
                 "上网搜索" + args.query, stopped.is_set, web_query=args.query)
             data = json.loads(result.trace[0]["output"])
-            report.update(file=result.path.name, seconds=round(result.elapsed_seconds, 3), tool_count=len(result.trace))
-            report["answer_available"] = bool(re.search(r"\[\d+\]", result.answer))
+            report.update(file=result.path.name, seconds=round(result.elapsed_seconds, 3), tool_count=len(result.trace), answer_status=result.status)
+            report["answer_available"] = result.status == "completed" and bool(re.search(r"\[\d+\]", result.answer))
             print("[报告] " + str(result.path), flush=True)
         report.update(provider=data["provider"], results=len(data["results"]),
                       pages_read=sum(item["page"]["status"] == "read" for item in data["results"]))

@@ -62,7 +62,7 @@ class DesktopCallbacks(GatewayCallbacks):
         """同步大脑进度和真实报告；错误不宣称任务已完成。"""
         if state == "running":
             self.runtime.context.is_thinking = True
-        elif state in ("completed", "error", "cancelled"):
+        elif state in ("completed", "no_answer", "needs_input", "error", "cancelled"):
             self.runtime.context.is_thinking = False
         if self.runtime.task_callback:
             self.runtime.task_callback(state, detail)
