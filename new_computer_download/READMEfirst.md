@@ -24,6 +24,8 @@ Run `main.py --gateway --gui`, click Start Backend and wait for readiness, then 
 
 Publishing policy: the template `voices/silverwalf_voice.wav` is authorized for GitHub. Model binaries, runtime recordings and the local `brainstorming_projectPLAN/` architecture directory are excluded; cloning the repository does not include that directory.
 
+Planning update approved on 2026-10-11: local to-do tracking and proactive reminders are scheduled after the existing core migrations and are not implemented or installed by this guide. The proposed 45-minute silent review interval is configurable and separate from explicit reminder times. MiniCPM structured events, persistence and notification scheduling still require implementation and verification. No new dependencies, model downloads, backend build steps or scheduler setup are required for this documentation update; do not treat the plan as an available feature. See AGENTS.md and CHANGELOG Appendix A6.
+
 ## 中文安装指南
 
 发布边界：模板 `voices/silverwalf_voice.wav` 已获准推送；模型、实际测试录音录像和本机 `brainstorming_projectPLAN/` 架构目录不提交、不推送。架构目录只在本机维护，克隆 GitHub 仓库不会取得该目录。
@@ -215,6 +217,8 @@ M0 已根据真实模型/设备验证与 bo s s 明确确认标记通过，30 �
 固定 Gateway 视频会话 300 秒、音频会话 600 秒。后续客户端必须实现受控重连、重新注入记忆和上下文；旧 /ws/duplex 页面不作为当前客户端协议依据。
 
 M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo s s 真机验收，反馈为「这次完全正常」。专项回归 57 项通过；这不增加未测的长测时长或循环次数。M2b 已接入并行 VAD/Whisper 与 Gateway 明确系统任务，见第 12 节；原生结果播报已接入，ChromaDB 和 OpenClaw 仍待接入。Qwen 继续使用 LM Studio 127.0.0.1:12345；基础听看说无需加载 Qwen 或启动云端。
+
+**末期规划（2026-10-11 已确认，尚未实现）**：现有核心迁移完成后再落实待办清单、当前活动记忆、进度同步与主动提醒；可选外设不作为前置条件。默认 45 分钟静默巡检可调整，明确提醒时间独立调度；MiniCPM 结构化事件通道、本地持久化和提醒调度均须后续实现与验证。当前安装器不提供该功能，本次文档更新不新增依赖、模型下载、后端编译或定时任务配置；无需因本规划重装或重编译。详见 AGENTS.md 与 CHANGELOG 附 A6。
 
 ### 9 M1 生产入口
 
