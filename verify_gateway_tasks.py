@@ -5,6 +5,7 @@ import argparse
 import asyncio
 from collections import Counter
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -28,7 +29,7 @@ class ProbeCallbacks(GatewayCallbacks):
         self.counts["user_transcripts"] += 1
         fields = route_instruction(text)
         if fields:
-            self.fields.append(list(fields))
+            self.fields.append(["web"] if fields[0] == "web" else list(fields))
 
     def on_task_event(self, state, detail):
         """只记录真实任务状态，完成时核对报告存在。"""
@@ -38,6 +39,8 @@ class ProbeCallbacks(GatewayCallbacks):
             if not path.is_file():
                 raise RuntimeError("任务完成但报告不存在")
             self.files.append(path.name)
+            if ["web"] in self.fields:
+                self.counts["web_answers"] += bool(re.search(r"\[\d+\]", detail["answer"]))
         print(f"[大脑] {state}", flush=True)
 
 
@@ -73,7 +76,8 @@ def main(argv=None):
         if (callbacks.counts["task_completed"] != 1 or len(callbacks.files) != 1
                 or callbacks.counts["task_speech_completed"] != 1
                 or callbacks.counts["task_speech_failed"] or callbacks.counts["task_speech_skipped"]
-                or callbacks.counts["task_error"] or report["stats"].get("cleanup_failures")):
+                or callbacks.counts["task_error"] or report["stats"].get("cleanup_failures")
+                or (["web"] in callbacks.fields and callbacks.counts["web_answers"] != 1)):
             raise RuntimeError("未完成唯一真实任务、原生结果音频或清理失败")
         report["passed"] = True
         return 0

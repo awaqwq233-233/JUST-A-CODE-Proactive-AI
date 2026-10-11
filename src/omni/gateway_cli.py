@@ -111,7 +111,7 @@ def main(argv=None) -> int:
     parser.add_argument("--voice", type=Path, default=ROOT / "voices/silverwalf_voice.wav")
     parser.add_argument("--report", type=Path, default=ROOT / "output/m1/gateway.json")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--transcription", dest="transcription", action="store_true", help="开启本地转写/只读任务，文件验证需显式开启")
+    group.add_argument("--transcription", dest="transcription", action="store_true", help="开启本地转写/系统与联网查询，文件验证需显式开启")
     group.add_argument("--no-transcription", dest="transcription", action="store_false", help="仅听看说，关闭转写/任务")
     parser.set_defaults(transcription=None)
     from .transcription_worker import DEFAULT_MODEL_DIR

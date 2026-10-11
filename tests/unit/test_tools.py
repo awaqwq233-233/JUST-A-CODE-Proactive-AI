@@ -16,9 +16,9 @@ from brain.llm import parse_tool_calls, ThinkResult, LocalBrain
 # 注册表 / schema
 # ---------------------------------------------------------------------------
 def test_get_tool_schemas_format():
-    """tools 定义必须是合法的 OpenAI 风格结构，且包含 5 个白名单工具。"""
+    """tools 定义必须是合法的 OpenAI 风格结构，且包含 6 个白名单工具。"""
     schemas = get_tool_schemas()
-    assert len(schemas) == 5
+    assert len(schemas) == 6
     names = set()
     for s in schemas:
         assert s["type"] == "function"
@@ -26,7 +26,7 @@ def test_get_tool_schemas_format():
         assert fn["name"] and fn["description"]
         assert "properties" in fn["parameters"]
         names.add(fn["name"])
-    assert names == {"open_url", "open_app", "search_files", "get_system_info", "run_command"}
+    assert names == {"open_url", "open_app", "search_files", "get_system_info", "run_command", "search_web"}
 
 
 # ---------------------------------------------------------------------------

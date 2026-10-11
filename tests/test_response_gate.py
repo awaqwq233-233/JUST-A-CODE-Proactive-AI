@@ -105,9 +105,12 @@ def test_unsupported_system_phrase_blocks_guess_without_authorizing_tool(text):
     assert not is_system_request("解释锂电池的工作原理")
 
 
-def test_real_pipeline_blocks_early_model_answer_and_delivers_evidenced_native_audio(tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", ["system", "web"])
+def test_real_pipeline_blocks_early_model_answer_and_delivers_evidenced_native_audio(tmp_path, monkeypatch, mode):
     """真实 VAD/任务/报告/WS 联调，模拟慢 ASR 和错误普通回复，不使用模型或设备。"""
     entered, release = threading.Event(), threading.Event()
+    command = "查一下电池电量" if mode == "system" else "上网搜索上海明天天气"
+    expected = "80%" if mode == "system" else "26℃"
     events, delivered, calls = Events(), [], []
     source = np.concatenate((np.full(5760, .05, dtype="float32"), np.zeros(20 * 16000 - 5760, dtype="float32")))
     import soundfile as sf
@@ -124,7 +127,7 @@ def test_real_pipeline_blocks_early_model_answer_and_delivers_evidenced_native_a
             """控制识别结束时机，置信度符合生产门槛。"""
             entered.set()
             assert release.wait(3)
-            return [dict(text="查一下电池电量", avg_logprob=-.1, no_speech_prob=.01, compression_ratio=1)]
+            return [dict(text=command, avg_logprob=-.1, no_speech_prob=.01, compression_ratio=1)]
         def request_stop(self):
             """取消时释放替身等待。"""
             release.set()
@@ -142,8 +145,22 @@ def test_real_pipeline_blocks_early_model_answer_and_delivers_evidenced_native_a
 
     def agent(task, tools, execute, **kwargs):
         """真实任务执行器负责工具执行和文件，模型只提出结构化调用。"""
-        output = execute("get_system_info", {"info_type": "battery"})
-        yield output
+        if mode == "system":
+            yield execute("get_system_info", {"info_type": "battery"})
+        else:
+            execute("search_web", {"query": "上海明天天气"})
+            yield '{"selections":[{"source_id":1,"passage_id":1}]}'
+
+    class Search:
+        """网络边界替身；本测试集中检查生产 WS/转写/证据/原生播报接线。"""
+        def search(self, query, should_stop):
+            """返回可逐字核对的来源段落，不让大脑自由补写温度。"""
+            assert not should_stop() and query == "上海明天天气"
+            calls.append(("search_web", {"query": query}))
+            text = "上海明天天气：多云转晴，18至26℃。"
+            return dict(query=query, provider="fixture", retrieved_at="2026-10-09T12:00:00+08:00",
+                        results=[dict(id=1, title="天气资料", url="https://example.com/weather", page=dict(
+                            status="read", text=text, passages=[dict(id=1, text=text)]))])
 
     def tool(name, arguments):
         """记录真实执行边界，工具返回与模型抢答有意不同。"""
@@ -157,7 +174,7 @@ def test_real_pipeline_blocks_early_model_answer_and_delivers_evidenced_native_a
         def __init__(self, callbacks, *args):
             """绑定真实报告执行器和受控转写。"""
             super().__init__(callbacks, decoder_factory=Decoder,
-                runner_factory=lambda: BrainTaskRunner(SimpleNamespace(run_agentic=agent), tmp_path / "reports"))
+                runner_factory=lambda: BrainTaskRunner(SimpleNamespace(run_agentic=agent), tmp_path / "reports", Search()))
         def start(self):
             """启动生产线程并使用确定 VAD。"""
             super().start()
@@ -198,7 +215,7 @@ def test_real_pipeline_blocks_early_model_answer_and_delivers_evidenced_native_a
                     release.set()
                 speech = request["input"].get("task_speech")
                 if speech:
-                    assert "80%" in speech["text"] and "100" not in speech["text"]
+                    assert expected in speech["text"] and "100" not in speech["text"]
                     ident = speech["id"]
                     await ws.send(json.dumps(dict(type="task.speech", id=ident, state="accepted")))
                     await ws.send(json.dumps(dict(type="response.output.delta", kind="text", text=speech["text"], task_speech_id=ident)))
@@ -218,8 +235,9 @@ def test_real_pipeline_blocks_early_model_answer_and_delivers_evidenced_native_a
             assert stats["task_tool_calls"] == stats["task_speech_completed"] == 1
             assert stats["chunks_sent"] == 20 and stats["ordinary_discarded"] >= 3
     asyncio.run(scenario())
-    assert calls == [("get_system_info", {"info_type": "battery"})]
+    assert calls == ([("get_system_info", {"info_type": "battery"})] if mode == "system" else
+                     [("search_web", {"query": "上海明天天气"})])
     assert len(delivered) == 1 and np.allclose(delivered[0], .2)
-    assert "80%" in "".join(events.texts) and "百分之百" not in "".join(events.texts)
+    assert expected in "".join(events.texts) and "百分之百" not in "".join(events.texts)
     evidence = next(detail for state, detail in events.tasks if state == "tool_completed")
-    assert evidence["queried_at"] and "80%" in evidence["output"]
+    assert evidence["queried_at"] and expected in evidence["output"]

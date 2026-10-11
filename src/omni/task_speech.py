@@ -10,6 +10,24 @@ import time
 def speech_summary(result, fields):
     """从已交付的工具证据生成短句，不让感知模型重新推理或编造数字。"""
     message = "系统状态查询已完成，报告已生成，请查看界面中的完整结果。"
+    if fields[0] == "weather_city":
+        from src.brain.task_runner import WEATHER_CITY_PROMPT
+        return WEATHER_CITY_PROMPT
+    if fields[0] == "web" and getattr(result, "status", "completed") == "no_answer":
+        return "bo s s，本次联网查询未取得可核实的答案，请换个关键词或稍后重试。查询记录和来源链接已保存。"
+    if fields[0] == "web":
+        # 仅使用已经交付的 Qwen 回答，完整来源和摘录仍留在报告。
+        answer = re.sub(r"\[[^\]]*\]\(https?://[^)]*\)|https?://\S+|\[\d+\]", "", result.answer)
+        answer = re.sub(r"bo\s*s\s*s[，,：:\s]*", "", answer, flags=re.I)
+        answer = re.sub(r"[#*`\n\r\t]+", " ", answer).strip()
+        if answer and not any(ord(c) < 32 or ord(c) == 127 for c in answer) and "<" not in answer and ">" not in answer:
+            short = answer[:180]
+            if len(answer) > 180 and re.search(r"[。！？]", short):
+                short = short[:max(short.rfind(c) for c in "。！？") + 1]
+            message = "联网查询已完成。" + short.rstrip("。") + "。详细结果和来源已保存。"
+        else:
+            message = "联网查询已完成，详细结果和来源已保存，请查看报告。"
+        return "bo s s，" + message
     if len(fields) == 1 and fields[0] != "all":
         outputs = [item.get("output") for item in result.trace
                    if item.get("name") == "get_system_info"
@@ -30,6 +48,7 @@ class SpeechJob:
     generation: int
     text: str
     deadline: float
+    purpose: str = "result"
     cancellation: threading.Event = field(default_factory=threading.Event)
     received: int = 0
     nonzero: bool = False
@@ -49,18 +68,22 @@ class TaskSpeechQueue:
     def _notify(self, state, job, code=None):
         """状态仅携带标识和原因，统计不保存摘要或工具正文。"""
         detail = {"id": job.identifier}
+        if job.purpose == "clarification":
+            detail["purpose"] = job.purpose
         if code:
             detail["code"] = code
         self.callbacks.on_task_event("speech_" + state, detail)
         self.counters[state] += 1
 
     def offer(self, identifier, generation, result, fields):
-        """只接受当前代次已完成并落盘的结果，重复或忙碌时明确跳过。"""
+        """接受当前代次报告或程序固定追问；重复或忙碌时明确跳过。"""
         with self.pipeline.lock:
             if not self.pipeline.current(generation) or identifier in self.seen:
                 return
             self.seen.append(identifier)
             job = SpeechJob(identifier, generation, speech_summary(result, fields), self.clock() + 20)
+            if fields[0] == "weather_city":
+                job.purpose = "clarification"
             if self.pending or self.active:
                 self._notify("skipped", job, "speech_busy")
                 return

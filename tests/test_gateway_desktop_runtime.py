@@ -127,3 +127,7 @@ def test_recognition_and_tool_progress_do_not_reset_running_brain():
         assert runtime.context.is_thinking
     callbacks.on_task_event("completed", {"path": "report.md"})
     assert not runtime.context.is_thinking and events[-1] == "completed"
+    for state in ("no_answer", "needs_input"):
+        callbacks.on_task_event("running", {})
+        callbacks.on_task_event(state, {})
+        assert not runtime.context.is_thinking

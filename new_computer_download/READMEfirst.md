@@ -24,6 +24,8 @@ Run `main.py --gateway --gui`, click Start Backend and wait for readiness, then 
 
 Publishing policy: the template `voices/silverwalf_voice.wav` is authorized for GitHub. Model binaries, runtime recordings and the local `brainstorming_projectPLAN/` architecture directory are excluded; cloning the repository does not include that directory.
 
+Planning update approved on 2026-10-11: local to-do tracking and proactive reminders are scheduled after the existing core migrations and are not implemented or installed by this guide. The proposed 45-minute silent review interval is configurable and separate from explicit reminder times. MiniCPM structured events, persistence and notification scheduling still require implementation and verification. No new dependencies, model downloads, backend build steps or scheduler setup are required for this documentation update; do not treat the plan as an available feature. See AGENTS.md and CHANGELOG Appendix A6.
+
 ## 中文安装指南
 
 发布边界：模板 `voices/silverwalf_voice.wav` 已获准推送；模型、实际测试录音录像和本机 `brainstorming_projectPLAN/` 架构目录不提交、不推送。架构目录只在本机维护，克隆 GitHub 仓库不会取得该目录。
@@ -216,6 +218,8 @@ M0 已根据真实模型/设备验证与 bo s s 明确确认标记通过，30 �
 
 M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo s s 真机验收，反馈为「这次完全正常」。专项回归 57 项通过；这不增加未测的长测时长或循环次数。M2b 已接入并行 VAD/Whisper 与 Gateway 明确系统任务，见第 12 节；原生结果播报已接入，ChromaDB 和 OpenClaw 仍待接入。Qwen 继续使用 LM Studio 127.0.0.1:12345；基础听看说无需加载 Qwen 或启动云端。
 
+**末期规划（2026-10-11 已确认，尚未实现）**：现有核心迁移完成后再落实待办清单、当前活动记忆、进度同步与主动提醒；可选外设不作为前置条件。默认 45 分钟静默巡检可调整，明确提醒时间独立调度；MiniCPM 结构化事件通道、本地持久化和提醒调度均须后续实现与验证。当前安装器不提供该功能，本次文档更新不新增依赖、模型下载、后端编译或定时任务配置；无需因本规划重装或重编译。详见 AGENTS.md 与 CHANGELOG 附 A6。
+
 ### 9 M1 生产入口
 
 在独立 Python 3.11 环境打开 Gateway GUI，可直接在界面中启动后端：
@@ -307,7 +311,7 @@ python3.11 new_computer_download/setup_new_computer.py --only gateway --skip-tra
 .cache/m0/venv/bin/python new_computer_download/prepare_transcription.py --download-models --self-test
 ```
 
-新机器可指定仓库外目录，GUI 参数中填写同一目录，或设置 JAC_WHISPER_MODEL_DIR。默认 GUI 已启用“本地转写与系统任务”；缺少/损坏模型明确拒绝开始采集，可先关闭该项运行基础听看说。LM Studio 要按第 11 节加载精确 Qwen，默认本机 12345；大脑不可用时任务明确失败，感知继续运行。运行中设置锁定，下次启动生效。
+新机器可指定仓库外目录，GUI 参数中填写同一目录，或设置 JAC_WHISPER_MODEL_DIR。默认 GUI 已启用“本地转写与查询任务”；缺少/损坏模型明确拒绝开始采集，可先关闭该项运行基础听看说。LM Studio 要按第 11 节加载精确 Qwen，默认本机 12345；大脑不可用时任务明确失败，感知继续运行。运行中设置锁定，下次启动生效。
 
 启动 GUI：
 
@@ -329,7 +333,7 @@ GUI 内先启动后端再启动语音，戴耳机。第一轮使用明确短句�
 
 原生结果播报只排一个短句，等待助手聆听、用户静音和播放空闲；等待 20 秒或已发 30 秒超时、会话剩余不足 15 秒时跳过，文字报告保留。任务 PCM 仍为 24k float32，复用原播放流及同一参考音；停止/重连取消剩余任务音频。GUI“结果音频已接收”确认字面文本及音频传输，不等于人工听感通过。
 
-2026-10-08 电池抢答修复只修改客户端，不需要再次编译后端：关闭并重新打开 GUI。启用“本地转写与系统任务”，戴耳机，等正在播放的语音结束后说“查一下电池电量”。界面应先显示确认的用户原话，再显示“大脑 · 工具已实际查询”、`get_system_info`、查询时间及真实百分比，随后生成报告并播报证据。只出现 J.A.C. 自称“正在查询”或一个数字不能证明工具已调用。
+2026-10-08 电池抢答修复只修改客户端，不需要再次编译后端：关闭并重新打开 GUI。启用“本地转写与查询任务”，戴耳机，等正在播放的语音结束后说“查一下电池电量”。界面应先显示确认的用户原话，再显示“大脑 · 工具已实际查询”、`get_system_info`、查询时间及真实百分比，随后生成报告并播报证据。只出现 J.A.C. 自称“正在查询”或一个数字不能证明工具已调用。
 
 普通回复在 VAD/Whisper 判定前有界暂存，系统查询丢弃模型抢答；普通聊天判定后恢复，因此回复会增加转写等待。识别成其他电池说法、播放重叠或识别失败会显示“未执行查询”，请按界面原话/原因复验，程序不会自动把同音错字改成工具指令。转写异常时感知上行保持，未核验播报暂停，请停止后重启。已播放的设备块无法收回。工具原始证据和调用参数/时间同时保存在报告，可点击“打开最新报告”核对。
 
@@ -352,3 +356,40 @@ Windows 使用 .cache\m0\venv\Scripts\python.exe 替换解释器；CPU 子进程
 本机安装器已实跑通过：依赖/主进程隔离检查、四项资源 SHA256 与 CPU 就绪自检。真实固定后端 60 秒合成文件联调交付唯一系统报告，设备未打开；这不代表真机识别质量或长时性能已验收。
 
 VAD 在线程以 30ms 判定，至少 300ms 有声和 600ms 句末静音；12 秒长句不会截成多个指令。低置信度、播放期间讲话、过期结果、否定/转述或未支持的复合任务不执行；忙碌时不排队旧任务。停止/重连会取消待完成任务，请会话恢复后重新说；旁路积压/异常提示重启，持续上行不会靠丢弃用户语音追赶。
+
+
+### 13 通用联网搜索与独立验收
+
+本轮复用既有 `httpx==0.28.1` 和标准库，没有新增依赖、模型、密钥或后端编译步骤；安装器离线导入自检新增 WebSearchClient 与 verify_web_search。仅重开 GUI 即可加载代码。LM Studio 继续加载第 11 节的精确 Qwen，Whisper 按第 12 节准备。
+
+GUI 启动后启用“本地转写与查询任务”，戴耳机，等助手播放结束，再说“上网搜索上海明天的天气”或“联网查询 Python asyncio 官方文档”。应看到确认的用户原话、真实 search_web 查询、来源链接和正文读取状态，再生成报告和原生结果音频。原生播报技术完成确认不替代人工听感。天气请指定城市/日期；其他信息请使用“上网搜索…”或“联网查询…”的明确说法。
+
+独立网络检查在项目根目录执行，不启动设备或 Qwen：
+
+```bash
+.cache/m0/venv/bin/python verify_web_search.py --query "上海明天天气" --search-only
+```
+
+真实 Qwen + 搜索 + 文件闭环另执行：
+
+```bash
+.cache/m0/venv/bin/python verify_web_search.py --query "上海明天天气"
+```
+
+退出码 0 与 output/m2/search/verification.json 的 passed=true 表示搜索、至少一页正文、相关来源摘录和对应阶段文件交付通过（search-only 不校验回答）；不代表已核实所有来源的事实真实性/时效/相关性，也不代表真机听感。来源未读、查询无结果或网络验证失败明确显示失败，Ctrl+C 取消在途网络/大脑与报告发布。生产联网报告保存在 output/m2/qwen/，仅用户点“打开最新报告”才打开文件。
+
+默认国内必应 RSS、失败再试固定全球入口，无密钥。入口并非保证长期稳定的公开 API；国内网络或来源网站限制会造成失败，不自动绕验证码，不用过期缓存冒充实时结果。来源只读静态 HTML/文本，不支持需要登录/JavaScript 才能显示的内容或 PDF。禁止私网/本机/非标准端口，IPv4 DNS 固定公网 IP 并保持证书验证，环境代理不继承；DNS 被代理改为私网假 IP 时会拒绝访问。最多 5 条链接、3 页正文、25 秒网络总时限、单页 6 秒、512KiB 字节及 3500 字正文上限。
+
+仅本句查询关键词和来源页面 GET 出网，不发送历史对话、原始音视频或参考音。固定规则分隔天气词/文档词，原话与实际搜索词均记录；目标天气日期与英文具体词先筛选候选。Qwen 只选择已读段落编号，程序逐字核对再交付，首版不接受自由生成的联网事实/链接/发布时间，也不提供自由改写/翻译。程序保留原文不等于确认网页说法真实或相关；实时问题仍需核对来源的城市、日期、发布时间。报告与合成验证产物由既有 output/ 忽略规则排除。
+
+### 14 天气查询纠偏与视觉问句复测（2026-10-09）
+
+只需关闭并重新打开 GUI；无新增依赖、模型下载或后端编译。安装器自检同步核对完整天气指令解析。可说“帮我上网查询明天海口的天气”或“让我上网查一下明天海口的天气”，GUI 的实际搜索词应为“海口天气”，正文仍筛选用户要求的日期。仅说“帮我上网查寻明天的天气”会追问城市；请按提示说完整地点和日期，例如“海口明天的天气”。“插一下天气”不执行搜索。来源失配不会读取无关正文，未取得答案时明确显示“未取得答案，查询记录已保存”，不播报查询已完成。
+
+独立真实验证（不打开设备）：
+
+```bash
+.cache/m0/venv/bin/python verify_web_search.py --query "明天海口的天气"
+```
+
+视觉提示明确支持“你看到了什么”，旧句转写不能在新句旁发出错误提示。若仍显示“语音 · 未确认”，记录新的语句编号与具体原因；质量门槛保持原值，不做同音修正或失败放行。短视觉候选质量失败时最多两次后台复核，原 PCM 完整保留、无示例提示、仍需两次原门槛合格且一致；系统/联网主题不使用恢复。真实带噪短句复核恢复，有内容的合成画面短句返回正确描述与原生音频；灰色空帧对照曾沉默。文件验证不代表用户实际那次声学原因或真机验收，请重开 GUI 复测“你看到了什么”。
