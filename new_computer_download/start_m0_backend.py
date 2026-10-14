@@ -24,7 +24,15 @@ sys.path.insert(0, str(ROOT))
 
 def check_checkout(path: Path, expected: str, patch: Path | None = None) -> None:
     """验证 commit，且仅接受 lock 指定的已审阅完整引擎补丁。"""
-    result = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
+    try:
+        result = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True,
+                                capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or "无法读取 Git HEAD").strip()[:400]
+        raise ValueError(
+            f"后端源码目录缺失或 Git 仓库不完整: {path}。请恢复锁定版本并在「后端路径设置」重新选择；"
+            f"长期运行请勿使用 /tmp 等系统临时目录。Git: {detail}"
+        ) from error
     if result.stdout.strip() != expected:
         raise ValueError(f"仓库 commit 不符: {path}")
     dirty = subprocess.run(["git", "-C", str(path), "diff", "HEAD", "--no-ext-diff"], check=True, capture_output=True, text=True)
@@ -211,7 +219,8 @@ def main() -> int:
         print("M0 后端已停止")
         return 0
     except (OSError, ValueError, RuntimeError, TimeoutError, subprocess.CalledProcessError, httpx.HTTPError) as error:
-        print(f"M0 未通过: {error}")
+        report_event(args, 'error', str(error))
+        print(f"后端启动检查未通过: {error}")
         return 1
 
 

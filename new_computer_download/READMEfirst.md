@@ -8,7 +8,7 @@ Option B was approved on 2026-10-06. M0 has been accepted by the user with the 3
 
 M0 requires Python 3.11, CMake, Xcode Command Line Tools, an external GGUF model directory and the two repositories pinned in [backend.lock.json](../backend.lock.json). It uses C++ Metal for inference and a Python Gateway / Worker for orchestration. No NVIDIA machine or speaker-embedding extraction is needed.
 
-The Chinese section below contains the same commands, one per block. Run environment commands from the J.A.C. root. Clone both backend repositories outside J.A.C.; replace placeholder paths with absolute paths.
+The Chinese section below contains the same commands, one per block. Run environment commands from the J.A.C. root. Use persistent backend/model directories outside J.A.C.; replace placeholder paths with absolute paths. Do not install into `/tmp` or another OS temporary directory: cleanup can remove Git metadata, binaries and voice frontend resources while leaving empty folders and symlinks.
 
 Create `.cache/m0/venv` and install `requirements-m0.txt`. Use `start_m0_backend.py --preflight --verify-sha` before launching. The launcher binds all ports to loopback, disables upstream session recording, rejects occupied ports and terminates only its own children on Ctrl+C.
 
@@ -18,7 +18,7 @@ The file probe proves protocol and native-audio transport only. The pinned Gatew
 
 The 40-second live run, ten rapid lifecycle cycles and two 225-second live sessions passed. The user confirmed satisfactory interaction and accepted M0 without the remaining soak. Original reports retain `soak_30min_verified=false` because that duration was not measured; it no longer blocks migration.
 
-Run `main.py --gateway --gui`, click Start Backend and wait for readiness, then start voice. Alternatively, start the pinned backend separately and run `main.py --gateway --gui` in the Python 3.11 environment. GUI device permission is enabled by default per the user request; capture begins only after clicking Start Voice. Use headphones. Console/probe device runs still require --consent-devices. `main.py --gateway --consent-devices` runs the console client. The Gateway GUI imports no torch/PyAudio/Whisper/YOLO. All runtime entries use Gateway; --gateway remains a compatible optional flag.
+Run `main.py` without arguments (or `main.py --gateway --gui`), click Start Backend and wait for readiness, then start voice. The main script selects the installed project Python 3.11 environment before dependency imports; keep an explicit project interpreter for F5 debugging. Alternatively, start the pinned backend separately and run `main.py --gateway --gui` in the Python 3.11 environment. GUI device permission is enabled by default per the user request; capture begins only after clicking Start Voice. Use headphones. Console/probe device runs still require --consent-devices. `main.py --gateway --consent-devices` runs the console client. The Gateway GUI imports no torch/PyAudio/Whisper/YOLO. All runtime entries use Gateway; --gateway remains a compatible optional flag.
 
 `verify_soak_duplex.py --consent-devices` measures 1,800 input seconds across eight 225-second video sessions while keeping the same backend running. It samples local health endpoints and process RSS, and saves aggregate/per-session counts even on failure. Devices restart between sessions; cross-session context restoration is not tested.
 
@@ -78,7 +78,7 @@ python3.11 -m venv .cache/m0/venv
 
 ### 3 锁定并编译引擎
 
-在项目外的专用后端目录执行。不要覆盖已有用户后端。将路径替换为实际绝对路径。
+在项目外的长期专用后端目录执行，例如仓库旁的 `jac_gateway_backend/`。不要使用 `/tmp`、`/private/tmp` 或系统临时目录：清理后可能只剩空文件夹/软链接，Git 元数据、二进制和 ONNX 已丢失。不要覆盖已有用户后端。将路径替换为实际绝对路径。
 
 ```bash
 git clone https://github.com/tc-mb/llama.cpp-omni.git /absolute/backend/llama.cpp-omni
@@ -246,9 +246,11 @@ M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo 
 
 本机已在忽略的 `.vscode/launch.json` 配置「J.A.C. · Gateway GUI」：明确指定项目解释器、`main.py`、`--gateway --gui`、工作目录与集成终端。在「运行和调试」中选择该配置，按 F5 启动；GUI 默认设备许可，戴好耳机并点击「启动语音」后开始采集。固定后端可通过 GUI 的「启动后端」按钮启动，也可独立运行。
 
-新机器的 `.vscode/` 不随 Git 分发，可按上述解释器选择后使用第 9 节的 GUI 命令；如自行创建调试配置，类型用 `debugpy`，显式设置 `python` 为项目环境并添加 `--gui`。编辑器右上角「运行 Python 文件」不会自动使用 launch.json 的参数，直接运行不带 `--gui` 的 main.py 会进入终端模式。系统 Python 报缺少 numpy 时，先切换解释器，无需在系统环境重复安装依赖。
+新机器的 `.vscode/` 不随 Git 分发，完成第 2 节安装后即可右上角「运行 Python 文件」直接运行 `main.py`：无参数默认 GUI，脚本在导入 numpy/Qt 前优先切换到已安装的项目 Python 3.11 环境，无需在系统环境重复安装依赖。项目环境损坏或错误版本会明确报错，不自动下载或重装；未安装时先完成第 2 节。F5 调试仍按上述方式选定项目解释器，避免跨解释器重启丢失调试连接；调试配置类型为 `debugpy`，`--gui` 可保留。终端模式仍用 `--consent-devices`，文件模式仍用 `--input-file`；`python -m src.omni` 保留显式参数的模块入口。
 
 ### 故障排查
+
+- `git rev-parse HEAD` 返回 128 /「后端源码目录缺失或 Git 仓库不完整」：核对「后端路径设置」中的 Demo/引擎目录。目录存在不代表源码完整；如果是临时目录，按第 3–5 节在长期目录重新克隆锁定 commit、应用完整组合补丁并编译，补齐音色前端；保留并核验现有大模型，不跳过 Git/SHA 校验。第 6 节预检通过后，再保存 GUI 路径并重开窗口。此错误属于本机安装损坏，不撤销已有 M0 用户验收。
 
 - 停止后画面两侧残留、第二次启动报 RuntimeError / session_failed：2026-10-07 已完善整控件清屏与关闭握手，bo s s 已确认真实 GUI 恢复正常。旧客户端会过早断链；固定版本上游还会在 C++ 清理完成前报告关闭。手动停止现先停采集、保留 8 秒接收尾窗，等待关闭确认与连接关闭，再冷却 1 秒；GUI 显示「停止中…」并禁用启动，约 9 秒后恢复，超时则提供「重试停止」。退出窗口同样等待清理，不强制结束进程。旧版本升级时须先重启已受影响的后端，再按第 9 节重开 GUI；无需重装依赖或模型。该收尾窗口是固定版本兼容处理，不代表上游竞争或长期稳定性已验证。
 - 模型 SHA256 不符：保留原文件，检查是否有匹配的备份或重新下载固定 revision。禁止仅改文件名绕过校验。

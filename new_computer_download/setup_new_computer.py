@@ -541,6 +541,7 @@ def step_m0(args):
     verification = run_cmd(
         [m0_python, "-c", "import sys; from src.omni import GatewayClient; "
          "from PySide6.QtWidgets import QApplication; import gui, main; "
+         "main.ensure_runtime(); "
          "from src.omni.backend_control import BackendController; import httpx, fastapi, uvicorn; "
          "import onnxruntime, kaldi_native_fbank; from src.omni.voice_conditioning import prepare_voice; "
          "from src.brain.lm_studio import LMStudioClient; from src.brain.task_runner import BrainTaskRunner; "

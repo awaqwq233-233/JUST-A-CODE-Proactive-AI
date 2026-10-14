@@ -95,6 +95,17 @@ def test_text_log_cannot_mark_backend_ready(manager):
     assert manager.state == 'ready'
 
 
+def test_startup_error_survives_process_exit_and_clears_on_retry(manager):
+    """源码校验的可操作错误在进程退出后保留，重新启动清除旧错误。"""
+    detail = '后端源码目录缺失或 Git 仓库不完整，请重新选择长期目录'
+    manager._consume_line(json.dumps({'event': 'jac.backend', 'state': 'error', 'detail': detail}))
+    manager._finished(1, QProcess.NormalExit)
+    assert manager.state == 'error' and manager.detail == detail
+    manager.start(manager.test_profile)
+    assert manager._last_error == ''
+    wait_for(lambda: manager.state == 'ready')
+
+
 def test_stop_during_start_ignores_late_ready_event(manager):
     """取消启动后迟到的 ready 不能把停止中的后端重新标为就绪。"""
     manager.start(manager.test_profile)

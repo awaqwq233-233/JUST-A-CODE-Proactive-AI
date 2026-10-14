@@ -9,9 +9,15 @@ import main
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("args", [[], ["--gui"], ["--gateway", "--gui"]])
-def test_main_routes_only_to_gateway(monkeypatch, args):
-    """旧兼容参数移除后，其余参数原样传给唯一 Gateway 入口。"""
+@pytest.mark.parametrize("args, expected", [
+    ([], ["--gui"]), (["--gateway"], ["--gui"]), (["--gui"], ["--gui"]),
+    (["--gateway", "--gui"], ["--gui"]),
+    (["--gateway", "--consent-devices"], ["--consent-devices"]),
+    (["--input-file", "fixture.wav"], ["--input-file", "fixture.wav"]),
+    (["--help"], ["--help"]),
+])
+def test_main_routes_only_to_gateway(monkeypatch, args, expected):
+    """直接运行打开 GUI，显式终端、文件和帮助参数保持原样。"""
     from src.omni import gateway_cli
     received = []
     def capture(argv):
@@ -20,7 +26,52 @@ def test_main_routes_only_to_gateway(monkeypatch, args):
         return 7
     monkeypatch.setattr(gateway_cli, "main", capture)
     assert main.main(args) == 7
-    assert received == [[arg for arg in args if arg != "--gateway"]]
+    assert received == [expected]
+
+
+def test_bootstrap_reuses_project_environment_before_imports(tmp_path, monkeypatch):
+    """错误解释器切换时保留所有实参，并验证环境身份防止循环重启。"""
+    from types import SimpleNamespace
+    monkeypatch.setattr(main, "ROOT", tmp_path)
+    environment = tmp_path / ".cache/m0/venv"
+    python = environment / ("Scripts/python.exe" if main.os.name == "nt" else "bin/python")
+    python.parent.mkdir(parents=True)
+    python.touch()
+    monkeypatch.setattr(main.sys, "argv", ["main.py", "--gui", "--no-transcription"])
+    monkeypatch.setattr(main.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        stdout=f"(3, 11)\n{environment}\n"))
+    calls = []
+    monkeypatch.setattr(main.os, "execv", lambda *args: calls.append(args))
+    main.ensure_runtime()
+    assert calls == [(str(python), [str(python), str(tmp_path / "main.py"), "--gui", "--no-transcription"])]
+    monkeypatch.setattr(main.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        stdout=f"(3, 13)\n{environment}\n"))
+    with pytest.raises(RuntimeError, match="不是有效的 Python 3.11"):
+        main.ensure_runtime()
+    assert len(calls) == 1
+
+
+def test_bootstrap_does_not_restart_selected_environment(tmp_path, monkeypatch):
+    """正确项目环境不重启，保留 F5 的调试器连接。"""
+    monkeypatch.setattr(main, "ROOT", tmp_path)
+    monkeypatch.setattr(main.sys, "prefix", str(tmp_path / ".cache/m0/venv"))
+    monkeypatch.setattr(main.sys, "version_info", (3, 11, 0))
+
+    def forbidden(*args, **kwargs):
+        """当前环境正确时不应执行外部进程。"""
+        pytest.fail("重复启动 Python")
+
+    monkeypatch.setattr(main.subprocess, "run", forbidden)
+    monkeypatch.setattr(main.os, "execv", forbidden)
+    main.ensure_runtime()
+
+
+def test_bootstrap_missing_environment_fails_before_dependency_import(tmp_path, monkeypatch):
+    """旧 Python 且项目未安装时提供安装提示，而非 numpy 导入错误。"""
+    monkeypatch.setattr(main, "ROOT", tmp_path)
+    monkeypatch.setattr(main.sys, "version_info", (3, 13, 0))
+    with pytest.raises(RuntimeError, match="未找到项目 Python 3.11"):
+        main.ensure_runtime()
 
 
 @pytest.mark.parametrize("entry", [["main.py"], ["-m", "src.omni"]])

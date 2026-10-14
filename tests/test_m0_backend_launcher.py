@@ -40,6 +40,18 @@ def test_checkout_accepts_only_expected_commit_and_exact_patch(tmp_path, monkeyp
         launcher.check_checkout(tmp_path, "pinned", patch)
 
 
+@pytest.mark.parametrize("missing", [False, True])
+def test_checkout_missing_git_reports_recovery_path(tmp_path, missing):
+    """临时目录只剩空壳或已删除时给出具体恢复路径，不泄露裸 exit 128。"""
+    directory = tmp_path / "MiniCPM-o-Demo"
+    if not missing:
+        (directory / ".git").mkdir(parents=True)
+    with pytest.raises(ValueError, match="Git 仓库不完整") as error:
+        launcher.check_checkout(directory, "pinned")
+    assert str(directory) in str(error.value)
+    assert "后端路径设置" in str(error.value) and "临时目录" in str(error.value)
+
+
 def test_models_are_external_complete_gguf_and_hash_verified(tmp_path, monkeypatch):
     """模型在仓库外且文件头、SHA256 全部正确才接受。"""
     monkeypatch.setattr(launcher, "ROOT", tmp_path / "project")

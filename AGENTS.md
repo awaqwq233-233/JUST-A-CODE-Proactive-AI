@@ -166,7 +166,8 @@ bo s s 已确认：在现有核心迁移完成后，最后落实本模块；智�
 - **联网纠偏（2026-10-09）**：完整解析“查寻”“让我上网查一下”；地区/日期无关顺序，天气搜索固定以地区开头（明天海口的天气 → 海口天气），日期仍按用户原话筛选。缺少城市使用程序固定原生追问，标为 needs_input，工具/网络/报告均为零；不纠正“插”等同音误识别。天气来源标题/摘要先核对地区和天气主题，失配尝试固定全球入口，不读取无关小说/字典。空摘录为 no_answer，保留查询记录，不记作任务成功或播报查询完成。GUI 显示实际搜索词和追问播报状态。
 - **视觉问句与转写隔离（2026-10-09）**：提示明确支持“你看到了什么”；当前用户语句编号同时约束转写原话、拒绝提示与任务提交，迟到旧句不能污染新句。拒绝事件携带语句编号/原因，统计只保留原因计数，原质量门槛不变。质量拒绝的 ≤4 秒视觉候选可保留完整 PCM、分别补 300/600ms 前导静音复核；两次原阈值合格且同一中性视觉问句才恢复，系统/联网主题、长句、重叠、过期/新句不适用，无示例提示/阈值放宽。真实带噪短句初次失败后恢复；有内容的合成画面 65 秒文件验证返回正确蓝色界面描述与 63360 样本/2.64 秒原生音频。此前灰帧长/短对照均沉默；用户原 PCM 未保存，合成验证不证明当次真机声学原因或代替用户验收。
 - **M2a 独立 Qwen**：`verify_toolcall.py` 使用同一 Python 3.11 环境与已有 httpx，只开放 `get_system_info`；`--task` 是独立终端显式任务，不是生产语音入口。`src/brain/lm_studio.py` 核对 `/api/v1/models` 的精确已加载实例及能力，要求 LM Studio 0.4.8+，请求使用 `reasoning_effort="none"`，不移除参数后默默重试、不恢复思考尾段、不自动加载或回退其他模型。`BrainTaskRunner` 将真实证据和最终回答原子发布到忽略的 `output/m2/qwen/`；错误/取消不发布未完成文件。单次 HTTP 90 秒、整个任务 120 秒、最多 4 轮；等待中每 100ms 检查取消，各工具执行前再检查。已开始的只读系统查询有自身超时，不能声称任意工具可抢占终止。普通聊天 SSE 保留，agent 最终回答不再额外生成一次。三项独立真实只读验证通过；M2b 合成文件验证已与 MiniCPM/CPU Whisper 同跑并交付系统报告，仅代表这段测量，不推定真机或长时性能。M2b 已在语音旁路接入来源校验与 GUI 只读路由，并接入原生结果播报；完整报告仍保留文字和工具证据。
-- **M1 Gateway 入口**：`main.py --gateway`（终端）、`main.py --gateway --gui`（GUI），使用 Python 3.11 独立环境；GUI 可异步调用固定启动器启动/回收自己拥有的后端；外部已运行服务只探测与复用，不接管。收到启动器就绪事件后才开放语音，停止后端/关闭窗口先等待音视频会话清理，再回收所属后端。GUI 仅使用 Gateway，不依赖旧 torch/PyAudio/Voicebox/YOLO。`omni_backend` 只接受 `gateway`；`legacy` 会明确报错。`main.py --gui` 与 `python -m src.omni --gui` 同样进入 Gateway，`--gateway` 保留兼容。
+- **M1 Gateway 入口**：`main.py --gateway --consent-devices`（终端）、`main.py` 或 `main.py --gateway --gui`（GUI），使用 Python 3.11 独立环境；GUI 可异步调用固定启动器启动/回收自己拥有的后端；外部已运行服务只探测与复用，不接管。收到启动器就绪事件后才开放语音，停止后端/关闭窗口先等待音视频会话清理，再回收所属后端。GUI 仅使用 Gateway，不依赖旧 torch/PyAudio/Voicebox/YOLO。`omni_backend` 只接受 `gateway`；`legacy` 会明确报错。`main.py --gui` 与 `python -m src.omni --gui` 同样进入 Gateway，`--gateway` 保留兼容。
+- **启动修复（2026-10-14）**：无参数直接运行 `main.py` 默认打开 GUI，脚本启动时在第三方导入前优先切换到已安装的 `.cache/m0/venv` Python 3.11；显式终端/文件参数保持不变，F5 应仍指定项目解释器以保留调试连接。后端源码、编译产物与音色前端不得长期放在系统临时目录。本机原 `/private/tmp/jac-m0.QL0OXs` 已缺失普通文件；恢复采用仓库旁的 `jac_gateway_backend/` 长期目录，原模型保留并通过绝对链接复用，仍须精确 commit、完整补丁及 SHA256 校验。启动器将缺失/损坏 Git 仓库转为路径与恢复提示，通过错误事件保留在 GUI，避免将本地安装损坏误称 M0 验收未通过。目标架构和锁文件不变。
 - **GUI 后端控制**：`src/omni/backend_control.py` 使用 QProcess 与启动器 `--events-json` 事件管理固定三进程，健康检查在后台且只访问本机；启动/停止/取消/异常均反馈至 GUI，窗口退出等待清理。设置不改变固定版本、端口、模型清单和构建参数。
 - **M0 文件**：`backend.lock.json`、`verify_duplex.py`、`new_computer_download/start_m0_backend.py`、`new_computer_download/requirements-m0.txt`。后端源码、模型和测试运行产物不提交到 Git。
 - **M0 已通过（用户验收）**：文件协议、40 秒真机、10 次启停和后续两段各 225 秒通过；累计上行 450 秒、P95 679/891ms、原生音频收播合计 176.2 秒，异常为零。bo s s 明确认可短测效果并免做 30 分钟长测，不再以该项阻塞迁移；原始报告保留 `soak_30min_verified=false`，不伪造未执行的测量。
@@ -183,7 +184,7 @@ bo s s 已确认：在现有核心迁移完成后，最后落实本模块；智�
 
 ## 重要文件与目录
 
-- `main.py`：统一 Gateway CLI/GUI 入口；`--gateway` 为兼容参数，不再分流至旧实现。
+- `main.py`：统一 Gateway CLI/GUI 入口；无参数默认 GUI，脚本优先复用项目 3.11 环境；`--gateway` 为兼容参数，不再分流至旧实现。
 - `src/capture/camera.py`：未迁移的旧通用摄像头组件，无生产入口；Gateway 使用 `src/omni/media.py` 独立线程 640×480。
 - `src/analysis/detector.py`：YOLOv8 检测器封装。
 - `src/audio/recorder.py`：VAD 麦克风录音（旧：PyAudio + WebRTC VAD；新架构改 SoundDevice）。
