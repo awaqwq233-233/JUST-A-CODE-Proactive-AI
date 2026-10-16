@@ -1,4 +1,4 @@
-"""M2 独立只读大脑任务：真实工具证据与中文 Markdown 文件交付。"""
+"""M2 大脑任务：按本句锁定查询或本地动作，交付真实证据和中文文件。"""
 
 import copy
 import json
@@ -17,6 +17,8 @@ from .lm_studio import BrainError, check_cancelled
 from src.tools.executor import execute_tool
 from src.tools.registry import get_tool_schemas
 from src.tools.web_search import WebSearchClient
+from src.tools.local_intents import local_instruction
+from src.tools.local_actions import LocalActionExecutor, local_answer
 
 ROOT = Path(__file__).resolve().parents[2]
 NO_WEB_ANSWER = "bo s s，本次搜索未取得足以回答问题的来源正文，暂时无法核实。请换个关键词或稍后重试；查询记录和来源链接已保存。"
@@ -116,19 +118,26 @@ def atomic_write(path, content, should_stop=None, publication_lock=None):
 
 
 class BrainTaskRunner:
-    """按任务提供系统查询或联网检索工具；不暴露电脑操作和任意命令。"""
+    """按任务提供查询或单个受限本地动作；不暴露任意命令。"""
 
-    def __init__(self, brain=None, output_dir=None, search_client=None):
+    def __init__(self, brain=None, output_dir=None, search_client=None, local_executor=None):
         """绑定大脑与本机输出目录，默认目录已被 Git 忽略。"""
         self.brain = brain if brain is not None else LocalBrain(backend="lm_studio")
         self.output_dir = Path(output_dir or ROOT / "output/m2/qwen").resolve()
         self.search_client = search_client
+        self.local_executor = local_executor or LocalActionExecutor()
 
-    def run(self, task, should_stop=None, info_types=None, publication_lock=None, on_tool_result=None, web_query=None):
-        """执行显式文本任务；错误、取消或无真实工具证据均不发布文件。"""
+    def run(self, task, should_stop=None, info_types=None, publication_lock=None, on_tool_result=None, web_query=None,
+            local_action=None, on_action_dispatched=None):
+        """执行显式文本任务；取消或无证据不发布，本地工具失败可交付失败记录。"""
         if not isinstance(task, str) or not task.strip() or len(task) > 4000:
             raise ValueError("任务文字须为 1–4000 字")
         check_cancelled(should_stop)
+        if local_action is not None:
+            if info_types is not None or web_query is not None:
+                raise ValueError("本地动作不能与查询权限混用")
+            return self._run_local(task, tuple(local_action), should_stop, publication_lock,
+                                   on_tool_result, on_action_dispatched)
         started, task_id, trace = time.monotonic(), uuid4().hex, []
         tool_name = "search_web" if web_query is not None else "get_system_info"
         schema = copy.deepcopy(next(t for t in get_tool_schemas() if t["function"]["name"] == tool_name))
@@ -213,3 +222,54 @@ class BrainTaskRunner:
         path = self.output_dir / f"{'web-search' if web_query is not None else 'system-status'}-{task_id}.md"
         atomic_write(path, content, cancelled, publication_lock)
         return TaskResult(task_id, path, answer, trace, time.monotonic() - started, status)
+
+    def _run_local(self, task, action, should_stop, publication_lock, on_tool_result, on_action_dispatched):
+        """Qwen 只提出一个精确调用；执行后直接交付证据，不再让模型改写执行状态。"""
+        if local_instruction(task) != action or len(action) != 3 or action[0] != "local":
+            raise BrainError("本地动作与用户完整指令不一致")
+        started, task_id = time.monotonic(), uuid4().hex
+        name, arguments = action[1], json.loads(action[2])
+        schema = copy.deepcopy(next(t for t in get_tool_schemas() if t["function"]["name"] == name))
+        schema["function"]["parameters"]["properties"] = {
+            key: {"type": "integer" if type(value) is int else "string", "enum": [value]}
+            for key, value in arguments.items()}
+        schema["function"]["parameters"].update(required=list(arguments), additionalProperties=False)
+
+        def cancelled():
+            """模型等待与执行共用总时限，并继承会话取消。"""
+            check_cancelled(should_stop)
+            return time.monotonic() - started >= 120
+
+        prompt = ("你是 J.A.C. 本地大脑。只调用一次提供的工具，所有参数必须逐字使用 schema 中的唯一枚举值。"
+                  "不要补充参数，不要执行多个动作，不要仅用文字声称完成。程序会核验实际结果。")
+        reply = self.brain.think_with_tools(
+            [{"role": "system", "content": prompt}, {"role": "user", "content": task}],
+            [schema], temperature=0, max_tokens=512, should_stop=cancelled)
+        check_cancelled(cancelled)
+        calls = reply.tool_calls
+        if (len(calls) != 1 or calls[0].get("name") != name
+                or calls[0].get("arguments") != arguments
+                or any(type(calls[0]["arguments"][key]) is not type(value) for key, value in arguments.items())):
+            raise BrainError("本地任务只允许一次与用户指令完全一致的工具调用")
+
+        def dispatched():
+            """启动器已接收请求后立即通知，不能把取消解释为撤回已打开的应用。"""
+            if on_action_dispatched is not None:
+                on_action_dispatched(dict(name=name, arguments=copy.deepcopy(arguments)))
+
+        data = self.local_executor.execute(name, copy.deepcopy(arguments), cancelled, publication_lock, dispatched)
+        check_cancelled(cancelled)
+        answer = local_answer(name, data)
+        entry = dict(name=name, arguments=arguments, data=data, output=json.dumps(data, ensure_ascii=False, indent=2),
+                     queried_at=datetime.now().astimezone().isoformat(timespec="seconds"))
+        if on_tool_result is not None:
+            on_tool_result(copy.deepcopy(entry))
+        # 原话、文件名和路径仅作文本证据，不能在报告中嵌入链接或媒体。
+        evidence = json.dumps(dict(request=task, tool=entry), ensure_ascii=False, indent=2)
+        fence = "`" * max(3, max((len(run) + 1 for run in re.findall(r"`+", evidence)), default=3))
+        content = (f"# J.A.C. 本地任务记录\n\n任务编号：{task_id}\n\n状态：{data['status']}\n\n"
+                   f"{answer}\n\n## 实际执行证据\n\n{fence}json\n{evidence}\n{fence}\n\n"
+                   "启动请求提交不代表页面已加载；应用运行不代表窗口已在前台。取消不撤回已经交给系统的动作。\n")
+        path = self.output_dir / f"local-action-{task_id}.md"
+        atomic_write(path, content, cancelled, publication_lock)
+        return TaskResult(task_id, path, answer, [entry], time.monotonic() - started, data["status"])

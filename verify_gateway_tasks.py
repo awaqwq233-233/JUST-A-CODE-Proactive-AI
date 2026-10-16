@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""M2b 固定 Gateway 文件探针：真实旁路 VAD/Whisper/Qwen，不打开设备。"""
+"""固定 Gateway 文件探针：真实 VAD/Whisper/Qwen，无采集设备；本地指令会实际执行。"""
 
 import argparse
 import asyncio
@@ -29,12 +29,12 @@ class ProbeCallbacks(GatewayCallbacks):
         self.counts["user_transcripts"] += 1
         fields = route_instruction(text)
         if fields:
-            self.fields.append(["web"] if fields[0] == "web" else list(fields))
+            self.fields.append([fields[0], fields[1]] if fields[0] == "local" else ["web"] if fields[0] == "web" else list(fields))
 
     def on_task_event(self, state, detail):
         """只记录真实任务状态，完成时核对报告存在。"""
         self.counts["task_" + state] += 1
-        if state == "completed":
+        if state in {"completed", "submitted"}:
             path = Path(detail["path"])
             if not path.is_file():
                 raise RuntimeError("任务完成但报告不存在")
@@ -73,10 +73,11 @@ def main(argv=None):
         asyncio.run(client.run(max_sessions=1))
         report.update(stats=client.stats(), counts=dict(callbacks.counts),
                       routed_fields=callbacks.fields, files=callbacks.files)
-        if (callbacks.counts["task_completed"] != 1 or len(callbacks.files) != 1
+        if (callbacks.counts["task_completed"] + callbacks.counts["task_submitted"] != 1 or len(callbacks.files) != 1
                 or callbacks.counts["task_speech_completed"] != 1
                 or callbacks.counts["task_speech_failed"] or callbacks.counts["task_speech_skipped"]
-                or callbacks.counts["task_error"] or report["stats"].get("cleanup_failures")
+                or callbacks.counts["task_error"] or callbacks.counts["task_failed"] or callbacks.counts["task_partial"]
+                or report["stats"].get("cleanup_failures")
                 or (["web"] in callbacks.fields and callbacks.counts["web_answers"] != 1)):
             raise RuntimeError("未完成唯一真实任务、原生结果音频或清理失败")
         report["passed"] = True

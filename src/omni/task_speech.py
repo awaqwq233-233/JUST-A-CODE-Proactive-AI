@@ -10,6 +10,14 @@ import time
 def speech_summary(result, fields):
     """从已交付的工具证据生成短句，不让感知模型重新推理或编造数字。"""
     message = "系统状态查询已完成，报告已生成，请查看界面中的完整结果。"
+    if fields[0] == "local_input":
+        from src.tools.local_intents import SCOPE_PROMPT
+        return SCOPE_PROMPT
+    if fields[0] == "local":
+        from src.tools.local_actions import local_answer
+        if len(result.trace) != 1 or result.trace[0].get("name") != fields[1]:
+            raise ValueError("本地播报缺少对应工具证据")
+        return local_answer(fields[1], result.trace[0]["data"])
     if fields[0] == "weather_city":
         from src.brain.task_runner import WEATHER_CITY_PROMPT
         return WEATHER_CITY_PROMPT
@@ -82,7 +90,7 @@ class TaskSpeechQueue:
                 return
             self.seen.append(identifier)
             job = SpeechJob(identifier, generation, speech_summary(result, fields), self.clock() + 20)
-            if fields[0] == "weather_city":
+            if fields[0] in {"weather_city", "local_input"}:
                 job.purpose = "clarification"
             if self.pending or self.active:
                 self._notify("skipped", job, "speech_busy")

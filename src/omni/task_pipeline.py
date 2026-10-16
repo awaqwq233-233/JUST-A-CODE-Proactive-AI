@@ -1,4 +1,4 @@
-"""Gateway 音频旁路：有界 VAD、离线 Whisper、用户指令校验与只读 Qwen。"""
+"""Gateway 音频旁路：有界 VAD、离线 Whisper、用户指令校验与受限 Qwen 任务。"""
 
 from collections import Counter, deque
 from dataclasses import dataclass
@@ -13,6 +13,7 @@ import numpy as np
 
 from .transcription_worker import WhisperProcess, DEFAULT_MODEL_DIR
 from src.tools.search_query import web_instruction
+from src.tools.local_intents import local_instruction, is_local_request, SCOPE_PROMPT
 
 
 @dataclass
@@ -127,10 +128,15 @@ def is_online_request(text):
 
 
 def route_instruction(text):
-    """完整匹配显式系统或联网查询；不把助手输出、转述或否定当成指令。"""
+    """完整匹配显式系统、联网或本地动作；不执行助手输出、转述或否定。"""
+    local = local_instruction(text)
+    if local:
+        return local
     web = route_web_instruction(text)
     if web:
         return web
+    if is_local_request(text):
+        return None
     text = normalize_transcript(text)
     prefix = r"(?:(?:请你|请|帮我|麻烦你|麻烦|给我|现在|jac|贾维斯)[,，]?){0,3}"
     report = r"(?:并|然后)?(?:生成|写|保存)(?:一份|一个)?(?:中文)?(?:系统状态|电脑状态|系统)?报告"
@@ -337,7 +343,7 @@ class TaskPipeline:
         candidate = "".join(s.get("text", "") for s in segments)
         key = normalize_transcript(candidate).translate(str.maketrans({"麼": "么", "麽": "么", "見": "见"}))
         if (len(key) > 20 or not re.search(r"(?:看到|看见).*什么", key)
-                or is_system_request(candidate) or is_online_request(candidate)):
+                or is_system_request(candidate) or is_online_request(candidate) or is_local_request(candidate)):
             return None
         accepted, keys = [], []
         for length in (4800, 9600):
@@ -484,9 +490,11 @@ class TaskPipeline:
                     self._last_recognition_notice = float("-inf")
                     self.callbacks.on_user_transcript(text)
                     fields = route_instruction(text)
-                    self._response_decided(utterance, "block" if fields or is_system_request(text) or is_online_request(text) else "allow")
+                    self._response_decided(utterance, "block" if fields or is_system_request(text) or is_online_request(text) or is_local_request(text) else "allow")
                     if fields:
                         self.submit(utterance, text, fields)
+                    elif is_local_request(text):
+                        self._notify("rejected", {"code": "unsupported_local_request"})
                     elif is_system_request(text):
                         self._notify("rejected", {"code": "unsupported_system_request"})
                     elif is_online_request(text):
@@ -523,12 +531,13 @@ class TaskPipeline:
             try:
                 if not self.current(utterance.generation):
                     continue
-                if fields[0] == "weather_city":
+                clarification = fields[0] in {"weather_city", "local_input"}
+                if clarification:
                     from src.brain.task_runner import TaskResult, WEATHER_CITY_PROMPT
-                    result = TaskResult(utterance.identifier, None, WEATHER_CITY_PROMPT, [], 0, "needs_input")
+                    result = TaskResult(utterance.identifier, None, SCOPE_PROMPT if fields[0] == "local_input" else WEATHER_CITY_PROMPT, [], 0, "needs_input")
                 else:
                     self._notify("running", {"id": utterance.identifier})
-                if fields[0] != "weather_city" and runner is None:
+                if not clarification and runner is None:
                     if self.runner_factory is None:
                         from src.brain.llm import LocalBrain
                         from src.brain.task_runner import BrainTaskRunner
@@ -541,14 +550,23 @@ class TaskPipeline:
                         if self.current(utterance.generation):
                             self.counters["tool_calls"] += 1
                             self._notify("tool_completed", {"id": utterance.identifier, **entry})
-                if fields[0] != "weather_city":
-                    scope = {"web_query": fields[1]} if fields[0] == "web" else {"info_types": fields}
+                def action_dispatched(entry):
+                    """显示启动请求已经发出，后续取消不会撤回该系统动作。"""
+                    with self.lock:
+                        if self.current(utterance.generation):
+                            self._notify("action_dispatched", {"id": utterance.identifier, **entry})
+                if not clarification:
+                    if fields[0] == "local":
+                        scope = {"local_action": fields, "on_action_dispatched": action_dispatched}
+                    else:
+                        scope = {"web_query": fields[1]} if fields[0] == "web" else {"info_types": fields}
                     result = runner.run(text, should_stop=lambda: not self.current(utterance.generation),
                                         publication_lock=self.lock, on_tool_result=tool_result, **scope)
                 with self.lock:
                     if self.current(utterance.generation):
                         status = getattr(result, "status", "completed")
-                        self.counters["tasks_" + status] += 1
+                        counter = "tasks_launch_submitted" if status == "submitted" else "tasks_" + status
+                        self.counters[counter] += 1
                         detail = {"id": utterance.identifier, "answer": result.answer}
                         if result.path is not None:
                             detail["path"] = str(result.path)
@@ -563,7 +581,7 @@ class TaskPipeline:
                 if self.current(utterance.generation):
                     with self.lock:
                         self.counters["tasks_failed"] += 1
-                    self._notify("error", {"code": "web_failed" if fields[0] == "web" else "brain_failed"})
+                    self._notify("error", {"code": "local_failed" if fields[0] == "local" else "web_failed" if fields[0] == "web" else "brain_failed"})
                     runner = None
             finally:
                 with self.lock:

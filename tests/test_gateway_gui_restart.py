@@ -481,3 +481,15 @@ def test_voice_start_requires_ready_backend_without_opening_devices(window, monk
     window._toggle_run()
     assert not window.runtime.running and window.runtime.starts == 0
     assert '先启动后端' in window.console.toPlainText()
+
+
+@pytest.mark.parametrize("state", ["submitted", "partial", "failed"])
+def test_local_task_terminal_states_keep_real_report(window, tmp_path, state):
+    """请求提交、部分结果和失败均显示真实记录，且不渲染输出中的网页标签。"""
+    path = tmp_path / "本地任务.md"
+    path.write_text("本地执行证据", encoding="utf-8")
+    window._append_task("action_dispatched", dict(name="open_app", arguments={"app_name": "Calculator"}))
+    window._append_task(state, dict(path=str(path), answer="bo s s，<b>原样文本</b>"))
+    text = window.console.toPlainText()
+    assert "启动请求已提交" in text and "<b>原样文本</b>" in text
+    assert window.open_report_btn.isEnabled() and window._latest_report == path

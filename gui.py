@@ -450,7 +450,7 @@ class MainWindow(QMainWindow):
         self.session_spin = self._field(op, "会话轮换时长", self._spin(5, 240, self.config.gateway_session_seconds, " 秒"),
             "轮换时暂停采集，恢复有限上下文。")
         self.retry_spin = self._field(op, "异常重连次数", self._spin(0, 10, self.config.gateway_retry_limit))
-        self.transcription_chk = QCheckBox("本地转写与查询任务")
+        self.transcription_chk = QCheckBox("本地转写与电脑任务")
         self.transcription_chk.setChecked(self.config.gateway_transcription_enabled)
         self.transcription_chk.setToolTip("CPU 转写；明确查询时间、电池、CPU、内存或生成系统报告。工具证据可查看，结果原生播报。")
         self._controls.append(self.transcription_chk)
@@ -621,11 +621,13 @@ class MainWindow(QMainWindow):
         """主线程显示任务状态，完成后才开放真实报告文件入口。"""
         if self._stopping or self._stop_requested:
             return
-        labels = {"running": "大脑正在查询", "completed": "报告已生成", "error": "任务暂停或失败", "rejected": "任务未执行", "cancelled": "任务已取消"}
+        labels = {"running": "大脑正在处理任务", "completed": "报告已生成", "error": "任务暂停或失败", "rejected": "任务未执行", "cancelled": "任务已取消，已提交的系统动作不会撤回"}
         labels.update(speech_queued="结果等待播报", speech_sent="正在准备结果语音", speech_started="原生结果语音处理中",
                       speech_completed="结果音频已接收", speech_failed="结果播报失败，文字报告仍可查看",
                       speech_cancelled="结果播报已取消", speech_skipped="本次结果未播报，文字报告仍可查看")
-        labels["tool_completed"] = "工具已实际查询"
+        labels["tool_completed"] = "工具已返回实际结果"
+        labels.update(action_dispatched="启动请求已提交，正在核验结果", submitted="请求已提交，执行记录已保存",
+                      partial="部分搜索结果已保存", failed="任务未完成，执行记录已保存")
         labels["transcription_rejected"] = "未确认"
         labels.update(no_answer="未取得答案，查询记录已保存", needs_input="需要补充信息")
         if detail.get("purpose") == "clarification":
@@ -643,6 +645,8 @@ class MainWindow(QMainWindow):
                        stale_speech="转写已过期，未执行查询，请重复", long_speech="语句过长，未执行查询，请简短重说",
                        unsupported_system_request="未匹配系统指令，未执行查询；可说：查一下电池电量",
                        unsupported_web_request="未匹配联网指令；可说：上网搜索上海明天的天气",
+                       unsupported_local_request="本地指令不受支持，未执行；可说：打开计算器，或在下载目录查找报告文件",
+                       local_failed="本地任务未完成核验；若已提示启动请求提交，该动作不会自动撤回",
                        web_failed="联网查询未完成，请检查网络、Qwen 或换个关键词；未发布结果",
                        response_wait_timeout="等待转写超时，普通回复未播放",
                        response_buffer_full="等待转写时回复超限，普通回复未播放")
@@ -657,6 +661,8 @@ class MainWindow(QMainWindow):
         self._end_reply()
         source = "语音" if state == "transcription_rejected" else "大脑"
         self._insert_text(self.console, "\n\n" + source + " · " + message)
+        if state == "action_dispatched":
+            self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]))
         if state == "tool_completed":
             output = detail["output"]
             if detail["name"] == "search_web":
@@ -667,10 +673,10 @@ class MainWindow(QMainWindow):
                     f"[{item['id']}] {item['title']}\n{item['url']}\n正文：{page_states[item['page']['status']]}"
                     for item in data["results"])
             self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]) +
-                              "\n查询时间：" + detail["queried_at"] + "\n" + output)
+                              "\n结果时间：" + detail["queried_at"] + "\n" + output)
         if state == "needs_input":
             self._insert_text(self.console, "\n" + detail["answer"])
-        if state in ("completed", "no_answer"):
+        if state in ("completed", "submitted", "partial", "failed", "no_answer"):
             from pathlib import Path
             self._latest_report = Path(detail["path"])
             self.open_report_btn.setEnabled(self._latest_report.is_file())

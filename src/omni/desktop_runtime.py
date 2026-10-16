@@ -62,13 +62,14 @@ class DesktopCallbacks(GatewayCallbacks):
         """同步大脑进度和真实报告；错误不宣称任务已完成。"""
         if state == "running":
             self.runtime.context.is_thinking = True
-        elif state in ("completed", "no_answer", "needs_input", "error", "cancelled"):
+        elif state in ("completed", "submitted", "partial", "failed", "no_answer", "needs_input", "error", "cancelled"):
             self.runtime.context.is_thinking = False
         if self.runtime.task_callback:
             self.runtime.task_callback(state, detail)
         else:
             source = "语音" if state == "transcription_rejected" else "大脑"
-            print(f"\n[{source}] {state}" + (f"：{detail['path']}" if state == "completed" else ""), flush=True)
+            value = detail.get("path") or detail.get("answer") or detail.get("code", "")
+            print(f"\n[{source}] {state}：{value}", flush=True)
 
 
 class GatewayRuntime:
