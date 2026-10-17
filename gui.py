@@ -645,7 +645,7 @@ class MainWindow(QMainWindow):
                        stale_speech="转写已过期，未执行查询，请重复", long_speech="语句过长，未执行查询，请简短重说",
                        unsupported_system_request="未匹配系统指令，未执行查询；可说：查一下电池电量",
                        unsupported_web_request="未匹配联网指令；可说：上网搜索上海明天的天气",
-                       unsupported_local_request="本地指令不受支持，未执行；可说：打开计算器，或在下载目录查找报告文件",
+                       unsupported_local_request="未匹配支持的单条指令；应用仅支持已列名称，网站可说打开B站，其他网站请提供完整 HTTP(S) 网址；文件搜索须说明目录和关键词",
                        local_failed="本地任务未完成核验；若已提示启动请求提交，该动作不会自动撤回",
                        web_failed="联网查询未完成，请检查网络、Qwen 或换个关键词；未发布结果",
                        response_wait_timeout="等待转写超时，普通回复未播放",

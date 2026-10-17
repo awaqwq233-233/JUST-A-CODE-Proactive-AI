@@ -104,9 +104,9 @@ Run `.cache/m0/venv/bin/python verify_web_search.py --query "上海明天天气"
 
 Short visual questions are explicitly covered by the perception prompt. Rejected visual candidates of at most four seconds can be decoded twice more with 0.3/0.6 seconds of leading silence, preserving every original sample and using no example prompt. Both decodes must pass the unchanged confidence checks and agree on the same neutral visual question; system/web topics, disagreement, overlap, expiration or a new utterance cannot use this recovery. It adds CPU waiting only for eligible failures. Superseded ASR results no longer display old transcripts, rejection notices or submit tools. Rejection identifies the utterance and reason. A real CPU Whisper noisy short-question case recovered after an initial rejection; a 65-second file replay with a populated synthetic frame returned the expected blue-interface description and 2.64 seconds of native audio for the short question. The earlier blank-frame short/long replays stayed silent; synthetic checks do not establish the exact acoustic cause of the user's earlier live failure or replace live confirmation.
 
-### M2c: bounded local computer tasks (2026-10-16)
+### M2c: bounded local computer tasks (updated 2026-10-17)
 
-The production voice path now supports one explicit local action per utterance: opening a listed application, opening an explicit HTTP(S) URL, or searching filenames inside a specified directory. Examples: “打开计算器”, “打开Safari”, “打开Python官网”, and “在下载目录查找文件名包含报告的文件”. The macOS application list is Safari, Calendar, Notes, Calculator and TextEdit. Website aliases are “百度官网”, “GitHub官网” and “Python官网”; literal URLs must retain their punctuation. Unknown targets do not execute. File searches without a directory ask for the complete request. Paths and filename keywords retain the confirmed transcript; script conversion and homophone correction are not applied to these values.
+The production voice path now supports one explicit local action per utterance: opening a listed application, opening an explicit HTTP(S) URL, or searching filenames inside a specified directory. Examples: “打开计算器”, “打开Safari”, “打开Python官网”, and “在下载目录查找文件名包含报告的文件”. The macOS application list is Safari, Calendar, Notes, Calculator and TextEdit. Known website names are 百度, GitHub, Python, and B站 / 哔哩哔哩 / bilibili. They accept 网页 / 网站 / 官网 / 官方网站, including “打开B站” and “打开B站网页”, with traditional Chinese variants. Literal URLs retain their punctuation and path/query characters. Unknown website names require a complete HTTP(S) URL; name resolution does not use a model to guess domains. Explicit application requests never fall back to opening a website. File searches without a directory ask for the complete request. Paths and filename keywords retain the confirmed transcript; script conversion and homophone correction are not applied to these values.
 
 Qwen receives only one authorized tool with exact argument enums. Changed parameters, multiple calls, negations, quoted requests and unsupported compound actions are rejected before execution. Results and native speech use actual tool evidence, without another model-generated success claim. The GUI distinguishes a submitted launch request, a detected running macOS process, partial search results and failure. Browser handoff does **not** verify page loading; a running process does **not** verify a foreground window.
 
@@ -196,9 +196,9 @@ GUI 独立显示用户原话、任务进度，完成后可点“打开最新报�
 
 真实三项验证各调用一次工具，耗时 2.02 / 1.69 / 6.04 秒；它们只代表独立 Qwen，不代表双模型并行或语音升级延迟。内存查询改用 `vm_stat` 实际页大小，明确活跃与有线页合计不等于完整占用。复用已有 httpx，无新增依赖；安装自检已加入大脑/任务模块。M2b 已接入上述旁路与路由，真机文字结果已获用户确认；原生任务结果播报现已接入。
 
-### M2c：受限本地电脑任务（2026-10-16）
+### M2c：受限本地电脑任务（2026-10-17 更新）
 
-生产语音已接入三类单动作：“打开计算器”“打开Safari”“打开Python官网”“在下载目录查找文件名包含报告的文件”。应用白名单为 macOS Safari、日历、备忘录、计算器、文本编辑；支持明确的标准 HTTP(S) 网址及“百度官网”“GitHub官网”“Python官网”固定别名。网址不猜写、不纠正同音；语音识别不保留完整网址时不执行，可使用已支持的官网别名。搜索必须说明目录和文件名关键词，缺目录只追问，须重新说完整指令。文件路径和关键词保留确认转写的字符，不自动繁简改写或猜同音；若与真实文件名不符，请按 GUI 转写纠正。
+生产语音已接入三类单动作：“打开计算器”“打开Safari”“打开Python官网”“在下载目录查找文件名包含报告的文件”。应用白名单为 macOS Safari、日历、备忘录、计算器、文本编辑；支持明确的标准 HTTP(S) 网址及百度、GitHub、Python、B站／哔哩哔哩／bilibili 名称，可带“网页／网站／官网／官方网站”及繁体写法，例如“打开B站”“打开B站网页”。未知网站仍需完整网址，不由模型猜写域名或纠正同音；明确要求打开应用时不会改为打开网站。网址中的路径、参数和标点原样保留；语音识别不保留完整网址时不执行，可使用已支持的网站名称。搜索必须说明目录和文件名关键词，缺目录只追问，须重新说完整指令。文件路径和关键词保留确认转写的字符，不自动繁简改写或猜同音；若与真实文件名不符，请按 GUI 转写纠正。
 
 Qwen 每句仅获一个工具及精确参数枚举，改参数、重复或多项调用、否定、转述、引用与未支持复合句均不能执行。GUI 分别显示启动请求提交、检测到应用运行、部分搜索与失败；浏览器接收请求不等于页面加载成功，进程运行不等于窗口在前台。结果文件与原生播报从工具证据生成，不让模型重新编造执行状态。
 

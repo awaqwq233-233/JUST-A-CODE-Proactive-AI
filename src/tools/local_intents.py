@@ -13,8 +13,12 @@ APP_ALIASES = {
     "calculator": "Calculator", "文本编辑": "TextEdit", "textedit": "TextEdit",
     "日曆": "Calendar", "備忘錄": "Notes", "計算器": "Calculator", "文本編輯": "TextEdit",
 }
-SITES = {"百度官网": "https://www.baidu.com/", "github官网": "https://github.com/",
-         "python官网": "https://www.python.org/"}
+SITE_ALIASES = {
+    "百度": "https://www.baidu.com/", "github": "https://github.com/",
+    "python": "https://www.python.org/", "b站": "https://www.bilibili.com/",
+    "哔哩哔哩": "https://www.bilibili.com/", "嗶哩嗶哩": "https://www.bilibili.com/",
+    "bilibili": "https://www.bilibili.com/",
+}
 DIRECTORIES = {"桌面": "Desktop", "下载": "Downloads", "下載": "Downloads", "文档": "Documents", "文檔": "Documents"}
 SCOPE_PROMPT = "bo s s，请说明搜索目录和文件名关键词，例如：在下载目录查找文件名包含报告的文件。"
 
@@ -63,6 +67,18 @@ def search_root(value):
     return str(path)
 
 
+def website_url(target):
+    """解析已知网站的完整名称和网页修饰词；明确网址保留原始路径与参数。"""
+    target = re.sub(r"^(?:[网網]址|[网網][页頁]|[网網]站)\s*", "", target)
+    if re.match(r"https?://", target, re.I):
+        return validate_url(target)
+    match = re.fullmatch(r"(.+?)(?:\s*(?:的\s*)?(?:官[网網]|官方[网網]站|[网網][页頁]|[网網]站))?", target)
+    name = match[1].strip().lower() if match else ""
+    if name not in SITE_ALIASES:
+        raise ValueError("未识别网站名称，请提供完整 HTTP(S) 网址")
+    return validate_url(SITE_ALIASES[name])
+
+
 def local_instruction(text):
     """完整匹配单个本地动作；否定、转述、引用和复合指令不能获得执行权限。"""
     if not isinstance(text, str) or len(text) > 2400 or re.search(r"[\x00-\x1f\x7f]", text):
@@ -73,18 +89,16 @@ def local_instruction(text):
     if re.search(r"(?:并|並|和|及|再)(?:打[开開]|[删刪]除|修改|[运運]行|[执執]行|查找|搜索|[启啟][动動]|移[动動]|[复複]制|[发發]送|上[传傳])", text):
         return None
     text = re.sub(r"^(?:(?:[请請]你|[请請]|[帮幫]我|麻[烦煩]你|麻[烦煩]|[现現]在)[,， ]*){0,3}", "", text)
-    match = re.fullmatch(r"(?:打[开開]|[启啟][动動])(?:[应應]用|程序)?\s*(.+)", text)
+    match = re.fullmatch(r"(?:打[开開]|[启啟][动動])\s*(?:([应應]用|程序)\s*)?(.+)", text)
     if match:
-        target = match[1].strip()
+        target = match[2].strip()
         app = APP_ALIASES.get(target.lower())
         if app:
             return pack_action("open_app", {"app_name": app})
-        target = re.sub(r"^(?:[网網]址|[网網][页頁])\s*", "", target)
-        if target in {"百度官網", "GitHub官網", "Python官網"}:
-            target = target.replace("官網", "官网")
-        target = SITES.get(target.lower(), target)
+        if match[1]:
+            return None
         try:
-            return pack_action("open_url", {"url": validate_url(target)})
+            return pack_action("open_url", {"url": website_url(target)})
         except ValueError:
             return None
     match = re.fullmatch(r"在(.+?)(?:目[录錄]|文件[夹夾])?(?:[里裡]|中)?(?:查找|搜索|找一下|找)(?:文件名包含|名[称稱]包含|名[为為])?(.+?)(?:的文件|文件)", text)

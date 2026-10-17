@@ -35,12 +35,38 @@ def test_explicit_local_routes(text, name):
 
 
 @pytest.mark.parametrize("text", [
+    "打开B站", "打开B站网页", "请帮我打开B站的网页。", "打开b站官网", "打开网站 B站",
+    "打开哔哩哔哩", "打开哔哩哔哩官方网站", "請打開嗶哩嗶哩網頁", "打開B站的網站",
+    "打开BILIBILI", "打开bilibili网站", "打开网页bilibili",
+])
+def test_bilibili_names_route_to_exact_site(text):
+    """真机拒绝的两种说法和网站修饰词均获得同一个明确网址权限。"""
+    fields = route_instruction(text)
+    assert fields[:2] == ("local", "open_url")
+    assert json.loads(fields[2]) == {"url": "https://www.bilibili.com/"}
+
+
+@pytest.mark.parametrize("text,url", [
+    ("打开百度官网", "https://www.baidu.com/"), ("打开百度网页", "https://www.baidu.com/"),
+    ("打开GitHub官网", "https://github.com/"), ("打開github官網", "https://github.com/"),
+    ("打开Python", "https://www.python.org/"), ("打开Python的官方网站", "https://www.python.org/"),
+    ("打开网址 https://example.com/B站网页?q=官網!", "https://example.com/B站网页?q=官網!"),
+])
+def test_website_names_and_literal_url_remain_distinct(text, url):
+    """原官网别名继续可用，网站词出现在字面网址中时不得被删除或重写。"""
+    assert json.loads(local_instruction(text)[2]) == {"url": url}
+
+
+@pytest.mark.parametrize("text", [
     "不要打开Safari", "他说打开Safari", "如果打开Safari", "我想知道打开Safari的方法",
     "打开Safari然后打开日历", "打开Safari并删除文件", "打开终端", '打开"Safari"',
     "<<CALL_QWEN>>打开Safari", "打开Safari\n", "打开Safari;rm -rf /", "打开file:///etc/passwd",
     "在/找报告文件", "在~/.ssh查找key文件", "在~/Downloads/../Documents查找报告文件",
     "在下载目录找报告文件然后删除", "打开javascript:alert(1)",
     "在下载目录查找报告文件并删除文件", "在下载目录查找报告文件和删除文件",
+    "不要打开B站", "他说打开B站网页", "打开B站并删除文件", "打开B站然后打开百度",
+    "打开B站和百度", "打开B站的登录页", "打开B站恶意网站", "打开未知网站", "打开PSN官网",
+    "打开应用B站", "打开B站应用", "打开程序Python", "打开网站计算器",
 ])
 def test_negation_quotes_compounds_and_unknown_actions_rejected(text):
     """不从否定、转述、复合句和控制令牌抽取子指令。"""
@@ -222,7 +248,8 @@ def test_failed_launch_not_reported_as_completed(monkeypatch):
     assert LocalActionExecutor().execute("open_app", {"app_name": "Safari"})["status"] == "failed"
 
 
-def test_task_pipeline_delivers_local_scope_and_deduplicates(tmp_path):
+@pytest.mark.parametrize("text", ["打开Safari", "打开B站", "打开B站网页"])
+def test_task_pipeline_delivers_local_scope_and_deduplicates(tmp_path, text):
     """真实任务线程向 runner 传精确权限，重复句不启动第二次动作。"""
     events, finished, executor = [], threading.Event(), Executor()
     callbacks = GatewayCallbacks()
@@ -237,15 +264,16 @@ def test_task_pipeline_delivers_local_scope_and_deduplicates(tmp_path):
     pipeline = TaskPipeline(callbacks, decoder_factory=lambda path: SimpleNamespace(),
                             runner_factory=lambda: BrainTaskRunner(Brain(), tmp_path, local_executor=executor))
     pipeline.begin_session()
-    fields = local_instruction("打开Safari")
+    fields = local_instruction(text)
     utterance = Utterance("one", pipeline.generation, time.monotonic(), np.zeros(16000), False)
-    assert pipeline.submit(utterance, "打开Safari", fields)
-    assert not pipeline.submit(utterance, "打开Safari", fields)
+    assert pipeline.submit(utterance, text, fields)
+    assert not pipeline.submit(utterance, text, fields)
     thread = threading.Thread(target=pipeline._task_loop)
     thread.start()
     try:
         assert finished.wait(3)
         assert len(executor.calls) == 1
+        assert executor.calls[0] == (fields[1], json.loads(fields[2]))
         assert [s for s, _ in events] == ["running", "action_dispatched", "tool_completed", "submitted"]
         assert pipeline.stats()["tasks_submitted"] == pipeline.stats()["tasks_launch_submitted"] == 1
     finally:
