@@ -79,6 +79,19 @@ def website_url(target):
     return validate_url(SITE_ALIASES[name])
 
 
+def website_name(target):
+    """提取开放站名；拒绝协议、路径、应用请求、复合动作和未支持的页面操作。"""
+    target = re.sub(r"^(?:[网網]址|[网網][页頁]|[网網]站)\s*", "", target)
+    target = re.sub(r"\s*(?:的\s*)?(?:官[网網]|官方[网網]站|[网網][页頁]|[网網]站)$", "", target).strip()
+    if (not 1 <= len(target) <= 80 or not any(c.isalnum() for c in target)
+            or not re.fullmatch(r"[\w\u3400-\u9fff .+&()\-]+", target)
+            or target in {"网站", "網頁", "网页", "官网", "網址", "网址", "網站", "官網", "终端", "終端"}
+            or re.search(r"(?:应用|應用|程序)$|文件|目录|目錄|登录|登錄|登[陆陸]|然后|然後|[并並和及再](?:打开|打開|删除|刪除)|、|第[一二三123]个", target)
+            or re.fullmatch(r"(?:" + '|'.join(map(re.escape, SITE_ALIASES)) + r")(?:和|与|與|及).+", target, re.I)):
+        raise ValueError("请提供单个网站名称")
+    return target
+
+
 def local_instruction(text):
     """完整匹配单个本地动作；否定、转述、引用和复合指令不能获得执行权限。"""
     if not isinstance(text, str) or len(text) > 2400 or re.search(r"[\x00-\x1f\x7f]", text):
@@ -89,18 +102,37 @@ def local_instruction(text):
     if re.search(r"(?:并|並|和|及|再)(?:打[开開]|[删刪]除|修改|[运運]行|[执執]行|查找|搜索|[启啟][动動]|移[动動]|[复複]制|[发發]送|上[传傳])", text):
         return None
     text = re.sub(r"^(?:(?:[请請]你|[请請]|[帮幫]我|麻[烦煩]你|麻[烦煩]|[现現]在)[,， ]*){0,3}", "", text)
-    match = re.fullmatch(r"(?:打[开開]|[启啟][动動])\s*(?:([应應]用|程序)\s*)?(.+)", text)
+    choice = re.fullmatch(r"(?:打[开開]|[选選][择擇]?)(?:第)?([一二三123])(?:[个個])(?:[网網]站|[网網][页頁])?", text)
+    if choice:
+        return ("website_choice", str("一二三".index(choice[1]) + 1) if choice[1] in "一二三" else choice[1])
+    if text in {"取消网站选择", "取消網站選擇"}:
+        return ("website_cancel",)
+    if text in {"清除网站缓存", "清除網站緩存"}:
+        return ("website_forget", "*")
+    refresh = re.fullmatch(r"(?:重新(?:查找|解析)|忘[记記])(.+?)(?:的)?[网網]站(?:地址)?", text)
+    if refresh:
+        try:
+            name = website_name(refresh[1])
+            return ("website_forget", name) if text.startswith(("忘记", "忘記")) else ("website", name, "refresh")
+        except ValueError:
+            return None
+    match = re.fullmatch(r"(?:打[开開]|[启啟][动動])\s*(.+)", text)
     if match:
-        target = match[2].strip()
+        target = match[1].strip()
+        application = re.fullmatch(r'(?:[应應]用|程序)\s*(.+)', target)
+        if application and not re.search(r'(?:[网網]站|[网網][页頁]|官[网網])$', target):
+            app = APP_ALIASES.get(application[1].lower())
+            return pack_action('open_app', {'app_name': app}) if app else None
         app = APP_ALIASES.get(target.lower())
         if app:
             return pack_action("open_app", {"app_name": app})
-        if match[1]:
-            return None
         try:
             return pack_action("open_url", {"url": website_url(target)})
         except ValueError:
-            return None
+            try:
+                return ("website", website_name(target))
+            except ValueError:
+                return None
     match = re.fullmatch(r"在(.+?)(?:目[录錄]|文件[夹夾])?(?:[里裡]|中)?(?:查找|搜索|找一下|找)(?:文件名包含|名[称稱]包含|名[为為])?(.+?)(?:的文件|文件)", text)
     if match:
         root, query = match[1].strip(), match[2].strip()
@@ -124,4 +156,4 @@ def pack_action(name, arguments):
 def is_local_request(text):
     """宽松识别电脑动作主题仅用于禁猜，不授予任何执行权限。"""
     text = normalize_local_text(text)
-    return bool(re.search(r"打[开開]|[启啟][动動]|[开開][启啟]|(?:查找|搜索|找一下|找).*(?:文件|目[录錄]|文件[夹夾])", text))
+    return bool(re.search(r"打[开開]|[启啟][动動]|[开開][启啟]|(?:[选選]|取消|清除|忘[记記]|重新).*(?:[网網]站|[网網][页頁])|(?:查找|搜索|找一下|找).*(?:文件|目[录錄]|文件[夹夾])", text))

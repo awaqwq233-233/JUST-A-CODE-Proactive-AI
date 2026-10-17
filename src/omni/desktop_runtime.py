@@ -143,6 +143,16 @@ class GatewayRuntime:
         if self.reply_finished_callback:
             self.reply_finished_callback()
 
+    def choose_website(self, token, index):
+        """把 GUI 选择交回当前管线验证，不在桌面线程打开候选 URL。"""
+        pipeline = getattr(self.omni_client, '_pipeline', None)
+        return bool(pipeline and pipeline.choose_website(token, index))
+
+    def forget_websites(self):
+        """缓存清理由后台任务完成，不在 Qt 主线程读取缓存。"""
+        pipeline = getattr(self.omni_client, '_pipeline', None)
+        return bool(pipeline and pipeline.forget_websites())
+
 
 class DesktopRuntime(GatewayRuntime):
     """桌面只有 Gateway 路径，不再懒加载旧 MiniCPM 或传统运行时。"""

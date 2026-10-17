@@ -10,6 +10,18 @@ import time
 def speech_summary(result, fields):
     """从已交付的工具证据生成短句，不让感知模型重新推理或编造数字。"""
     message = "系统状态查询已完成，报告已生成，请查看界面中的完整结果。"
+    if fields[0].startswith('website'):
+        if result.status == 'needs_input':
+            return 'bo s s，网站尚需确认，请在界面选择，或说打开第一个网站。'
+        if result.status == 'no_answer':
+            return 'bo s s，暂时无法确认网站，未打开浏览器。请补充站名或完整网址。'
+        if fields[0] == 'website_forget':
+            return 'bo s s，网站解析缓存已清除，下次会重新查找。'
+        from src.tools.local_actions import local_answer
+        entries = [item for item in result.trace if item.get('name') == 'open_url']
+        if len(entries) != 1:
+            raise ValueError('网站播报缺少唯一打开证据')
+        return local_answer('open_url', entries[0]['data'])
     if fields[0] == "local_input":
         from src.tools.local_intents import SCOPE_PROMPT
         return SCOPE_PROMPT
@@ -90,7 +102,7 @@ class TaskSpeechQueue:
                 return
             self.seen.append(identifier)
             job = SpeechJob(identifier, generation, speech_summary(result, fields), self.clock() + 20)
-            if fields[0] in {"weather_city", "local_input"}:
+            if fields[0] in {"weather_city", "local_input"} or getattr(result, 'status', '') == 'needs_input':
                 job.purpose = "clarification"
             if self.pending or self.active:
                 self._notify("skipped", job, "speech_busy")

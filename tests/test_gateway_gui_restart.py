@@ -493,3 +493,23 @@ def test_local_task_terminal_states_keep_real_report(window, tmp_path, state):
     text = window.console.toPlainText()
     assert "启动请求已提交" in text and "<b>原样文本</b>" in text
     assert window.open_report_btn.isEnabled() and window._latest_report == path
+
+
+def test_website_choice_buttons_only_forward_bound_ids(window, monkeypatch, tmp_path):
+    """GUI 不直接打开 URL；旧候选清除和停止期间撤销也能更新按钮。"""
+    calls = []
+    monkeypatch.setattr(window.runtime, 'choose_website', lambda token, index: calls.append((token, index)) or True, raising=False)
+    report = tmp_path / 'website.md'
+    report.write_text('网站候选记录', encoding='utf-8')
+    detail = {'id':'one', 'answer':'请确认网站', 'path':str(report), 'website':{
+        'token':'bound-token', 'candidates':[{'id':1,'title':'测试站点','url':'https://example.com/'}]}}
+    window._append_task('needs_input', detail)
+    assert not window.website_choices[0].isHidden()
+    window.website_choices[0].click()
+    assert calls == [('bound-token', 1)]
+    assert window.open_report_btn.isEnabled()
+    window._stopping = True
+    window._append_task('website_choices_cleared', {})
+    assert all(button.isHidden() for button in window.website_choices)
+    assert window._website_token is None
+    window._stopping = False

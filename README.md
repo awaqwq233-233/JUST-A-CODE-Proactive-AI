@@ -106,13 +106,21 @@ Short visual questions are explicitly covered by the perception prompt. Rejected
 
 ### M2c: bounded local computer tasks (updated 2026-10-17)
 
-The production voice path now supports one explicit local action per utterance: opening a listed application, opening an explicit HTTP(S) URL, or searching filenames inside a specified directory. Examples: “打开计算器”, “打开Safari”, “打开Python官网”, and “在下载目录查找文件名包含报告的文件”. The macOS application list is Safari, Calendar, Notes, Calculator and TextEdit. Known website names are 百度, GitHub, Python, and B站 / 哔哩哔哩 / bilibili. They accept 网页 / 网站 / 官网 / 官方网站, including “打开B站” and “打开B站网页”, with traditional Chinese variants. Literal URLs retain their punctuation and path/query characters. Unknown website names require a complete HTTP(S) URL; name resolution does not use a model to guess domains. Explicit application requests never fall back to opening a website. File searches without a directory ask for the complete request. Paths and filename keywords retain the confirmed transcript; script conversion and homophone correction are not applied to these values.
+The production voice path now supports one explicit local action per utterance: opening a listed application, opening an explicit HTTP(S) URL, or searching filenames inside a specified directory. Examples: “打开计算器”, “打开Safari”, “打开Python官网”, and “在下载目录查找文件名包含报告的文件”. The macOS application list is Safari, Calendar, Notes, Calculator and TextEdit. Known website names are 百度, GitHub, Python, and B站 / 哔哩哔哩 / bilibili. They accept 网页 / 网站 / 官网 / 官方网站, including “打开B站” and “打开B站网页”, with traditional Chinese variants. Literal URLs retain their punctuation and path/query characters. Unlisted names now enter evidence-based website resolution; Qwen selects an observed candidate ID and never invents a URL. Explicit application requests never fall back to opening a website. File searches without a directory ask for the complete request. Paths and filename keywords retain the confirmed transcript; script conversion and homophone correction are not applied to these values.
 
 Qwen receives only one authorized tool with exact argument enums. Changed parameters, multiple calls, negations, quoted requests and unsupported compound actions are rejected before execution. Results and native speech use actual tool evidence, without another model-generated success claim. The GUI distinguishes a submitted launch request, a detected running macOS process, partial search results and failure. Browser handoff does **not** verify page loading; a running process does **not** verify a foreground window.
 
 Searches inspect filenames only, under an explicit non-hidden subdirectory of the user's home. They skip hidden entries and symbolic links, with limits of 20 results, 60,000 entries, 20 nested levels and four seconds of scanning; a separate process has a seven-second hard wait limit. POSIX directory traversal uses `O_NOFOLLOW`. Partial scans cannot establish that a file is absent. Stop/reconnect invalidates pending work and report publication; launching is checked under the same session lock. Already submitted operating-system actions cannot be undone by cancellation. Reports remain under ignored `output/m2/qwen/`.
 
 No additional dependencies, models or backend rebuild are needed; restart the GUI and enable “本地转写与电脑任务”. `verify_local_tasks.py --task` performs an explicitly supplied real action without capture devices. Windows/Linux retain portable filename search and URL handoff paths, but application launching in this first stage is macOS-only; those platforms have not been tested. Arbitrary commands, desktop clicking/typing, file modification, memory and cloud escalation remain outside this stage. See setup guide section 15 for verification boundaries and commands.
+
+Website resolution (2026-10-17): say “打开小众软件” or another site name without registering it first. Existing app names and explicit URLs keep their paths. The resolver searches domestic-first Bing RSS (global fallback on request failure or unrelated results), groups candidates by host, reads at most three homepages and checks names, titles, visible text, declared canonical URLs and site sections. Qwen selects only observed IDs. Automatic opening requires exactly one eligible HTTPS candidate and model agreement; search position, a claimed probability or a page calling itself official is not sufficient. These signals are heuristics, not proof of ownership. Verification pages, conflicting identity, multiple matches or HTTP-only candidates require an explicit choice. Website identity and reachability are separate; browser handoff still does not confirm loading.
+
+The GUI shows up to three candidate buttons and a real report. Say “打开第一个网站” or click a candidate within 60 seconds; IDs are bound to the current task/session, consumed once and invalidated by another task, stop or reconnect. “取消网站选择” dismisses the prompt. The next choice retains normal ASR quality and overlap checks. All network/model/cache work stays on the task thread. A resolved task has a 60-second total budget and the existing 25-second search limit; cancellation is checked while waiting and again before dispatch.
+
+Dynamic mappings live in ignored `.cache/sites/resolutions.json` (up to 128 entries, seven days for evidence-based choices and 30 days for user-confirmed choices). Cache hits recheck the homepage and must keep the same host; failed checks trigger resolution again. Use “重新查找小众软件网站” to refresh, “忘记小众软件的网站地址” to remove one mapping, or “清除网站缓存” / the GUI button to clear dynamic mappings. Built-in common-site shortcuts remain in source. No conversation history, audio or video is sent to search; only the site query and bounded page requests leave the machine. Search/selection evidence remains in local reports, not runtime counters.
+
+`verify_website.py --name 小众软件` performs real search and Qwen selection without opening a browser. Add `--open` to execute a unique result once; ambiguity does not silently choose. Probe caches are isolated under its output directory. SearXNG and DDGS were reviewed as search providers, but neither replaces the task/session/identity layer; this implementation reuses the existing httpx transport and adds no service, model, dependency or backend patch.
 
 ## 中文说明
 
@@ -198,13 +206,21 @@ GUI 独立显示用户原话、任务进度，完成后可点“打开最新报�
 
 ### M2c：受限本地电脑任务（2026-10-17 更新）
 
-生产语音已接入三类单动作：“打开计算器”“打开Safari”“打开Python官网”“在下载目录查找文件名包含报告的文件”。应用白名单为 macOS Safari、日历、备忘录、计算器、文本编辑；支持明确的标准 HTTP(S) 网址及百度、GitHub、Python、B站／哔哩哔哩／bilibili 名称，可带“网页／网站／官网／官方网站”及繁体写法，例如“打开B站”“打开B站网页”。未知网站仍需完整网址，不由模型猜写域名或纠正同音；明确要求打开应用时不会改为打开网站。网址中的路径、参数和标点原样保留；语音识别不保留完整网址时不执行，可使用已支持的网站名称。搜索必须说明目录和文件名关键词，缺目录只追问，须重新说完整指令。文件路径和关键词保留确认转写的字符，不自动繁简改写或猜同音；若与真实文件名不符，请按 GUI 转写纠正。
+生产语音已接入三类单动作：“打开计算器”“打开Safari”“打开Python官网”“在下载目录查找文件名包含报告的文件”。应用白名单为 macOS Safari、日历、备忘录、计算器、文本编辑；支持明确的标准 HTTP(S) 网址及百度、GitHub、Python、B站／哔哩哔哩／bilibili 名称，可带“网页／网站／官网／官方网站”及繁体写法，例如“打开B站”“打开B站网页”。未预设的站名会自动搜索并核对候选，Qwen 只选查到的编号，不自行猜写域名或纠正同音；明确要求打开应用时不会改为打开网站。网址中的路径、参数和标点原样保留；语音识别不保留完整网址时不执行，可使用已支持的网站名称。搜索必须说明目录和文件名关键词，缺目录只追问，须重新说完整指令。文件路径和关键词保留确认转写的字符，不自动繁简改写或猜同音；若与真实文件名不符，请按 GUI 转写纠正。
 
 Qwen 每句仅获一个工具及精确参数枚举，改参数、重复或多项调用、否定、转述、引用与未支持复合句均不能执行。GUI 分别显示启动请求提交、检测到应用运行、部分搜索与失败；浏览器接收请求不等于页面加载成功，进程运行不等于窗口在前台。结果文件与原生播报从工具证据生成，不让模型重新编造执行状态。
 
 文件搜索只读名称，限定主目录内明确的非隐藏子目录（可说桌面/下载/文档，或完整路径），跳过隐藏项与符号链接；最多 20 条结果、60000 个条目、20 层子目录、4 秒扫描，独立进程 7 秒硬等待上限。POSIX 逐级使用 `O_NOFOLLOW`；达到上限或权限不足标明部分扫描，不能据此声称整个目录没有匹配。停止/重连取消等待、后续派发和旧报告发布，派发与取消使用同一代次锁；已提交给系统的打开动作不能撤回。
 
 生产记录仍在忽略的 `output/m2/qwen/`，独立验收为 `verify_local_tasks.py`。无需新依赖、模型下载或后端重编译，重开 GUI 并开启“本地转写与电脑任务”即可。Windows/Linux 保留文件搜索和网址交接代码，但本阶段应用白名单仅支持 macOS，未做其他平台实测。任意命令、鼠标键盘控制、文件修改、长期记忆与云端升级仍待后续阶段。验收与命令见安装指南第 15 节。
+
+站名自动解析（2026-10-17）：现在可直接说“打开小众软件”等未预设的名称，不必先登记域名。已知应用、明确网址和常用站名快捷入口保留。独立解析器通过国内优先必应 RSS 搜索（请求失败或结果失配再试全球入口），按主机去重，最多读取三个首页；核对名称、标题、正文、页面声明的规范地址及主站/论坛/下载分站差异。Qwen 只能选择真实候选编号。自动打开须唯一 HTTPS 候选满足证据门槛且 Qwen 同意；搜索排名、模型自报概率、页面自称官网都不足以单独放行。这些线索不是域名所有权证明，不承诺任意站名都能无歧义识别。
+
+身份不明、同名、验证页或仅 HTTP 候选会显示最多三个选择，可点击或在 60 秒内说“打开第一个网站”；选择绑定任务与会话并只消费一次，新任务、停止、重连或超时清除。可说“取消网站选择”。下一句仍需通过原转写质量、播放重叠和时效检查。GUI/原生播报区分待确认、未找到和实际打开请求提交，浏览器交接仍不代表页面加载；正文无法读取不直接断言网站不存在。网络、Qwen 和缓存均在后台，任务总限 60 秒、搜索沿用 25 秒，等待及派发前检查取消。
+
+动态缓存保存在忽略的 `.cache/sites/resolutions.json`，最多 128 条；证据匹配有效 7 天，用户明确选择有效 30 天。复用前重读首页并核对主机，失败重新解析。可说“重新查找小众软件网站”“忘记小众软件的网站地址”，或用“清除网站缓存”及 GUI 按钮清空；此操作管理动态映射，源码内常用站名快捷入口不删除。搜索仅发送站名查询及有界页面请求，不发送对话历史、音视频；候选和选择证据写本地报告，统计不含正文。
+
+独立 `verify_website.py --name 小众软件` 只进行真实搜索和 Qwen 判断，`--open` 才实际打开一次，歧义不会自动选择；探针缓存隔离在 output/。已评估 SearXNG、DDGS 搜索项目，本轮复用现有网络层，无新增依赖、外部服务、模型或后端补丁；安装步骤与命令见安装指南第 16 节。
 
 ### 文档与未来终端
 

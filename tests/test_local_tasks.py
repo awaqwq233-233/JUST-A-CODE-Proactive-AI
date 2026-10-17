@@ -65,8 +65,8 @@ def test_website_names_and_literal_url_remain_distinct(text, url):
     "在下载目录找报告文件然后删除", "打开javascript:alert(1)",
     "在下载目录查找报告文件并删除文件", "在下载目录查找报告文件和删除文件",
     "不要打开B站", "他说打开B站网页", "打开B站并删除文件", "打开B站然后打开百度",
-    "打开B站和百度", "打开B站的登录页", "打开B站恶意网站", "打开未知网站", "打开PSN官网",
-    "打开应用B站", "打开B站应用", "打开程序Python", "打开网站计算器",
+    "打开B站和百度", "打开B站的登录页",
+    "打开应用B站", "打开B站应用", "打开程序Python",
 ])
 def test_negation_quotes_compounds_and_unknown_actions_rejected(text):
     """不从否定、转述、复合句和控制令牌抽取子指令。"""

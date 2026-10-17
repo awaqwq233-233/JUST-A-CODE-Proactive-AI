@@ -94,6 +94,7 @@ class TaskResult:
     trace: list
     elapsed_seconds: float
     status: str = "completed"
+    website: dict | None = None
 
 
 def atomic_write(path, content, should_stop=None, publication_lock=None):
@@ -120,19 +121,27 @@ def atomic_write(path, content, should_stop=None, publication_lock=None):
 class BrainTaskRunner:
     """按任务提供查询或单个受限本地动作；不暴露任意命令。"""
 
-    def __init__(self, brain=None, output_dir=None, search_client=None, local_executor=None):
+    def __init__(self, brain=None, output_dir=None, search_client=None, local_executor=None,
+                 website_search=None, website_cache=None):
         """绑定大脑与本机输出目录，默认目录已被 Git 忽略。"""
         self.brain = brain if brain is not None else LocalBrain(backend="lm_studio")
         self.output_dir = Path(output_dir or ROOT / "output/m2/qwen").resolve()
         self.search_client = search_client
         self.local_executor = local_executor or LocalActionExecutor()
+        self.website_search, self.website_cache = website_search, website_cache
 
     def run(self, task, should_stop=None, info_types=None, publication_lock=None, on_tool_result=None, web_query=None,
-            local_action=None, on_action_dispatched=None):
+            local_action=None, on_action_dispatched=None, website_request=None, website_selection=None):
         """执行显式文本任务；取消或无证据不发布，本地工具失败可交付失败记录。"""
         if not isinstance(task, str) or not task.strip() or len(task) > 4000:
             raise ValueError("任务文字须为 1–4000 字")
         check_cancelled(should_stop)
+        if website_request is not None:
+            if any(value is not None for value in (info_types, web_query, local_action)):
+                raise ValueError("网站解析不得混用其他任务权限")
+            from .website_tasks import run_website
+            return run_website(self, task, tuple(website_request), should_stop, publication_lock,
+                               on_tool_result, on_action_dispatched, website_selection)
         if local_action is not None:
             if info_types is not None or web_query is not None:
                 raise ValueError("本地动作不能与查询权限混用")

@@ -29,7 +29,12 @@ class ProbeCallbacks(GatewayCallbacks):
         self.counts["user_transcripts"] += 1
         fields = route_instruction(text)
         if fields:
-            self.fields.append([fields[0], fields[1]] if fields[0] == "local" else ["web"] if fields[0] == "web" else list(fields))
+            if fields[0] == "local":
+                self.fields.append(list(fields[:2]))
+            elif fields[0] == "web" or fields[0].startswith("website"):
+                self.fields.append([fields[0]])
+            else:
+                self.fields.append(list(fields))
 
     def on_task_event(self, state, detail):
         """只记录真实任务状态，完成时核对报告存在。"""

@@ -36,6 +36,10 @@ class ConsoleCallbacks(GatewayCallbacks):
         """显示任务状态与实际文件，不模拟原生播报。"""
         value = detail.get("path") or detail.get("answer") or detail.get("code", "")
         print(f"\n[大脑] {state}：{value}", flush=True)
+        if detail.get('website'):
+            for item in detail['website']['candidates']:
+                print(f"  {item['id']}. {item['title']} · {item['url']}", flush=True)
+            print('可说：打开第一个网站；60 秒内有效。', flush=True)
 
 
 class ReplayDevices:

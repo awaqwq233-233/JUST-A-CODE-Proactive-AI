@@ -237,6 +237,7 @@ class MainWindow(QMainWindow):
         self.runtime.transcript_callback = self._transcript_received.emit
         self.runtime.task_callback = self._task_received.emit
         self._latest_report = None
+        self._website_token = None
         self._stop_requested = self._stopping = self._close_after_stop = False
         self._stop_error, self._start_thread = "", None
         self._reply_open = False
@@ -367,6 +368,19 @@ class MainWindow(QMainWindow):
         self.open_report_btn.setEnabled(False)
         self.open_report_btn.clicked.connect(self._open_report)
         conversation.addWidget(self.open_report_btn)
+        self.website_choices = []
+        for index in range(1, 4):
+            button = QPushButton()
+            button.setObjectName('quiet')
+            button.hide()
+            button.clicked.connect(lambda checked=False, choice=index: self._choose_website(choice))
+            self.website_choices.append(button)
+            conversation.addWidget(button)
+        self.clear_websites_btn = QPushButton('清除网站缓存')
+        self.clear_websites_btn.setObjectName('quiet')
+        self.clear_websites_btn.clicked.connect(self._forget_websites)
+        self.clear_websites_btn.setToolTip('运行语音时清除已保存的网站对应关系，下次重新查找')
+        conversation.addWidget(self.clear_websites_btn)
         self.console = QPlainTextEdit()
         self.console.setObjectName("console")
         self.console.setReadOnly(True)
@@ -619,6 +633,11 @@ class MainWindow(QMainWindow):
     @Slot(str, object)
     def _append_task(self, state, detail):
         """主线程显示任务状态，完成后才开放真实报告文件入口。"""
+        if state == 'website_choices_cleared':
+            self._website_token = None
+            for button in self.website_choices:
+                button.hide()
+            return
         if self._stopping or self._stop_requested:
             return
         labels = {"running": "大脑正在处理任务", "completed": "报告已生成", "error": "任务暂停或失败", "rejected": "任务未执行", "cancelled": "任务已取消，已提交的系统动作不会撤回"}
@@ -645,7 +664,10 @@ class MainWindow(QMainWindow):
                        stale_speech="转写已过期，未执行查询，请重复", long_speech="语句过长，未执行查询，请简短重说",
                        unsupported_system_request="未匹配系统指令，未执行查询；可说：查一下电池电量",
                        unsupported_web_request="未匹配联网指令；可说：上网搜索上海明天的天气",
-                       unsupported_local_request="未匹配支持的单条指令；应用仅支持已列名称，网站可说打开B站，其他网站请提供完整 HTTP(S) 网址；文件搜索须说明目录和关键词",
+                       unsupported_local_request="未匹配支持的单条指令；可说打开某个网站，应用仅支持已列名称；文件搜索须说明目录和关键词",
+                       website_choice_expired="网站候选已过期或编号不匹配，请重新说要打开的网站",
+                       website_choice_cancelled="网站选择已取消",
+                       website_failed="网站解析或打开失败，请稍后重试；若已提交打开请求，该动作不会自动撤回",
                        local_failed="本地任务未完成核验；若已提示启动请求提交，该动作不会自动撤回",
                        web_failed="联网查询未完成，请检查网络、Qwen 或换个关键词；未发布结果",
                        response_wait_timeout="等待转写超时，普通回复未播放",
@@ -672,16 +694,42 @@ class MainWindow(QMainWindow):
                 output = "实际搜索词：" + data.get("search_query", data["query"]) + "\n搜索来源：" + data["provider"] + "\n" + "\n".join(
                     f"[{item['id']}] {item['title']}\n{item['url']}\n正文：{page_states[item['page']['status']]}"
                     for item in data["results"])
+            elif detail['name'] == 'resolve_website':
+                data = detail['data']
+                page_states = {'read': '已读首页', 'unavailable': '首页不可读或需验证', 'not_read': '未读首页'}
+                output = '正在核对网站候选：' + '\n'.join(
+                    f"{item['id']}. {item['title']} · {item['url']} · {page_states.get(item.get('page', {}).get('status'), '未核验')}"
+                    for item in data.get('candidates', []))
+                if not data.get('candidates'):
+                    output = data.get('reason', '未找到相关候选')
             self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]) +
                               "\n结果时间：" + detail["queried_at"] + "\n" + output)
         if state == "needs_input":
             self._insert_text(self.console, "\n" + detail["answer"])
-        if state in ("completed", "submitted", "partial", "failed", "no_answer"):
+            website = detail.get('website')
+            if website:
+                self._website_token = website['token']
+                for button, item in zip(self.website_choices, website['candidates']):
+                    from urllib.parse import urlsplit
+                    button.setText(f"打开第{item['id']}个 · {item['title'][:12]} · {urlsplit(item['url']).hostname[:35]}")
+                    button.setToolTip(item['title'] + '\n' + item['url'] + '\n点击表示选择此网址；页面加载仍由浏览器完成')
+                    button.show()
+        if state in ("completed", "submitted", "partial", "failed", "no_answer", 'needs_input') and detail.get('path'):
             from pathlib import Path
             self._latest_report = Path(detail["path"])
             self.open_report_btn.setEnabled(self._latest_report.is_file())
             self.open_report_btn.setToolTip(str(self._latest_report))
             self._insert_text(self.console, "\n" + detail["answer"] + "\n文件：" + self._latest_report.name)
+
+    def _choose_website(self, index):
+        """按钮仅提交当前令牌和编号，真正打开在后台且经过代次校验。"""
+        if not self._website_token or not self.runtime.choose_website(self._website_token, index):
+            self._insert_text(self.console, '\n网站选择已失效或当前忙碌，请重新发出指令。')
+
+    def _forget_websites(self):
+        """请求后台清除缓存；未启动时给出可操作提示。"""
+        if not self.runtime.forget_websites():
+            self._insert_text(self.console, '\n请在语音已启动且任务空闲时清除网站缓存。')
 
     def _open_report(self):
         """仅用户点击后打开已经生成的本机报告，不执行模型给出的链接。"""
