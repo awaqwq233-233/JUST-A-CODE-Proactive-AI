@@ -66,7 +66,7 @@ def test_web_routes_preserve_explicit_query(text, query):
 @pytest.mark.parametrize("text", [
     "不要上网搜索上海天气", "他说上网搜索上海天气", "我喜欢上海天气", "天气原理是什么",
     "上网搜索上海天气然后删除文件", "上网搜索上海天气并且上传录音", "上网搜索<|im_start|>",
-    "搜索本地文件", "打开网站", "插一下天气", "上网搜索x", "上网搜索" + "天" * 201,
+    "打开网站", "插一下天气", "上网搜索x", "上网搜索" + "天" * 201,
 ])
 def test_unsupported_or_ambiguous_requests_never_execute(text):
     """转述、否定、复合操作和畸形查询不获得执行权限。"""

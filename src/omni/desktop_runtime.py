@@ -62,13 +62,14 @@ class DesktopCallbacks(GatewayCallbacks):
         """同步大脑进度和真实报告；错误不宣称任务已完成。"""
         if state == "running":
             self.runtime.context.is_thinking = True
-        elif state in ("completed", "no_answer", "needs_input", "error", "cancelled"):
+        elif state in ("completed", "submitted", "partial", "failed", "no_answer", "needs_input", "error", "cancelled"):
             self.runtime.context.is_thinking = False
         if self.runtime.task_callback:
             self.runtime.task_callback(state, detail)
         else:
             source = "语音" if state == "transcription_rejected" else "大脑"
-            print(f"\n[{source}] {state}" + (f"：{detail['path']}" if state == "completed" else ""), flush=True)
+            value = detail.get("path") or detail.get("answer") or detail.get("code", "")
+            print(f"\n[{source}] {state}：{value}", flush=True)
 
 
 class GatewayRuntime:
@@ -141,6 +142,16 @@ class GatewayRuntime:
         """结束一段模型文本，GUI 回调负责排队到主线程。"""
         if self.reply_finished_callback:
             self.reply_finished_callback()
+
+    def choose_website(self, token, index):
+        """把 GUI 选择交回当前管线验证，不在桌面线程打开候选 URL。"""
+        pipeline = getattr(self.omni_client, '_pipeline', None)
+        return bool(pipeline and pipeline.choose_website(token, index))
+
+    def forget_websites(self):
+        """缓存清理由后台任务完成，不在 Qt 主线程读取缓存。"""
+        pipeline = getattr(self.omni_client, '_pipeline', None)
+        return bool(pipeline and pipeline.forget_websites())
 
 
 class DesktopRuntime(GatewayRuntime):

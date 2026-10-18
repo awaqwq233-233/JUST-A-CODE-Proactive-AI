@@ -55,6 +55,7 @@ class BackendController(QObject):
         self.state, self.detail = 'stopped', '后端未启动'
         self.launcher, self.pid = Path(launcher), 0
         self._buffer, self._requested_stop = '', False
+        self._last_error = ''
         self._decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
         self._probe_cancel = threading.Event()
         self._probe_pending = False
@@ -104,6 +105,7 @@ class BackendController(QObject):
         if sys.version_info[:2] != (3, 11):
             raise RuntimeError('后端必须使用项目的 Python 3.11 环境')
         self.pid, self._buffer, self._requested_stop = 0, '', False
+        self._last_error = ''
         self._decoder.reset()
         arguments = ['-u', str(self.launcher), '--demo-dir', paths['demo_dir'],
                      '--engine-dir', paths['engine_dir'], '--model-dir', paths['model_dir'],
@@ -155,6 +157,9 @@ class BackendController(QObject):
                 self._set_state('ready', '后端已就绪 · 本窗口管理')
             elif state == 'phase':
                 self._set_state('starting', str(detail))
+            elif state == 'error':
+                self._last_error = str(detail)
+                self._set_state('error', self._last_error)
         elif line.strip():
             self.log.emit('[后端] ' + line + '\n')
 
@@ -176,7 +181,7 @@ class BackendController(QObject):
         if self._requested_stop:
             self._set_state('stopped', '后端已停止')
         else:
-            self._set_state('error', f'后端退出（{code}），请查看连接日志')
+            self._set_state('error', self._last_error or f'后端退出（{code}），请查看连接日志')
 
     def _process_error(self, error):
         """启动文件不可执行等失败明确反馈，仍存在的进程保持受控。"""

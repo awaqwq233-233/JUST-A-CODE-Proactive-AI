@@ -131,3 +131,16 @@ def test_recognition_and_tool_progress_do_not_reset_running_brain():
         callbacks.on_task_event("running", {})
         callbacks.on_task_event(state, {})
         assert not runtime.context.is_thinking
+
+
+@pytest.mark.parametrize("state", ["submitted", "partial", "failed"])
+def test_local_terminal_status_releases_brain_busy(state):
+    """本地动作终态释放 GUI 忙碌状态，派发通知仍保持忙碌。"""
+    runtime = desktop.DesktopRuntime()
+    runtime.task_callback = lambda *args: None
+    callbacks = desktop.DesktopCallbacks(runtime)
+    callbacks.on_task_event("running", {})
+    callbacks.on_task_event("action_dispatched", {})
+    assert runtime.context.is_thinking
+    callbacks.on_task_event(state, {})
+    assert not runtime.context.is_thinking

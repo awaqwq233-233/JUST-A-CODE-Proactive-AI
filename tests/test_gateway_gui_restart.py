@@ -481,3 +481,35 @@ def test_voice_start_requires_ready_backend_without_opening_devices(window, monk
     window._toggle_run()
     assert not window.runtime.running and window.runtime.starts == 0
     assert '先启动后端' in window.console.toPlainText()
+
+
+@pytest.mark.parametrize("state", ["submitted", "partial", "failed"])
+def test_local_task_terminal_states_keep_real_report(window, tmp_path, state):
+    """请求提交、部分结果和失败均显示真实记录，且不渲染输出中的网页标签。"""
+    path = tmp_path / "本地任务.md"
+    path.write_text("本地执行证据", encoding="utf-8")
+    window._append_task("action_dispatched", dict(name="open_app", arguments={"app_name": "Calculator"}))
+    window._append_task(state, dict(path=str(path), answer="bo s s，<b>原样文本</b>"))
+    text = window.console.toPlainText()
+    assert "启动请求已提交" in text and "<b>原样文本</b>" in text
+    assert window.open_report_btn.isEnabled() and window._latest_report == path
+
+
+def test_website_choice_buttons_only_forward_bound_ids(window, monkeypatch, tmp_path):
+    """GUI 不直接打开 URL；旧候选清除和停止期间撤销也能更新按钮。"""
+    calls = []
+    monkeypatch.setattr(window.runtime, 'choose_website', lambda token, index: calls.append((token, index)) or True, raising=False)
+    report = tmp_path / 'website.md'
+    report.write_text('网站候选记录', encoding='utf-8')
+    detail = {'id':'one', 'answer':'请确认网站', 'path':str(report), 'website':{
+        'token':'bound-token', 'candidates':[{'id':1,'title':'测试站点','url':'https://example.com/'}]}}
+    window._append_task('needs_input', detail)
+    assert not window.website_choices[0].isHidden()
+    window.website_choices[0].click()
+    assert calls == [('bound-token', 1)]
+    assert window.open_report_btn.isEnabled()
+    window._stopping = True
+    window._append_task('website_choices_cleared', {})
+    assert all(button.isHidden() for button in window.website_choices)
+    assert window._website_token is None
+    window._stopping = False

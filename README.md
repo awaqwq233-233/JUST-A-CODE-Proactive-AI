@@ -32,6 +32,14 @@ Target memory uses JSON as the structured source of truth, ChromaDB as a rebuild
 
 The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds. M1 rotates video sessions after 240 input seconds, closes/releases devices and reconnects with the reference voice and bounded assistant history plus supplied confirmed context. Capture visibly pauses during reconnection. It does not reconstruct untranscribed user speech or provide seamless audio across the gap.
 
+### JACBrain Agent plan approved on 2026-10-18
+
+**Approved, not implemented.** The local brain will use the official DeepSeek Harness Python SDK, an isolated subprocess runtime and J.A.C.-specific tool plugins, with the existing `qwen/qwen3.6-35b-a3b` served by LM Studio. This adds task planning, bounded multi-step tool execution, feedback and session recovery within the existing brain tier. MiniCPM remains responsible for perception/native speech; cloud OpenClaw, JSON/ChromaDB/BGE memory and the late-stage reminder plan retain their roles.
+
+Validated voice tasks can be handed to the Agent through one JACBrain task interface. Existing system/web queries, application and URL launching, filename search and website resolution become reusable controlled tools. Simple commands may keep a deterministic fast path behind the same interface; one task has exactly one execution owner. Existing single-action checks remain, while multi-step tasks receive their own explicit workspace, tool and read/write scope. Tool evidence determines results; an Agent's completion message does not prove that a page loaded or an action succeeded. Stop/reconnect invalidation, bounded execution, candidate-choice binding and native evidence summaries must survive migration.
+
+Implementation will first verify the exact Qwen provider and a multi-step text-file/report task in an isolated workspace, then migrate current voice tasks with equivalent behavior, and only then expand editing, code execution and desktop tools. The 8192-token context observed on 2026-10-17 is a snapshot, not a fixed requirement; read the loaded model's capacity, preserve explicit reasoning-off behavior and measure concurrent MiniCPM performance. Harness history is not long-term user memory, and recovery must not replay uncertain side effects. Runtime state is planned under ignored `.cache/agent/`, reports under `output/agent/`. No Harness installation, dependency, backend patch or production permission change is included in this documentation update. Exact SDK/runtime pins and installer checks will follow integration testing. See [AGENTS.md, section ten](AGENTS.md) and CHANGELOG Appendix A7; upstream references: [Python SDK](https://github.com/deepseek-ai/deepseek-harness/blob/master/python/sdk/README.md) and [provider configuration](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/providers.md).
+
 ### Setup and verification
 
 Follow [the setup guide](new_computer_download/READMEfirst.md). Python 3.11 is required for M0/M1. `setup_new_computer.py --only gateway` installs and checks the isolated `.cache/m0/venv` environment, preserving an existing legacy `.venv`.
@@ -53,7 +61,7 @@ The user confirmed live listening, vision and replies work. Restart retesting on
 
 The Gateway GUI uses a deep-blue gradient technology theme with cyan accents and subtle grids. The Parameters toggle has a persistent cyan selected state while the panel is open, a dark unselected state while closed, and distinct press/hover feedback. It has an original-aspect camera preview without black bars, a larger continuous reply transcript, separate collapsible connection logs, and a single status indicator at the top. Text input, send, display-resolution/zoom controls and obsolete model toggles are removed. Start Backend launches the pinned launcher asynchronously, validates repositories/models/ports and enables voice only after the explicit readiness event. Stopping Backend first closes the media session, then lets the launcher reclaim its three owned processes; closing the window waits for both. Already-running external backends are detected and reused without being terminated. Configure Demo/engine/external model directories and optional SHA256 checks through Backend Path Settings; these machine-specific paths are stored only in ignored `.cache/gui/backend.json` (or supplied with `JAC_DEMO_DIR` / `JAC_ENGINE_DIR` / `JAC_MODEL_DIR`). Before starting voice, adjust microphone gain, camera capture fps (5–10), session rotation (5–240 seconds), reconnect attempts, audio devices, camera index, local Gateway URL and reference WAV. Settings lock during operation. Image upload remains fixed at one latest frame per second. The local transcription/system-task switch and local model/brain paths are now available; settings still lock during operation. `main.py --gui` and `python -m src.omni --gui` use the same Gateway path; `--gateway` remains compatible. No new GUI dependency is required. The previous 138-test suite was verified in batches (the first full run had 136 passes and one test writing to the real home directory; its fixture was isolated and passed, alongside one newly added cleanup test). Synthetic screenshots were checked at 1440×880 and 1100×700 without accessing devices.
 
-For VS Code, select the project interpreter `.cache/m0/venv/bin/python` and launch with `--gui`. This machine has an ignored F5 configuration named “J.A.C. · Gateway GUI” with an explicit interpreter; the editor’s Run Python File button does not apply launch.json arguments. See the setup guide, section 10.
+Running `main.py` without arguments now opens the GUI. When the installed project environment exists, the script selects `.cache/m0/venv` before importing dependencies, so VS Code’s Run Python File button also works with a previously selected system/legacy interpreter. For F5 debugging, keep the explicit project interpreter to preserve the debugger. Console and file replay arguments remain explicit. Keep backend checkouts, build outputs and voice frontend resources in a persistent directory, never `/tmp`; an incomplete Git checkout now produces a recovery message in the GUI. See the setup guide, section 10.
 
 ### Documentation
 
@@ -104,6 +112,24 @@ Run `.cache/m0/venv/bin/python verify_web_search.py --query "上海明天天气"
 
 Short visual questions are explicitly covered by the perception prompt. Rejected visual candidates of at most four seconds can be decoded twice more with 0.3/0.6 seconds of leading silence, preserving every original sample and using no example prompt. Both decodes must pass the unchanged confidence checks and agree on the same neutral visual question; system/web topics, disagreement, overlap, expiration or a new utterance cannot use this recovery. It adds CPU waiting only for eligible failures. Superseded ASR results no longer display old transcripts, rejection notices or submit tools. Rejection identifies the utterance and reason. A real CPU Whisper noisy short-question case recovered after an initial rejection; a 65-second file replay with a populated synthetic frame returned the expected blue-interface description and 2.64 seconds of native audio for the short question. The earlier blank-frame short/long replays stayed silent; synthetic checks do not establish the exact acoustic cause of the user's earlier live failure or replace live confirmation.
 
+### M2c: bounded local computer tasks (updated 2026-10-17)
+
+The production voice path now supports one explicit local action per utterance: opening a listed application, opening an explicit HTTP(S) URL, or searching filenames inside a specified directory. Examples: “打开计算器”, “打开Safari”, “打开Python官网”, and “在下载目录查找文件名包含报告的文件”. The macOS application list is Safari, Calendar, Notes, Calculator and TextEdit. Known website names are 百度, GitHub, Python, and B站 / 哔哩哔哩 / bilibili. They accept 网页 / 网站 / 官网 / 官方网站, including “打开B站” and “打开B站网页”, with traditional Chinese variants. Literal URLs retain their punctuation and path/query characters. Unlisted names now enter evidence-based website resolution; Qwen selects an observed candidate ID and never invents a URL. Explicit application requests never fall back to opening a website. File searches without a directory ask for the complete request. Paths and filename keywords retain the confirmed transcript; script conversion and homophone correction are not applied to these values.
+
+Qwen receives only one authorized tool with exact argument enums. Changed parameters, multiple calls, negations, quoted requests and unsupported compound actions are rejected before execution. Results and native speech use actual tool evidence, without another model-generated success claim. The GUI distinguishes a submitted launch request, a detected running macOS process, partial search results and failure. Browser handoff does **not** verify page loading; a running process does **not** verify a foreground window.
+
+Searches inspect filenames only, under an explicit non-hidden subdirectory of the user's home. They skip hidden entries and symbolic links, with limits of 20 results, 60,000 entries, 20 nested levels and four seconds of scanning; a separate process has a seven-second hard wait limit. POSIX directory traversal uses `O_NOFOLLOW`. Partial scans cannot establish that a file is absent. Stop/reconnect invalidates pending work and report publication; launching is checked under the same session lock. Already submitted operating-system actions cannot be undone by cancellation. Reports remain under ignored `output/m2/qwen/`.
+
+No additional dependencies, models or backend rebuild are needed; restart the GUI and enable “本地转写与电脑任务”. `verify_local_tasks.py --task` performs an explicitly supplied real action without capture devices. Windows/Linux retain portable filename search and URL handoff paths, but application launching in this first stage is macOS-only; those platforms have not been tested. Arbitrary commands, desktop clicking/typing, file modification, memory and cloud escalation remain outside this stage. See setup guide section 15 for verification boundaries and commands.
+
+Website resolution (2026-10-17): say “打开小众软件” or another site name without registering it first. Existing app names and explicit URLs keep their paths. The resolver searches domestic-first Bing RSS (global fallback on request failure or unrelated results), groups candidates by host, reads at most three homepages and checks names, titles, visible text, declared canonical URLs and site sections. Qwen selects only observed IDs. Automatic opening requires exactly one eligible HTTPS candidate and model agreement; search position, a claimed probability or a page calling itself official is not sufficient. These signals are heuristics, not proof of ownership. Verification pages, conflicting identity, multiple matches or HTTP-only candidates require an explicit choice. Website identity and reachability are separate; browser handoff still does not confirm loading.
+
+The GUI shows up to three candidate buttons and a real report. Say “打开第一个网站” or click a candidate within 60 seconds; IDs are bound to the current task/session, consumed once and invalidated by another task, stop or reconnect. “取消网站选择” dismisses the prompt. The next choice retains normal ASR quality and overlap checks. All network/model/cache work stays on the task thread. A resolved task has a 60-second total budget and the existing 25-second search limit; cancellation is checked while waiting and again before dispatch.
+
+Dynamic mappings live in ignored `.cache/sites/resolutions.json` (up to 128 entries, seven days for evidence-based choices and 30 days for user-confirmed choices). Cache hits recheck the homepage and must keep the same host; failed checks trigger resolution again. Use “重新查找小众软件网站” to refresh, “忘记小众软件的网站地址” to remove one mapping, or “清除网站缓存” / the GUI button to clear dynamic mappings. Built-in common-site shortcuts remain in source. No conversation history, audio or video is sent to search; only the site query and bounded page requests leave the machine. Search/selection evidence remains in local reports, not runtime counters.
+
+`verify_website.py --name 小众软件` performs real search and Qwen selection without opening a browser. Add `--open` to execute a unique result once; ambiguity does not silently choose. Probe caches are isolated under its output directory. SearXNG and DDGS were reviewed as search providers, but neither replaces the task/session/identity layer; this implementation reuses the existing httpx transport and adds no service, model, dependency or backend patch.
+
 ## 中文说明
 
 J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS。目标是持续感知环境、提前规划与预警，并主动完成任务。智能眼镜、AR 和 Vision Pro 是可选终端，核心是 AI 系统与主动服务框架。当前主要开发平台为 macOS Apple Silicon。
@@ -128,6 +154,14 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 
 **末期计划，尚未实现（2026-10-11 已确认）**：现有核心迁移完成后，最后接入本地待办清单与主动提醒。MiniCPM 判断任务、负责人、拟交给谁执行、当前活动与时间，本地程序校验后及时保存 JSON 并刷新 GUI；歧义待确认，推测活动会过期，完成须有用户反馈或真实执行证据。待办落盘不等待五条摘要的向量索引批次。普通静默巡检默认每 45 分钟，可设 30–60 分钟或更长；明确提醒时间和关键任务事件单独处理。巡检频率不等于提醒频率，提醒结合当前活动和免打扰，支持延后/取消并去重。实施前须验证 MiniCPM 独立结构化事件通道与固定后端接线，普通模型回复不能直接作为写入指令。清单不整份自动上传云端、不进入 Git；不承诺程序退出或电脑休眠时准时提醒。本次不改实现或安装方式，可选眼镜等外设不作为前置条件。详见 [AGENTS.md](AGENTS.md) 与 CHANGELOG 附 A6。
 
+### JACBrain Agent 方案（2026-10-18 已确认）
+
+**已确认，待实现。** 大脑层采用官方 DeepSeek Harness Python SDK、独立子进程运行时及 J.A.C. 专用工具插件，继续调用 LM Studio 的 `qwen/qwen3.6-35b-a3b`。目标补齐任务拆解、有界多步骤执行、反馈调整和会话恢复。MiniCPM 继续感知与原生播报，云端 OpenClaw、JSON/ChromaDB/BGE 记忆及末期待办提醒保持原分工与顺序。
+
+通过校验的语音任务可经统一 JACBrain 接口交给 Agent 编排；系统/联网查询、打开应用/网址、文件名搜索及站名解析复用为受控工具。简单明确指令可在同一接口保留确定性快速路径，每项任务只有一个执行者。既有单动作校验保留，多步骤任务单独定义工作目录、工具及读写范围。工具真实证据决定完成状态，模型声称完成不等于网页已加载或动作成功；停止/重连失效、预算、候选选择绑定与原生证据摘要随迁移保留。
+
+先在独立测试目录验证精确 Qwen provider 和“读取文本 → 整理差异 → 生成报告”，再等价迁移现有语音任务，随后逐项扩展文件编辑、代码执行和桌面工具。2026-10-17 查询到的 Qwen 8192-token 上下文只是当时快照，须读取实际加载配置、保持显式关闭思考并实测与 MiniCPM 同跑性能。Harness 历史不替代长期记忆，恢复不得重放结果不明的有副作用动作。运行状态拟存忽略的 `.cache/agent/`，报告拟存 `output/agent/`。本次仅同步文档，不安装 Harness、不加依赖、不改后端或生产权限；具体版本锁定和安装自检随联调落实。详见 [AGENTS.md 第十节](AGENTS.md) 与 CHANGELOG 附 A7；上游依据为[官方 Python SDK](https://github.com/deepseek-ai/deepseek-harness/blob/master/python/sdk/README.md) 和 [provider 配置](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/providers.md)。
+
 ### 当前实现状态
 
 **M0 已通过且 30 分钟长测免测；M1 听看说、GUI 预览与手动启停已于 2026-10-07 获用户真机验收。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。M2a 独立 Qwen 只读工具调用与中文文件输出已实测通过；M2b 已接入 Gateway CLI/GUI 的并行转写和明确系统指令路由，并于 2026-10-08 获用户确认真机文字结果正常；原生结果播报已接入，ChromaDB 与云端任务尚未接入。旧 MiniCPM 客户端、:9060 启动器、轮询 judge 与传统运行入口已移除，所有入口统一使用 Gateway。当前验收不等于无限会话或长期稳定性验证。
@@ -151,9 +185,9 @@ GUI 内可直接启动固定后端，也可独立启动后端后使用 Python 3.
 
 用户已确认真机听看说正常。2026-10-07 重启复验暴露了残影和过早断链导致 Worker/C++ 后端仍忙的问题：预览现完整重绘并清除上一帧，停止在后台执行，清理完成前禁止重启。手动停止与会话轮换使用相同的 8 秒接收尾窗，等待 `session.closed` 和连接关闭后再冷却 1 秒，通常约 9 秒；GUI 保持响应。真实后端合成帧/静音三次启停通过后，bo s s 又确认真实 GUI「这次完全正常」。这些是客户端兼容处理，不声称上游底层竞争已由源码修复。已受旧版本影响的后端先重启一次，再关闭重开 GUI 加载修复，无需重装依赖。
 
-GUI 已按 bo s s 最新要求改为深蓝渐变科技风格，配青色高光与细网格。「调节参数」按钮在面板展开时持续高亮，收起时恢复暗色，并有悬停/按压反馈。摄像头按真实比例完整嵌入且无黑边；对话区域扩大、流式文本连续拼接，连接日志可单独折叠，顶部只保留一个状态提示。移除文字输入/发送、显示分辨率/缩放和旧模型开关。顶部「启动后端」异步调用固定启动器，校验版本、模型与端口，并收到明确就绪事件后才允许「启动语音」。停止后端先关闭音视频会话，再回收本窗口启动的三进程；退出窗口等待两者完成。外部已运行的后端仅探测和复用，不会由 GUI 终止。「后端路径设置」可选择 Demo / 引擎 / 仓库外模型目录及 SHA256 校验选项，路径仅保存在忽略的 `.cache/gui/backend.json`，也可通过 `JAC_DEMO_DIR` / `JAC_ENGINE_DIR` / `JAC_MODEL_DIR` 指定。启动语音前可调麦克风增益、采集帧率（5–10fps）、会话轮换（5–240 秒）、异常重连次数、音频设备、相机编号、本机 Gateway 与参考 WAV，运行中锁定。图像仍固定每秒上行最新一帧；新增实际生效的“本地转写与查询任务”开关和本地模型/大脑路径，仍在运行中锁定。`main.py --gui` 与 `python -m src.omni --gui` 使用同一 Gateway 路径，`--gateway` 参数仍兼容，无需新增 GUI 依赖。上一阶段测试共 138 项已分批验证通过（初次全套 136 通过，1 项写真实主目录的旧测试改为隔离目录后通过，再新增 1 项异常清理回归通过）；1440×880 与 1100×700 合成帧预览已检查，未新增真机听感验收。
+GUI 已按 bo s s 最新要求改为深蓝渐变科技风格，配青色高光与细网格。「调节参数」按钮在面板展开时持续高亮，收起时恢复暗色，并有悬停/按压反馈。摄像头按真实比例完整嵌入且无黑边；对话区域扩大、流式文本连续拼接，连接日志可单独折叠，顶部只保留一个状态提示。移除文字输入/发送、显示分辨率/缩放和旧模型开关。顶部「启动后端」异步调用固定启动器，校验版本、模型与端口，并收到明确就绪事件后才允许「启动语音」。停止后端先关闭音视频会话，再回收本窗口启动的三进程；退出窗口等待两者完成。外部已运行的后端仅探测和复用，不会由 GUI 终止。「后端路径设置」可选择 Demo / 引擎 / 仓库外模型目录及 SHA256 校验选项，路径仅保存在忽略的 `.cache/gui/backend.json`，也可通过 `JAC_DEMO_DIR` / `JAC_ENGINE_DIR` / `JAC_MODEL_DIR` 指定。启动语音前可调麦克风增益、采集帧率（5–10fps）、会话轮换（5–240 秒）、异常重连次数、音频设备、相机编号、本机 Gateway 与参考 WAV，运行中锁定。图像仍固定每秒上行最新一帧；新增实际生效的“本地转写与电脑任务”开关和本地模型/大脑路径，仍在运行中锁定。`main.py --gui` 与 `python -m src.omni --gui` 使用同一 Gateway 路径，`--gateway` 参数仍兼容，无需新增 GUI 依赖。上一阶段测试共 138 项已分批验证通过（初次全套 136 通过，1 项写真实主目录的旧测试改为隔离目录后通过，再新增 1 项异常清理回归通过）；1440×880 与 1100×700 合成帧预览已检查，未新增真机听感验收。
 
-VS Code 请选择项目解释器 `.cache/m0/venv/bin/python`，并带 `--gui` 启动。本机已配置忽略的 F5 项「J.A.C. · Gateway GUI」；右上角「运行 Python 文件」不使用 launch.json 的参数，系统 Python 缺少 numpy 时应切换环境。完整步骤见安装指南第 10 节。
+直接运行无参数 `main.py` 现在默认打开 GUI；检测到已安装的项目环境时，在导入依赖前切换到 `.cache/m0/venv`，VS Code 右上角「运行 Python 文件」误选系统/旧解释器时也可使用。F5 调试仍应明确选择项目解释器，以保留调试连接；终端和文件回放继续使用显式参数。后端源码、编译产物和音色前端须保存在长期目录，不使用 `/tmp`；Git 仓库不完整时，GUI 会保留具体原因和恢复提示。完整步骤见安装指南第 10 节。
 
 ### M2b：并行转写与系统任务
 
@@ -163,7 +197,7 @@ VS Code 请选择项目解释器 `.cache/m0/venv/bin/python`，并带 `--gui` �
 
 首批指令为“查询电脑状态”“查一下电池电量”“查询本机当前时间”“检查内存占用”“生成一份系统状态报告”。系统查询开放 `get_system_info`；联网查询单独开放 `search_web`（见下节），完整句匹配拒绝聊天、否定、转述和未开放的复合操作。句子按会话代次/编号去重；低置信度、与助手播放重叠、超过 15 秒的转写或大脑忙时的新增指令不执行。VAD 在句末静音 600ms 后提交，超过 12 秒的长句直接拒绝，不拆成多个任务。停止/重连取消旧任务及发布；积压/转写异常明确暂停任务和未核验播报，感知上行继续运行。
 
-GUI 独立显示用户原话、任务进度，完成后可点“打开最新报告”。真实 UTF-8 报告保存在忽略的 `output/m2/qwen/`，包含该任务的转写及工具证据；一般对话转写仅保留有界内存，运行统计不含正文/PCM。任务完成后由同一原生音色/播放流播报实际工具证据短句；综合报告播报完成提示，完整文字与文件继续保留。启动前可关闭“本地转写与查询任务”或指定本地目录/大脑地址；CLI 对应 `--no-transcription` / `--whisper-model-dir` / `--brain-url`。SDK 默认不启用旁路，文件回放需显式 `--transcription`。
+GUI 独立显示用户原话、任务进度，完成后可点“打开最新报告”。真实 UTF-8 报告保存在忽略的 `output/m2/qwen/`，包含该任务的转写及工具证据；一般对话转写仅保留有界内存，运行统计不含正文/PCM。任务完成后由同一原生音色/播放流播报实际工具证据短句；综合报告播报完成提示，完整文字与文件继续保留。启动前可关闭“本地转写与电脑任务”或指定本地目录/大脑地址；CLI 对应 `--no-transcription` / `--whisper-model-dir` / `--brain-url`。SDK 默认不启用旁路，文件回放需显式 `--transcription`。
 
 固定后端、CPU Whisper、已加载 Qwen 的 60 秒合成文件验证完成唯一系统查询和报告，关闭清理成功；前一段 24 秒验证在会话结束取消未完成任务。该合成文件验证未打开设备，不替代真机识别或长时并行验收。
 
@@ -186,6 +220,24 @@ GUI 独立显示用户原话、任务进度，完成后可点“打开最新报�
 
 真实三项验证各调用一次工具，耗时 2.02 / 1.69 / 6.04 秒；它们只代表独立 Qwen，不代表双模型并行或语音升级延迟。内存查询改用 `vm_stat` 实际页大小，明确活跃与有线页合计不等于完整占用。复用已有 httpx，无新增依赖；安装自检已加入大脑/任务模块。M2b 已接入上述旁路与路由，真机文字结果已获用户确认；原生任务结果播报现已接入。
 
+### M2c：受限本地电脑任务（2026-10-17 更新）
+
+生产语音已接入三类单动作：“打开计算器”“打开Safari”“打开Python官网”“在下载目录查找文件名包含报告的文件”。应用白名单为 macOS Safari、日历、备忘录、计算器、文本编辑；支持明确的标准 HTTP(S) 网址及百度、GitHub、Python、B站／哔哩哔哩／bilibili 名称，可带“网页／网站／官网／官方网站”及繁体写法，例如“打开B站”“打开B站网页”。未预设的站名会自动搜索并核对候选，Qwen 只选查到的编号，不自行猜写域名或纠正同音；明确要求打开应用时不会改为打开网站。网址中的路径、参数和标点原样保留；语音识别不保留完整网址时不执行，可使用已支持的网站名称。搜索必须说明目录和文件名关键词，缺目录只追问，须重新说完整指令。文件路径和关键词保留确认转写的字符，不自动繁简改写或猜同音；若与真实文件名不符，请按 GUI 转写纠正。
+
+Qwen 每句仅获一个工具及精确参数枚举，改参数、重复或多项调用、否定、转述、引用与未支持复合句均不能执行。GUI 分别显示启动请求提交、检测到应用运行、部分搜索与失败；浏览器接收请求不等于页面加载成功，进程运行不等于窗口在前台。结果文件与原生播报从工具证据生成，不让模型重新编造执行状态。
+
+文件搜索只读名称，限定主目录内明确的非隐藏子目录（可说桌面/下载/文档，或完整路径），跳过隐藏项与符号链接；最多 20 条结果、60000 个条目、20 层子目录、4 秒扫描，独立进程 7 秒硬等待上限。POSIX 逐级使用 `O_NOFOLLOW`；达到上限或权限不足标明部分扫描，不能据此声称整个目录没有匹配。停止/重连取消等待、后续派发和旧报告发布，派发与取消使用同一代次锁；已提交给系统的打开动作不能撤回。
+
+生产记录仍在忽略的 `output/m2/qwen/`，独立验收为 `verify_local_tasks.py`。无需新依赖、模型下载或后端重编译，重开 GUI 并开启“本地转写与电脑任务”即可。Windows/Linux 保留文件搜索和网址交接代码，但本阶段应用白名单仅支持 macOS，未做其他平台实测。任意命令、鼠标键盘控制、文件修改、长期记忆与云端升级仍待后续阶段。验收与命令见安装指南第 15 节。
+
+站名自动解析（2026-10-17）：现在可直接说“打开小众软件”等未预设的名称，不必先登记域名。已知应用、明确网址和常用站名快捷入口保留。独立解析器通过国内优先必应 RSS 搜索（请求失败或结果失配再试全球入口），按主机去重，最多读取三个首页；核对名称、标题、正文、页面声明的规范地址及主站/论坛/下载分站差异。Qwen 只能选择真实候选编号。自动打开须唯一 HTTPS 候选满足证据门槛且 Qwen 同意；搜索排名、模型自报概率、页面自称官网都不足以单独放行。这些线索不是域名所有权证明，不承诺任意站名都能无歧义识别。
+
+身份不明、同名、验证页或仅 HTTP 候选会显示最多三个选择，可点击或在 60 秒内说“打开第一个网站”；选择绑定任务与会话并只消费一次，新任务、停止、重连或超时清除。可说“取消网站选择”。下一句仍需通过原转写质量、播放重叠和时效检查。GUI/原生播报区分待确认、未找到和实际打开请求提交，浏览器交接仍不代表页面加载；正文无法读取不直接断言网站不存在。网络、Qwen 和缓存均在后台，任务总限 60 秒、搜索沿用 25 秒，等待及派发前检查取消。
+
+动态缓存保存在忽略的 `.cache/sites/resolutions.json`，最多 128 条；证据匹配有效 7 天，用户明确选择有效 30 天。复用前重读首页并核对主机，失败重新解析。可说“重新查找小众软件网站”“忘记小众软件的网站地址”，或用“清除网站缓存”及 GUI 按钮清空；此操作管理动态映射，源码内常用站名快捷入口不删除。搜索仅发送站名查询及有界页面请求，不发送对话历史、音视频；候选和选择证据写本地报告，统计不含正文。
+
+独立 `verify_website.py --name 小众软件` 只进行真实搜索和 Qwen 判断，`--open` 才实际打开一次，歧义不会自动选择；探针缓存隔离在 output/。已评估 SearXNG、DDGS 搜索项目，本轮复用现有网络层，无新增依赖、外部服务、模型或后端补丁；安装步骤与命令见安装指南第 16 节。
+
 ### 文档与未来终端
 
 [AGENTS.md](AGENTS.md) 是开发者契约；[CHANGELOG.md](CHANGELOG.md) 记录变更和迁移差距。已确认的方案 B 权威 DOCX 在本机 `brainstorming_projectPLAN/` 维护，整个目录不进 Git、不推送。Agent 已获准按确认的架构决策同步该本地目录。模板 `voices/silverwalf_voice.wav` 经 bo s s 明确允许公开推送；模型和实际测试录音录像不推送。`codinglog_by_awaqwq233/` 仍仅由 bo s s 手动维护且不进 Git。
@@ -194,7 +246,7 @@ GUI 独立显示用户原话、任务进度，完成后可点“打开最新报�
 
 ### 联网搜索（2026-10-09）
 
-启动语音并启用“本地转写与查询任务”后，可说“上网搜索上海明天的天气”“联网查询 Python asyncio 官方文档”，也支持明确城市天气问句。由本地 Qwen 调用搜索，默认先国内必应 RSS、失败再试固定全球入口，免 API 密钥。该入口不是承诺稳定的公开 API；网络受限、验证页、格式变化或无结果会明确失败。
+启动语音并启用“本地转写与电脑任务”后，可说“上网搜索上海明天的天气”“联网查询 Python asyncio 官方文档”，也支持明确城市天气问句。由本地 Qwen 调用搜索，默认先国内必应 RSS、失败再试固定全球入口，免 API 密钥。该入口不是承诺稳定的公开 API；网络受限、验证页、格式变化或无结果会明确失败。
 
 每次最多返回 5 个来源，前三页并发读取静态正文。使用现有 httpx 与标准库；公网 URL、IPv4 DNS 和逐跳重定向核验后连接已核验 IP，保留原始 Host/TLS SNI 和证书验证。不会执行网页脚本，不携带浏览器登录、Cookie 或环境代理。网络工作在后台大脑线程，整次 25 秒上限并可取消，音视频上行保持原节拍。
 

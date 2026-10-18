@@ -1,6 +1,7 @@
-"""Gateway 音频旁路：有界 VAD、离线 Whisper、用户指令校验与只读 Qwen。"""
+"""Gateway 音频旁路：有界 VAD、离线 Whisper、用户指令校验与受限 Qwen 任务。"""
 
 from collections import Counter, deque
+import copy
 from dataclasses import dataclass
 import queue
 import re
@@ -13,6 +14,7 @@ import numpy as np
 
 from .transcription_worker import WhisperProcess, DEFAULT_MODEL_DIR
 from src.tools.search_query import web_instruction
+from src.tools.local_intents import local_instruction, is_local_request, SCOPE_PROMPT
 
 
 @dataclass
@@ -127,10 +129,15 @@ def is_online_request(text):
 
 
 def route_instruction(text):
-    """完整匹配显式系统或联网查询；不把助手输出、转述或否定当成指令。"""
+    """完整匹配显式系统、联网或本地动作；不执行助手输出、转述或否定。"""
+    local = local_instruction(text)
+    if local:
+        return local
     web = route_web_instruction(text)
     if web:
         return web
+    if is_local_request(text):
+        return None
     text = normalize_transcript(text)
     prefix = r"(?:(?:请你|请|帮我|麻烦你|麻烦|给我|现在|jac|贾维斯)[,，]?){0,3}"
     report = r"(?:并|然后)?(?:生成|写|保存)(?:一份|一个)?(?:中文)?(?:系统状态|电脑状态|系统)?报告"
@@ -214,6 +221,7 @@ class TaskPipeline:
         self.response_sequence, self.response_policy = 0, "allow"
         self.response_guard = threading.Event()
         self._last_recognition_notice = float("-inf")
+        self.website_pending = None
 
     def start(self):
         """后台完成资源/模型就绪，启动三个有界处理线程。"""
@@ -254,6 +262,7 @@ class TaskPipeline:
             self.response_guard = threading.Event()
             self.response_policy = "allow"
             self._last_recognition_notice = float("-inf")
+            self._clear_website_choice()
             self._drain(self.audio)
             self._drain(self.utterances)
 
@@ -265,6 +274,7 @@ class TaskPipeline:
             self.active = False
             self.response_guard.set()
             self.response_policy = "block"
+            self._clear_website_choice()
             if self.on_invalidate is not None:
                 self.on_invalidate()
             for buffer in (self.audio, self.utterances):
@@ -337,7 +347,7 @@ class TaskPipeline:
         candidate = "".join(s.get("text", "") for s in segments)
         key = normalize_transcript(candidate).translate(str.maketrans({"麼": "么", "麽": "么", "見": "见"}))
         if (len(key) > 20 or not re.search(r"(?:看到|看见).*什么", key)
-                or is_system_request(candidate) or is_online_request(candidate)):
+                or is_system_request(candidate) or is_online_request(candidate) or is_local_request(candidate)):
             return None
         accepted, keys = [], []
         for length in (4800, 9600):
@@ -484,9 +494,11 @@ class TaskPipeline:
                     self._last_recognition_notice = float("-inf")
                     self.callbacks.on_user_transcript(text)
                     fields = route_instruction(text)
-                    self._response_decided(utterance, "block" if fields or is_system_request(text) or is_online_request(text) else "allow")
+                    self._response_decided(utterance, "block" if fields or is_system_request(text) or is_online_request(text) or is_local_request(text) else "allow")
                     if fields:
                         self.submit(utterance, text, fields)
+                    elif is_local_request(text):
+                        self._notify("rejected", {"code": "unsupported_local_request"})
                     elif is_system_request(text):
                         self._notify("rejected", {"code": "unsupported_system_request"})
                     elif is_online_request(text):
@@ -495,7 +507,7 @@ class TaskPipeline:
                 if not self.stopped.is_set():
                     self._fail("whisper_error")
 
-    def submit(self, utterance, text, fields):
+    def submit(self, utterance, text, fields, input_source='voice'):
         """同一句只派发一次；忙碌时拒绝积压，语音状态不阻塞。"""
         with self.lock:
             if (not self.current(utterance.generation) or utterance.identifier in self.seen
@@ -507,28 +519,83 @@ class TaskPipeline:
                 self.counters["busy_rejected"] += 1
                 self._notify("rejected", {"code": "brain_busy"})
                 return False
+            selection = None
+            if fields[0] == "website_choice":
+                pending = self.website_pending
+                if (pending is None or pending['generation'] != self.generation
+                        or time.monotonic() >= pending['expires_at']
+                        or int(fields[1]) not in [c['id'] for c in pending['candidates']]):
+                    self._clear_website_choice()
+                    self._notify("rejected", {"code": "website_choice_expired"})
+                    return False
+                if utterance.ended_at < pending['created_at']:
+                    self._notify("rejected", {"code": "website_choice_expired"})
+                    return False
+                selection = {**copy.deepcopy(pending), 'index': int(fields[1]), 'input_source': input_source}
+            self._clear_website_choice()
+            if fields[0] == "website_cancel":
+                self._notify("cancelled", {"code": "website_choice_cancelled"})
+                return True
             self.busy = True
-            self.tasks.put_nowait((utterance, text, fields))
+            self.tasks.put_nowait((utterance, text, fields, selection))
             self.counters["tasks_submitted"] += 1
             return True
+
+    def _clear_website_choice(self):
+        """持锁撤销当前候选和追问音频，旧按钮仅显示不再授予执行权限。"""
+        if self.website_pending is not None:
+            self.website_pending = None
+            if self.on_invalidate is not None:
+                self.on_invalidate()
+            self._notify('website_choices_cleared', {})
+
+    def choose_website(self, token, index):
+        """用户点击只携带任务令牌与编号，URL 从当前会话候选读取。"""
+        with self.lock:
+            if (type(index) is not int or not self.website_pending or token != self.website_pending['token']
+                    or not self.current(self.website_pending['generation']) or self.busy
+                    or time.monotonic() >= self.website_pending['expires_at']):
+                return False
+            text = f'打开第{index}个网站'
+            fields = route_instruction(text)
+            if fields is None:
+                return False
+            self._response_started()
+            self.response_policy = 'block'
+            utterance = Utterance('ui-' + uuid4().hex, self.generation, time.monotonic(), np.zeros(0), False)
+            return self.submit(utterance, text, fields, input_source='gui')
+
+    def forget_websites(self):
+        """缓存清理同样排到后台，Qt 不读写文件或调用模型。"""
+        with self.lock:
+            if not self.current(self.generation) or self.busy:
+                return False
+            utterance = Utterance('ui-' + uuid4().hex, self.generation, time.monotonic(), np.zeros(0), False)
+            return self.submit(utterance, '清除网站缓存', ('website_forget', '*'))
 
     def _task_loop(self):
         """唯一大脑线程；执行前/发布前再次核对代次并提供实际文件路径。"""
         runner = None
         while not self.stopped.is_set():
             try:
-                utterance, text, fields = self.tasks.get(timeout=.1)
+                queued = self.tasks.get(timeout=.1)
+                utterance, text, fields = queued[:3]
+                selection = queued[3] if len(queued) > 3 else None
             except queue.Empty:
+                with self.lock:
+                    if self.website_pending and time.monotonic() >= self.website_pending['expires_at']:
+                        self._clear_website_choice()
                 continue
             try:
                 if not self.current(utterance.generation):
                     continue
-                if fields[0] == "weather_city":
+                clarification = fields[0] in {"weather_city", "local_input"}
+                if clarification:
                     from src.brain.task_runner import TaskResult, WEATHER_CITY_PROMPT
-                    result = TaskResult(utterance.identifier, None, WEATHER_CITY_PROMPT, [], 0, "needs_input")
+                    result = TaskResult(utterance.identifier, None, SCOPE_PROMPT if fields[0] == "local_input" else WEATHER_CITY_PROMPT, [], 0, "needs_input")
                 else:
                     self._notify("running", {"id": utterance.identifier})
-                if fields[0] != "weather_city" and runner is None:
+                if not clarification and runner is None:
                     if self.runner_factory is None:
                         from src.brain.llm import LocalBrain
                         from src.brain.task_runner import BrainTaskRunner
@@ -541,15 +608,33 @@ class TaskPipeline:
                         if self.current(utterance.generation):
                             self.counters["tool_calls"] += 1
                             self._notify("tool_completed", {"id": utterance.identifier, **entry})
-                if fields[0] != "weather_city":
-                    scope = {"web_query": fields[1]} if fields[0] == "web" else {"info_types": fields}
+                def action_dispatched(entry):
+                    """显示启动请求已经发出，后续取消不会撤回该系统动作。"""
+                    with self.lock:
+                        if self.current(utterance.generation):
+                            self._notify("action_dispatched", {"id": utterance.identifier, **entry})
+                if not clarification:
+                    if fields[0] == "local":
+                        scope = {"local_action": fields, "on_action_dispatched": action_dispatched}
+                    elif fields[0] in {"website", "website_choice", "website_forget"}:
+                        scope = {"website_request": fields, "website_selection": selection,
+                                 "on_action_dispatched": action_dispatched}
+                    else:
+                        scope = {"web_query": fields[1]} if fields[0] == "web" else {"info_types": fields}
                     result = runner.run(text, should_stop=lambda: not self.current(utterance.generation),
                                         publication_lock=self.lock, on_tool_result=tool_result, **scope)
                 with self.lock:
                     if self.current(utterance.generation):
                         status = getattr(result, "status", "completed")
-                        self.counters["tasks_" + status] += 1
+                        counter = "tasks_launch_submitted" if status == "submitted" else "tasks_" + status
+                        self.counters[counter] += 1
                         detail = {"id": utterance.identifier, "answer": result.answer}
+                        if getattr(result, 'website', None) and status == 'needs_input':
+                            created_at = time.monotonic()
+                            self.website_pending = {**copy.deepcopy(result.website), 'token': uuid4().hex,
+                                                    'generation': self.generation, 'created_at': created_at,
+                                                    'expires_at': created_at + 60}
+                            detail['website'] = copy.deepcopy(self.website_pending)
                         if result.path is not None:
                             detail["path"] = str(result.path)
                         self._notify(status, detail)
@@ -563,7 +648,7 @@ class TaskPipeline:
                 if self.current(utterance.generation):
                     with self.lock:
                         self.counters["tasks_failed"] += 1
-                    self._notify("error", {"code": "web_failed" if fields[0] == "web" else "brain_failed"})
+                        self._notify("error", {"code": "website_failed" if fields[0].startswith('website') else "local_failed" if fields[0] == "local" else "web_failed" if fields[0] == "web" else "brain_failed"})
                     runner = None
             finally:
                 with self.lock:

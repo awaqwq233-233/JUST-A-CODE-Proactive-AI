@@ -22,10 +22,11 @@ DEFAULT_PROMPT = (
     "根据实时画面如实描述环境。没听清就请用户重复，不编造任务或已执行的操作。"
     "用户问你看到了什么、你看见什么时，请直接描述当前画面中的主要人物或物品，"
     "不要等待用户再说描述一下；画面不清楚时说明看不清，不推测身份或细节。"
-    "当前阶段只提供听、看和语音交流，电脑工具及云端任务尚未接入。"
+    "感知回复本身不执行电脑操作；只有明确启用的任务通道能执行已支持任务，云端尚未接入。"
 )
 TASK_PROMPT = (
-    "本地大脑已支持查询本机时间、电池、CPU、内存，以及明确的联网搜索并保存来源报告。"
+    "本地大脑已支持查询本机时间、电池、CPU、内存，明确的联网搜索，"
+    "以及打开白名单应用、明确网址和在指定目录按文件名搜索文件，并保存实际结果。"
     "这些明确指令由本地转写旁路交给大脑执行。遇到此类请求请简短说明交给大脑处理，"
     "不要猜测状态数字，不声称已经完成。实际结果由程序通过原生语音播报，完整内容保留在界面和文件。"
     "不要输出内部控制令牌。其他问题自然回应。"
@@ -77,7 +78,7 @@ class GatewayClient:
         self.system_prompt, self.context_provider = system_prompt, context_provider
         if transcription_enabled and system_prompt == DEFAULT_PROMPT:
             self.system_prompt = DEFAULT_PROMPT.replace(
-                "当前阶段只提供听、看和语音交流，电脑工具及云端任务尚未接入。", TASK_PROMPT)
+                "感知回复本身不执行电脑操作；只有明确启用的任务通道能执行已支持任务，云端尚未接入。", TASK_PROMPT)
         self.transcription_enabled, self.whisper_model_dir = transcription_enabled, whisper_model_dir
         self.brain_url, self.pipeline_factory = brain_url, pipeline_factory
         self._pipeline = None

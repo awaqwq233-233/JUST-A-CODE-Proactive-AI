@@ -242,6 +242,8 @@ def parse_results(content, limit):
 class WebSearchClient:
     """免密钥必应检索与最多三页自动读取；所有网络工作在大脑后台线程执行。"""
 
+    minimum_query_length = 2
+
     def __init__(self, transport=None, resolver=resolve_public, timeout=25):
         """固定搜索入口与资源上限；测试可替换网络传输和公网 DNS。"""
         self.transport, self.resolver, self.timeout = transport, resolver, timeout
@@ -346,9 +348,9 @@ class WebSearchClient:
 
     async def asearch(self, query, should_stop=None):
         """整次检索限 25 秒，等待中每 100ms 响应停止并关闭在途 HTTP。"""
-        if (not isinstance(query, str) or not 2 <= len(query.strip()) <= 200
+        if (not isinstance(query, str) or not self.minimum_query_length <= len(query.strip()) <= 200
                 or any(ord(c) < 32 or ord(c) == 127 for c in query) or "<" in query or ">" in query):
-            raise SearchError("搜索关键词须为 2–200 字，不能包含控制字符")
+            raise SearchError(f"搜索关键词须为 {self.minimum_query_length}–200 字，不能包含控制字符")
         check_search_cancelled(should_stop)
         pending = asyncio.create_task(self._search(query.strip()))
         deadline = time.monotonic() + self.timeout

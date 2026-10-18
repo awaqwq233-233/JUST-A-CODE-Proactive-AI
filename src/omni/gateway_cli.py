@@ -34,7 +34,12 @@ class ConsoleCallbacks(GatewayCallbacks):
 
     def on_task_event(self, state, detail):
         """显示任务状态与实际文件，不模拟原生播报。"""
-        print(f"\n[大脑] {state}" + (f"：{detail['path']}" if state == "completed" else f"：{detail.get('code', '')}"), flush=True)
+        value = detail.get("path") or detail.get("answer") or detail.get("code", "")
+        print(f"\n[大脑] {state}：{value}", flush=True)
+        if detail.get('website'):
+            for item in detail['website']['candidates']:
+                print(f"  {item['id']}. {item['title']} · {item['url']}", flush=True)
+            print('可说：打开第一个网站；60 秒内有效。', flush=True)
 
 
 class ReplayDevices:
@@ -111,7 +116,7 @@ def main(argv=None) -> int:
     parser.add_argument("--voice", type=Path, default=ROOT / "voices/silverwalf_voice.wav")
     parser.add_argument("--report", type=Path, default=ROOT / "output/m1/gateway.json")
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--transcription", dest="transcription", action="store_true", help="开启本地转写/系统与联网查询，文件验证需显式开启")
+    group.add_argument("--transcription", dest="transcription", action="store_true", help="开启本地转写、系统/联网查询与受限电脑任务，文件验证需显式开启")
     group.add_argument("--no-transcription", dest="transcription", action="store_false", help="仅听看说，关闭转写/任务")
     parser.set_defaults(transcription=None)
     from .transcription_worker import DEFAULT_MODEL_DIR

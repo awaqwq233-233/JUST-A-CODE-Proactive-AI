@@ -4,11 +4,13 @@
 
 ## English
 
+**Agent architecture approved on 2026-10-18; not installed or implemented:** JACBrain will use the official DeepSeek Harness Python SDK, its matching subprocess runtime and J.A.C. tool plugins with the existing local Qwen. Current installation and voice-task behavior are unchanged. The implementation phase must pin SDK/runtime/plugins, verify Python 3.11 and platform packages, provide a dedicated installer stage with domestic-network fallback and artifact checks, and test the exact local provider, cancellation and bounded tool execution. Runtime state and reports will remain ignored locally; no automatic runtime download or cloud fallback is authorized by this plan. See section 17.
+
 Option B was approved on 2026-10-06. M0 has been accepted by the user with the 30-minute soak explicitly waived. This guide provisions the isolated M0/M1 backend, probes and production Gateway CLI/GUI. `setup_new_computer.py --only gateway` (compatible alias: `--only m0`) installs Python 3.11 dependencies including PySide6 and verifies client/GUI imports without opening devices. The installer defaults to Gateway; all/pip/verify also use this current dependency set. Old MiniCPM runtime modes are removed.
 
 M0 requires Python 3.11, CMake, Xcode Command Line Tools, an external GGUF model directory and the two repositories pinned in [backend.lock.json](../backend.lock.json). It uses C++ Metal for inference and a Python Gateway / Worker for orchestration. No NVIDIA machine or speaker-embedding extraction is needed.
 
-The Chinese section below contains the same commands, one per block. Run environment commands from the J.A.C. root. Clone both backend repositories outside J.A.C.; replace placeholder paths with absolute paths.
+The Chinese section below contains the same commands, one per block. Run environment commands from the J.A.C. root. Use persistent backend/model directories outside J.A.C.; replace placeholder paths with absolute paths. Do not install into `/tmp` or another OS temporary directory: cleanup can remove Git metadata, binaries and voice frontend resources while leaving empty folders and symlinks.
 
 Create `.cache/m0/venv` and install `requirements-m0.txt`. Use `start_m0_backend.py --preflight --verify-sha` before launching. The launcher binds all ports to loopback, disables upstream session recording, rejects occupied ports and terminates only its own children on Ctrl+C.
 
@@ -18,7 +20,7 @@ The file probe proves protocol and native-audio transport only. The pinned Gatew
 
 The 40-second live run, ten rapid lifecycle cycles and two 225-second live sessions passed. The user confirmed satisfactory interaction and accepted M0 without the remaining soak. Original reports retain `soak_30min_verified=false` because that duration was not measured; it no longer blocks migration.
 
-Run `main.py --gateway --gui`, click Start Backend and wait for readiness, then start voice. Alternatively, start the pinned backend separately and run `main.py --gateway --gui` in the Python 3.11 environment. GUI device permission is enabled by default per the user request; capture begins only after clicking Start Voice. Use headphones. Console/probe device runs still require --consent-devices. `main.py --gateway --consent-devices` runs the console client. The Gateway GUI imports no torch/PyAudio/Whisper/YOLO. All runtime entries use Gateway; --gateway remains a compatible optional flag.
+Run `main.py` without arguments (or `main.py --gateway --gui`), click Start Backend and wait for readiness, then start voice. The main script selects the installed project Python 3.11 environment before dependency imports; keep an explicit project interpreter for F5 debugging. Alternatively, start the pinned backend separately and run `main.py --gateway --gui` in the Python 3.11 environment. GUI device permission is enabled by default per the user request; capture begins only after clicking Start Voice. Use headphones. Console/probe device runs still require --consent-devices. `main.py --gateway --consent-devices` runs the console client. The Gateway GUI imports no torch/PyAudio/Whisper/YOLO. All runtime entries use Gateway; --gateway remains a compatible optional flag.
 
 `verify_soak_duplex.py --consent-devices` measures 1,800 input seconds across eight 225-second video sessions while keeping the same backend running. It samples local health endpoints and process RSS, and saves aggregate/per-session counts even on failure. Devices restart between sessions; cross-session context restoration is not tested.
 
@@ -78,7 +80,7 @@ python3.11 -m venv .cache/m0/venv
 
 ### 3 锁定并编译引擎
 
-在项目外的专用后端目录执行。不要覆盖已有用户后端。将路径替换为实际绝对路径。
+在项目外的长期专用后端目录执行，例如仓库旁的 `jac_gateway_backend/`。不要使用 `/tmp`、`/private/tmp` 或系统临时目录：清理后可能只剩空文件夹/软链接，Git 元数据、二进制和 ONNX 已丢失。不要覆盖已有用户后端。将路径替换为实际绝对路径。
 
 ```bash
 git clone https://github.com/tc-mb/llama.cpp-omni.git /absolute/backend/llama.cpp-omni
@@ -246,9 +248,11 @@ M1 采集层、原生播放、GUI 预览与手动启停已于 2026-10-07 获 bo 
 
 本机已在忽略的 `.vscode/launch.json` 配置「J.A.C. · Gateway GUI」：明确指定项目解释器、`main.py`、`--gateway --gui`、工作目录与集成终端。在「运行和调试」中选择该配置，按 F5 启动；GUI 默认设备许可，戴好耳机并点击「启动语音」后开始采集。固定后端可通过 GUI 的「启动后端」按钮启动，也可独立运行。
 
-新机器的 `.vscode/` 不随 Git 分发，可按上述解释器选择后使用第 9 节的 GUI 命令；如自行创建调试配置，类型用 `debugpy`，显式设置 `python` 为项目环境并添加 `--gui`。编辑器右上角「运行 Python 文件」不会自动使用 launch.json 的参数，直接运行不带 `--gui` 的 main.py 会进入终端模式。系统 Python 报缺少 numpy 时，先切换解释器，无需在系统环境重复安装依赖。
+新机器的 `.vscode/` 不随 Git 分发，完成第 2 节安装后即可右上角「运行 Python 文件」直接运行 `main.py`：无参数默认 GUI，脚本在导入 numpy/Qt 前优先切换到已安装的项目 Python 3.11 环境，无需在系统环境重复安装依赖。项目环境损坏或错误版本会明确报错，不自动下载或重装；未安装时先完成第 2 节。F5 调试仍按上述方式选定项目解释器，避免跨解释器重启丢失调试连接；调试配置类型为 `debugpy`，`--gui` 可保留。终端模式仍用 `--consent-devices`，文件模式仍用 `--input-file`；`python -m src.omni` 保留显式参数的模块入口。
 
 ### 故障排查
+
+- `git rev-parse HEAD` 返回 128 /「后端源码目录缺失或 Git 仓库不完整」：核对「后端路径设置」中的 Demo/引擎目录。目录存在不代表源码完整；如果是临时目录，按第 3–5 节在长期目录重新克隆锁定 commit、应用完整组合补丁并编译，补齐音色前端；保留并核验现有大模型，不跳过 Git/SHA 校验。第 6 节预检通过后，再保存 GUI 路径并重开窗口。此错误属于本机安装损坏，不撤销已有 M0 用户验收。
 
 - 停止后画面两侧残留、第二次启动报 RuntimeError / session_failed：2026-10-07 已完善整控件清屏与关闭握手，bo s s 已确认真实 GUI 恢复正常。旧客户端会过早断链；固定版本上游还会在 C++ 清理完成前报告关闭。手动停止现先停采集、保留 8 秒接收尾窗，等待关闭确认与连接关闭，再冷却 1 秒；GUI 显示「停止中…」并禁用启动，约 9 秒后恢复，超时则提供「重试停止」。退出窗口同样等待清理，不强制结束进程。旧版本升级时须先重启已受影响的后端，再按第 9 节重开 GUI；无需重装依赖或模型。该收尾窗口是固定版本兼容处理，不代表上游竞争或长期稳定性已验证。
 - 模型 SHA256 不符：保留原文件，检查是否有匹配的备份或重新下载固定 revision。禁止仅改文件名绕过校验。
@@ -311,7 +315,7 @@ python3.11 new_computer_download/setup_new_computer.py --only gateway --skip-tra
 .cache/m0/venv/bin/python new_computer_download/prepare_transcription.py --download-models --self-test
 ```
 
-新机器可指定仓库外目录，GUI 参数中填写同一目录，或设置 JAC_WHISPER_MODEL_DIR。默认 GUI 已启用“本地转写与查询任务”；缺少/损坏模型明确拒绝开始采集，可先关闭该项运行基础听看说。LM Studio 要按第 11 节加载精确 Qwen，默认本机 12345；大脑不可用时任务明确失败，感知继续运行。运行中设置锁定，下次启动生效。
+新机器可指定仓库外目录，GUI 参数中填写同一目录，或设置 JAC_WHISPER_MODEL_DIR。默认 GUI 已启用“本地转写与电脑任务”；缺少/损坏模型明确拒绝开始采集，可先关闭该项运行基础听看说。LM Studio 要按第 11 节加载精确 Qwen，默认本机 12345；大脑不可用时任务明确失败，感知继续运行。运行中设置锁定，下次启动生效。
 
 启动 GUI：
 
@@ -333,7 +337,7 @@ GUI 内先启动后端再启动语音，戴耳机。第一轮使用明确短句�
 
 原生结果播报只排一个短句，等待助手聆听、用户静音和播放空闲；等待 20 秒或已发 30 秒超时、会话剩余不足 15 秒时跳过，文字报告保留。任务 PCM 仍为 24k float32，复用原播放流及同一参考音；停止/重连取消剩余任务音频。GUI“结果音频已接收”确认字面文本及音频传输，不等于人工听感通过。
 
-2026-10-08 电池抢答修复只修改客户端，不需要再次编译后端：关闭并重新打开 GUI。启用“本地转写与查询任务”，戴耳机，等正在播放的语音结束后说“查一下电池电量”。界面应先显示确认的用户原话，再显示“大脑 · 工具已实际查询”、`get_system_info`、查询时间及真实百分比，随后生成报告并播报证据。只出现 J.A.C. 自称“正在查询”或一个数字不能证明工具已调用。
+2026-10-08 电池抢答修复只修改客户端，不需要再次编译后端：关闭并重新打开 GUI。启用“本地转写与电脑任务”，戴耳机，等正在播放的语音结束后说“查一下电池电量”。界面应先显示确认的用户原话，再显示“大脑 · 工具已返回实际结果”、`get_system_info`、查询时间及真实百分比，随后生成报告并播报证据。只出现 J.A.C. 自称“正在查询”或一个数字不能证明工具已调用。
 
 普通回复在 VAD/Whisper 判定前有界暂存，系统查询丢弃模型抢答；普通聊天判定后恢复，因此回复会增加转写等待。识别成其他电池说法、播放重叠或识别失败会显示“未执行查询”，请按界面原话/原因复验，程序不会自动把同音错字改成工具指令。转写异常时感知上行保持，未核验播报暂停，请停止后重启。已播放的设备块无法收回。工具原始证据和调用参数/时间同时保存在报告，可点击“打开最新报告”核对。
 
@@ -362,7 +366,7 @@ VAD 在线程以 30ms 判定，至少 300ms 有声和 600ms 句末静音；12 �
 
 本轮复用既有 `httpx==0.28.1` 和标准库，没有新增依赖、模型、密钥或后端编译步骤；安装器离线导入自检新增 WebSearchClient 与 verify_web_search。仅重开 GUI 即可加载代码。LM Studio 继续加载第 11 节的精确 Qwen，Whisper 按第 12 节准备。
 
-GUI 启动后启用“本地转写与查询任务”，戴耳机，等助手播放结束，再说“上网搜索上海明天的天气”或“联网查询 Python asyncio 官方文档”。应看到确认的用户原话、真实 search_web 查询、来源链接和正文读取状态，再生成报告和原生结果音频。原生播报技术完成确认不替代人工听感。天气请指定城市/日期；其他信息请使用“上网搜索…”或“联网查询…”的明确说法。
+GUI 启动后启用“本地转写与电脑任务”，戴耳机，等助手播放结束，再说“上网搜索上海明天的天气”或“联网查询 Python asyncio 官方文档”。应看到确认的用户原话、真实 search_web 查询、来源链接和正文读取状态，再生成报告和原生结果音频。原生播报技术完成确认不替代人工听感。天气请指定城市/日期；其他信息请使用“上网搜索…”或“联网查询…”的明确说法。
 
 独立网络检查在项目根目录执行，不启动设备或 Qwen：
 
@@ -393,3 +397,67 @@ GUI 启动后启用“本地转写与查询任务”，戴耳机，等助手播�
 ```
 
 视觉提示明确支持“你看到了什么”，旧句转写不能在新句旁发出错误提示。若仍显示“语音 · 未确认”，记录新的语句编号与具体原因；质量门槛保持原值，不做同音修正或失败放行。短视觉候选质量失败时最多两次后台复核，原 PCM 完整保留、无示例提示、仍需两次原门槛合格且一致；系统/联网主题不使用恢复。真实带噪短句复核恢复，有内容的合成画面短句返回正确描述与原生音频；灰色空帧对照曾沉默。文件验证不代表用户实际那次声学原因或真机验收，请重开 GUI 复测“你看到了什么”。
+
+
+### 15 受限本地电脑任务（2026-10-17 更新）
+
+使用原 Python 3.11、Whisper 与已加载精确 Qwen；没有新增依赖、模型下载或后端重编译步骤。安装器增加本地任务导入/解析自检。关闭并重新打开 GUI，开启“本地转写与电脑任务”；戴耳机，在助手播放结束后说完整指令。
+
+- “打开计算器”“打开Safari”：首版应用白名单仅 macOS Safari、日历、备忘录、计算器、文本编辑。GUI 区分启动请求提交与已检测到进程运行，后者不代表窗口在前台。
+- “打开B站”“打开B站网页”“打开Python官网”：支持百度/GitHub/Python/B站（哔哩哔哩/bilibili）固定名称及网页/网站/官网/官方网站修饰，兼容繁体，或保留完整路径、参数和标点的 HTTP(S) 网址。未预设站名通过第 16 节的自动解析流程，不由模型猜域名；明确应用请求不改成网站。只确认交给默认浏览器，不核验页面是否加载；使用浏览器现有网络/登录设置，不能套用 `search_web` 抓取器的隔离保证。
+- “在下载目录查找文件名包含报告的文件”：可指定桌面、下载、文档或主目录内具体非隐藏子目录完整路径。只查名称、不读正文、不修改文件，路径和关键词按确认转写原样匹配；繁简字或同音与实际文件名不一致时请按 GUI 原话纠正。缺目录只追问，须重新说完整指令；部分扫描有明确标注。
+
+Qwen 仅能按本句调用一次对应工具，不能扩大路径或改写目标。未知目标、否定、转述、复合操作、低置信度、过期/重叠语音和忙碌时的新任务不执行。停止/重连取消等待及后续派发，已交给系统的动作不自动撤回。实际结果和状态来自工具证据；GUI 提供真实记录入口，生产文件留在忽略的 `output/m2/qwen/`。
+
+独立真实验证需要 Qwen 已加载；以下命令会实际打开计算器，但不打开采集/播放设备。从项目根执行：
+
+```bash
+.cache/m0/venv/bin/python verify_local_tasks.py --task "打开计算器"
+```
+
+以下命令会实际将 B站网页交给默认浏览器：
+
+```bash
+.cache/m0/venv/bin/python verify_local_tasks.py --task "打开B站网页"
+```
+
+以下命令只搜索下载目录的文件名：
+
+```bash
+.cache/m0/venv/bin/python verify_local_tasks.py --task "在下载目录查找文件名包含报告的文件"
+```
+
+独立记录在 `output/m2/local/`，`verification.json` 保存实际 status；submitted 仅表示启动请求提交，partial/failed 不算独立验收通过。文件搜索限 20 结果、60000 条目、20 层、4 秒扫描/7 秒硬等待；隐藏项和链接跳过，POSIX 逐级 NOFOLLOW。Windows/Linux 保留搜索和网址交接代码，应用白名单仅 macOS，其他平台未实测；管道与文件均 UTF-8。
+
+本机三类独立真实 Qwen 任务及三段各 70 秒合成语音（计算器、百度官网、文件搜索）→ 原生播报闭环已通过；后者未录制或播放真实设备，仍须实际语音体验验收。`verify_gateway_tasks.py` 现在会真实执行测试音频中已支持的本地动作，请只回放明确要执行的测试指令。
+
+
+### 16 通用站名自动解析（2026-10-17）
+
+复用当前 Python 3.11/httpx/精确 Qwen，无新依赖、模型、服务或后端编译；重新打开 GUI 加载客户端修改。生产语音可说“打开小众软件”“打开少数派”等未预设名称。明确目标自动打开，歧义或证据不足显示候选；点击或在 60 秒内说“打开第一个网站”，也可说“取消网站选择”。选择绑定当前任务和会话，不跨停止、重连或新任务恢复。
+
+动态缓存位于忽略的 `.cache/sites/resolutions.json`；证据匹配有效 7 天、用户确认有效 30 天，最多 128 条，命中仍核对首页终点，域名变化重新解析。可说“重新查找小众软件网站”“忘记小众软件的网站地址”“清除网站缓存”，或点击 GUI 清除按钮；只管理动态映射，不删除源码内常用站名快捷入口。网络/模型/缓存均在后台，网页资料不授予执行权限；自动解析只直接打开唯一 HTTPS 证据候选，HTTP 候选可由用户明确选择。搜索仅发送站名，不附音视频或历史对话；国内入口失败或完整站名失配时再试全球入口，两次失配不会读取无关站点或打开浏览器。
+
+以下独立命令只搜索并由真实 Qwen 判断，不打开浏览器或采集/播放设备：
+
+```bash
+.cache/m0/venv/bin/python verify_website.py --name "小众软件"
+```
+
+以下命令会实际将唯一核验结果交给默认浏览器；有歧义时只返回候选：
+
+```bash
+.cache/m0/venv/bin/python verify_website.py --name "小众软件" --open
+```
+
+独立报告、候选和探针缓存留在忽略的 `output/m2/websites/`，生产报告仍在 `output/m2/qwen/`。只解析的 `resolved_only` 不代表已打开；`submitted` 仅代表系统接收请求。站名身份线索不是所有权认证；验证码、网站未收录、同名或搜索接口异常仍可能需要选择/补充网址。现用必应 RSS 不保证长期可用，SearXNG/DDGS 已评估但未作为本轮依赖安装。固定后端、转写模型和安装阶段不变，安装器离线自检已覆盖新模块与路由。
+
+### 17 JACBrain Agent 接入规划（2026-10-18 已确认，尚未实现）
+
+采用官方 DeepSeek Harness Python SDK、同版本独立运行时与 J.A.C. 专用工具插件，继续调用本机 LM Studio 的精确 `qwen/qwen3.6-35b-a3b`。现有语音任务后续可迁移到统一 Agent 接口，执行仍经过现有工具校验；简单任务可保留快速路径，同一任务不得双重派发。当前安装器尚未安装或配置 Harness，生产语音行为保持现状，本节不增加需要用户执行的安装命令。
+
+实施时必须同步独立版本/依赖清单、安装阶段与安装后自检：核验 Python 3.11、目标平台 wheel、SDK/runtime 配套版本、专用 provider 与插件构建工具；固定版本和制品来源，国内镜像失败回退可信官方源并校验下载，不在语音运行中拉取组件。SDK 内置运行时与开发插件所需构建工具分别检查，不把本机开发环境当作新机器已经具备的条件。自定义 profile 仅启用阶段所需工具和本机模型路由，不因继承上游默认配置开放额外权限。
+
+先在独立环境/专用测试目录验证多轮工具调用、文本读取和报告生成，以及取消、超时、恢复与不重复执行；再回归现有语音单步任务、网站候选选择、GUI 状态和原生播报；更多文件编辑、代码执行与桌面工具逐项开放。读取实际 Qwen 上下文与关闭思考能力，实测与 MiniCPM 同跑的内存及延迟；2026-10-17 的 8192-token 实例容量只是快照。跨 Gateway 轮换继续长任务需额外生命周期验证，首版沿用停止/重连失效规则。
+
+Harness home 拟放忽略的 `.cache/agent/`，报告拟放 `output/agent/`，工作目录由任务明确指定。实际会话/凭据/工作文件不入 Git；Harness 历史不替代未来 JSON/ChromaDB/BGE 记忆，不自动上传云端。MiniCPM 后端/锁文件与现有安装步骤本轮不变。详细目标与待验证项见 AGENTS 第十节、CHANGELOG 附 A7 和本地权威架构文档第十四章。
