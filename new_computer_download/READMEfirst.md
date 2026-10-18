@@ -4,6 +4,8 @@
 
 ## English
 
+**Agent architecture approved on 2026-10-18; not installed or implemented:** JACBrain will use the official DeepSeek Harness Python SDK, its matching subprocess runtime and J.A.C. tool plugins with the existing local Qwen. Current installation and voice-task behavior are unchanged. The implementation phase must pin SDK/runtime/plugins, verify Python 3.11 and platform packages, provide a dedicated installer stage with domestic-network fallback and artifact checks, and test the exact local provider, cancellation and bounded tool execution. Runtime state and reports will remain ignored locally; no automatic runtime download or cloud fallback is authorized by this plan. See section 17.
+
 Option B was approved on 2026-10-06. M0 has been accepted by the user with the 30-minute soak explicitly waived. This guide provisions the isolated M0/M1 backend, probes and production Gateway CLI/GUI. `setup_new_computer.py --only gateway` (compatible alias: `--only m0`) installs Python 3.11 dependencies including PySide6 and verifies client/GUI imports without opening devices. The installer defaults to Gateway; all/pip/verify also use this current dependency set. Old MiniCPM runtime modes are removed.
 
 M0 requires Python 3.11, CMake, Xcode Command Line Tools, an external GGUF model directory and the two repositories pinned in [backend.lock.json](../backend.lock.json). It uses C++ Metal for inference and a Python Gateway / Worker for orchestration. No NVIDIA machine or speaker-embedding extraction is needed.
@@ -449,3 +451,13 @@ Qwen 仅能按本句调用一次对应工具，不能扩大路径或改写目标
 ```
 
 独立报告、候选和探针缓存留在忽略的 `output/m2/websites/`，生产报告仍在 `output/m2/qwen/`。只解析的 `resolved_only` 不代表已打开；`submitted` 仅代表系统接收请求。站名身份线索不是所有权认证；验证码、网站未收录、同名或搜索接口异常仍可能需要选择/补充网址。现用必应 RSS 不保证长期可用，SearXNG/DDGS 已评估但未作为本轮依赖安装。固定后端、转写模型和安装阶段不变，安装器离线自检已覆盖新模块与路由。
+
+### 17 JACBrain Agent 接入规划（2026-10-18 已确认，尚未实现）
+
+采用官方 DeepSeek Harness Python SDK、同版本独立运行时与 J.A.C. 专用工具插件，继续调用本机 LM Studio 的精确 `qwen/qwen3.6-35b-a3b`。现有语音任务后续可迁移到统一 Agent 接口，执行仍经过现有工具校验；简单任务可保留快速路径，同一任务不得双重派发。当前安装器尚未安装或配置 Harness，生产语音行为保持现状，本节不增加需要用户执行的安装命令。
+
+实施时必须同步独立版本/依赖清单、安装阶段与安装后自检：核验 Python 3.11、目标平台 wheel、SDK/runtime 配套版本、专用 provider 与插件构建工具；固定版本和制品来源，国内镜像失败回退可信官方源并校验下载，不在语音运行中拉取组件。SDK 内置运行时与开发插件所需构建工具分别检查，不把本机开发环境当作新机器已经具备的条件。自定义 profile 仅启用阶段所需工具和本机模型路由，不因继承上游默认配置开放额外权限。
+
+先在独立环境/专用测试目录验证多轮工具调用、文本读取和报告生成，以及取消、超时、恢复与不重复执行；再回归现有语音单步任务、网站候选选择、GUI 状态和原生播报；更多文件编辑、代码执行与桌面工具逐项开放。读取实际 Qwen 上下文与关闭思考能力，实测与 MiniCPM 同跑的内存及延迟；2026-10-17 的 8192-token 实例容量只是快照。跨 Gateway 轮换继续长任务需额外生命周期验证，首版沿用停止/重连失效规则。
+
+Harness home 拟放忽略的 `.cache/agent/`，报告拟放 `output/agent/`，工作目录由任务明确指定。实际会话/凭据/工作文件不入 Git；Harness 历史不替代未来 JSON/ChromaDB/BGE 记忆，不自动上传云端。MiniCPM 后端/锁文件与现有安装步骤本轮不变。详细目标与待验证项见 AGENTS 第十节、CHANGELOG 附 A7 和本地权威架构文档第十四章。
