@@ -4,7 +4,7 @@
 
 ## English
 
-**Agent architecture approved on 2026-10-18; not installed or implemented:** JACBrain will use the official DeepSeek Harness Python SDK, its matching subprocess runtime and J.A.C. tool plugins with the existing local Qwen. Current installation and voice-task behavior are unchanged. The implementation phase must pin SDK/runtime/plugins, verify Python 3.11 and platform packages, provide a dedicated installer stage with domestic-network fallback and artifact checks, and test the exact local provider, cancellation and bounded tool execution. Runtime state and reports will remain ignored locally; no automatic runtime download or cloud fallback is authorized by this plan. See section 17.
+**Independent Agent prototype verified on 2026-10-18:** optional `--only agent` installs the pinned official Harness SDK/runtime and J.A.C. plugin into `.cache/agent/venv` on macOS 14+ arm64 / Python 3.11. Hash-checked wheels, mirror fallback and offline startup checks are included. Production voice still uses the existing runner. See section 17.
 
 Option B was approved on 2026-10-06. M0 has been accepted by the user with the 30-minute soak explicitly waived. This guide provisions the isolated M0/M1 backend, probes and production Gateway CLI/GUI. `setup_new_computer.py --only gateway` (compatible alias: `--only m0`) installs Python 3.11 dependencies including PySide6 and verifies client/GUI imports without opening devices. The installer defaults to Gateway; all/pip/verify also use this current dependency set. Old MiniCPM runtime modes are removed.
 
@@ -452,12 +452,38 @@ Qwen 仅能按本句调用一次对应工具，不能扩大路径或改写目标
 
 独立报告、候选和探针缓存留在忽略的 `output/m2/websites/`，生产报告仍在 `output/m2/qwen/`。只解析的 `resolved_only` 不代表已打开；`submitted` 仅代表系统接收请求。站名身份线索不是所有权认证；验证码、网站未收录、同名或搜索接口异常仍可能需要选择/补充网址。现用必应 RSS 不保证长期可用，SearXNG/DDGS 已评估但未作为本轮依赖安装。固定后端、转写模型和安装阶段不变，安装器离线自检已覆盖新模块与路由。
 
-### 17 JACBrain Agent 接入规划（2026-10-18 已确认，尚未实现）
+### 17 JACBrain Agent 独立原型
 
-采用官方 DeepSeek Harness Python SDK、同版本独立运行时与 J.A.C. 专用工具插件，继续调用本机 LM Studio 的精确 `qwen/qwen3.6-35b-a3b`。现有语音任务后续可迁移到统一 Agent 接口，执行仍经过现有工具校验；简单任务可保留快速路径，同一任务不得双重派发。当前安装器尚未安装或配置 Harness，生产语音行为保持现状，本节不增加需要用户执行的安装命令。
+首版独立环境支持 **macOS 14+ Apple Silicon、Python 3.11**。官方 SDK 和运行时同为 `0.2.1rc2`，对应 `dsh-v0.2.1-rc.2` / commit `687f282e8625c6b8d11ff58211a90524be2e4317`；固定 wheel 与插件 SHA256 在 `agent.lock.json`，依赖在 `requirements-agent.txt`。纯 MJS 插件直接由捆绑运行时加载，无需系统 Node/pnpm、源码构建或额外模型下载。Windows/Linux 暂未开放这一安装阶段。
 
-实施时必须同步独立版本/依赖清单、安装阶段与安装后自检：核验 Python 3.11、目标平台 wheel、SDK/runtime 配套版本、专用 provider 与插件构建工具；固定版本和制品来源，国内镜像失败回退可信官方源并校验下载，不在语音运行中拉取组件。SDK 内置运行时与开发插件所需构建工具分别检查，不把本机开发环境当作新机器已经具备的条件。自定义 profile 仅启用阶段所需工具和本机模型路由，不因继承上游默认配置开放额外权限。
+在项目根目录安装；默认清华镜像，失败回退官方 PyPI，下载和离线安装均强制 SHA256 校验。其他机器应先进入其自己的项目目录。下列命令在当前 bo s s 的环境可直接执行，每项单独运行。
 
-先在独立环境/专用测试目录验证多轮工具调用、文本读取和报告生成，以及取消、超时、恢复与不重复执行；再回归现有语音单步任务、网站候选选择、GUI 状态和原生播报；更多文件编辑、代码执行与桌面工具逐项开放。读取实际 Qwen 上下文与关闭思考能力，实测与 MiniCPM 同跑的内存及延迟；2026-10-17 的 8192-token 实例容量只是快照。跨 Gateway 轮换继续长任务需额外生命周期验证，首版沿用停止/重连失效规则。
+```bash
+/opt/homebrew/bin/python3.11 /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/new_computer_download/setup_new_computer.py --only agent
+```
 
-Harness home 拟放忽略的 `.cache/agent/`，报告拟放 `output/agent/`，工作目录由任务明确指定。实际会话/凭据/工作文件不入 Git；Harness 历史不替代未来 JSON/ChromaDB/BGE 记忆，不自动上传云端。MiniCPM 后端/锁文件与现有安装步骤本轮不变。详细目标与待验证项见 AGENTS 第十节、CHANGELOG 附 A7 和本地权威架构文档第十四章。
+只检查安装与插件加载，不请求模型或设备：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/agent/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/new_computer_download/prepare_agent.py --self-test
+```
+
+先在 LM Studio 加载精确 `qwen/qwen3.6-35b-a3b` 并保持服务端口 12345。探针读取实际上下文，拒绝未加载、模型不符或未声明关闭思考/工具能力；不自动换模型。首版每份输入最多 768 UTF-8 字节，仅接受工作目录内单个文件名，拒绝链接与越界路径。
+
+当前机器的合成示例已放在忽略的 `output/agent-fixture/`。运行后会生成新报告目录，Ctrl+C 可取消：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/agent/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_agent.py --workspace /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/output/agent-fixture --before before.txt --after after.txt
+```
+
+其他机器请提供自己的两份文本，再将上述 `--workspace` 改成实际目录、文件名改成真实名称。工具只读输入、生成差异和提交内存草稿；报告由程序验证输入哈希、真实工具证据、取消及运行时关闭落盘确认后，原子发布到 `output/agent/<task_id>/`。摘要标注模型生成，逐行差异由程序生成。默认总限 120 秒、最多 8 次模型请求/8 次工具调用，首版单任务串行；思考、超预算或缺证据明确失败。
+
+`--inspect-session` 只恢复历史检查，不向模型发送提示、不重放动作。当前本机已完成任务的恢复示例：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/agent/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_agent.py --inspect-session jac-e2faa994777c4217aa51ab3c19bc9eb5
+```
+
+运行状态/完整会话/失败记录仅本地存于 `.cache/agent/runs/`，原生缓存通过 `PKG_NATIVE_CACHE_PATH` 放入 `.cache/agent/native-cache/`，不改用户 HOME。默认 shell、文件系统、云端、遥测插件未启用；子进程不继承云密钥或代理。关闭时显式核对官方 shutdown，避免把未落盘会话误报为可恢复。中断后不自动续跑，先检查任务记录和实际报告；完成状态以报告证据为准。
+
+当前三组真实 Qwen 文本任务和历史恢复已通过，生产语音/GUI 尚未迁移；真实语音、原生播报及与 MiniCPM 同跑性能仍需单独验收。Gateway 依赖、后端锁和日常启动方式不变。实际输入、会话、报告、模型与规划 DOCX 均不提交 Git。三层架构、长期记忆与末期提醒顺序保持。

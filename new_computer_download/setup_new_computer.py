@@ -603,7 +603,7 @@ def parse_args():
         description="J.A.C. 新电脑一键依赖补全工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "external", "embed", "verify", "m0", "gateway"],
+    p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "external", "embed", "verify", "m0", "gateway", "agent"],
                    default="gateway", help="只运行指定阶段（默认 gateway）")
     p.add_argument("--skip-embed", action="store_true", help="跳过记忆 embedding 模型预下载（首次运行 main.py 时自动联网下）")
     p.add_argument("--torch", choices=["auto", "cpu", "cuda"], default="auto",
@@ -622,6 +622,11 @@ def parse_args():
 def main():
     """主"""
     args = parse_args()
+    if args.only == "agent":
+        from prepare_agent import install
+        install(mirror=OFFICIAL_PIP_INDEX if args.no_mirror else (args.mirror or DEFAULT_PIP_INDEX),
+                dry_run=args.dry_run)
+        return
     if args.only in {"m0", "gateway", "all", "pip", "verify"}:
         raise SystemExit(0 if step_m0(args) else 1)
     # torch auto 映射到 cpu/cuda 语义

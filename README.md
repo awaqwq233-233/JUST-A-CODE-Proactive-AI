@@ -32,13 +32,15 @@ Target memory uses JSON as the structured source of truth, ChromaDB as a rebuild
 
 The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds. M1 rotates video sessions after 240 input seconds, closes/releases devices and reconnects with the reference voice and bounded assistant history plus supplied confirmed context. Capture visibly pauses during reconnection. It does not reconstruct untranscribed user speech or provide seamless audio across the gap.
 
-### JACBrain Agent plan approved on 2026-10-18
+### JACBrain independent prototype verified on 2026-10-18
 
-**Approved, not implemented.** The local brain will use the official DeepSeek Harness Python SDK, an isolated subprocess runtime and J.A.C.-specific tool plugins, with the existing `qwen/qwen3.6-35b-a3b` served by LM Studio. This adds task planning, bounded multi-step tool execution, feedback and session recovery within the existing brain tier. MiniCPM remains responsible for perception/native speech; cloud OpenClaw, JSON/ChromaDB/BGE memory and the late-stage reminder plan retain their roles.
+The independent prototype uses official `deepseek-harness-sdk==0.2.1rc2`, its matching runtime and a J.A.C. plugin with the exact local `qwen/qwen3.6-35b-a3b`. `agent.lock.json` pins the official source tag, platform wheels and plugin SHA256. The production voice/GUI still uses the existing runner; this milestone does not migrate those tasks or expand desktop permissions.
 
-Validated voice tasks can be handed to the Agent through one JACBrain task interface. Existing system/web queries, application and URL launching, filename search and website resolution become reusable controlled tools. Simple commands may keep a deterministic fast path behind the same interface; one task has exactly one execution owner. Existing single-action checks remain, while multi-step tasks receive their own explicit workspace, tool and read/write scope. Tool evidence determines results; an Agent's completion message does not prove that a page loaded or an action succeeded. Stop/reconnect invalidation, bounded execution, candidate-choice binding and native evidence summaries must survive migration.
+`verify_agent.py` accepts an explicit workspace and two filenames, each at most 768 UTF-8 bytes. The Agent reads them, obtains a program-generated diff and submits a Chinese summary. The controller verifies tool evidence, unchanged input hashes, successful runtime shutdown and cancellation before atomically publishing the report and evidence. Default shell, filesystem and cloud tools are disabled. Tasks run serially with 120-second default deadlines, at most 8 model requests / 8 tool calls, and bounded context/output. An explicit provider maps reasoning off to `reasoning_effort="none"`; unexpected thinking output fails closed. The actual loaded model context is checked at startup, without changing models or loading settings.
 
-Implementation will first verify the exact Qwen provider and a multi-step text-file/report task in an isolated workspace, then migrate current voice tasks with equivalent behavior, and only then expand editing, code execution and desktop tools. The 8192-token context observed on 2026-10-17 is a snapshot, not a fixed requirement; read the loaded model's capacity, preserve explicit reasoning-off behavior and measure concurrent MiniCPM performance. Harness history is not long-term user memory, and recovery must not replay uncertain side effects. Runtime state is planned under ignored `.cache/agent/`, reports under `output/agent/`. No Harness installation, dependency, backend patch or production permission change is included in this documentation update. Exact SDK/runtime pins and installer checks will follow integration testing. See [AGENTS.md, section ten](AGENTS.md) and CHANGELOG Appendix A7; upstream references: [Python SDK](https://github.com/deepseek-ai/deepseek-harness/blob/master/python/sdk/README.md) and [provider configuration](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/providers.md).
+Install through `setup_new_computer.py --only agent`; this first-stage installer supports macOS 14+ arm64 and Python 3.11. It uses hash-checked wheels, a domestic mirror with official PyPI fallback, and an isolated `.cache/agent/venv`. The plain JavaScript plugin loads directly into the bundled runtime, so no additional Node/pnpm build is needed. Session state, native extraction caches and reports remain under ignored `.cache/agent/` and `output/agent/`. `--inspect-session` restores history for inspection only, without resuming actions.
+
+Three live Qwen cases (changed text, identical text and an instruction embedded in untrusted input) completed and restored their histories. This is a small functional sample, not a general success-rate claim. Voice migration, GUI/native speech regressions, concurrent MiniCPM performance and automatic continuation after interruption remain pending. The three model tiers, long-term memory plan and late-stage reminders are unchanged. See [installation and verification](new_computer_download/READMEfirst.md#17-jacbrain-agent-独立原型), [AGENTS](AGENTS.md) and CHANGELOG Appendix A7. Official upstream: [Python SDK at the pinned commit](https://github.com/deepseek-ai/deepseek-harness/blob/687f282e8625c6b8d11ff58211a90524be2e4317/python/sdk/README.md).
 
 ### Setup and verification
 
@@ -154,13 +156,15 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 
 **末期计划，尚未实现（2026-10-11 已确认）**：现有核心迁移完成后，最后接入本地待办清单与主动提醒。MiniCPM 判断任务、负责人、拟交给谁执行、当前活动与时间，本地程序校验后及时保存 JSON 并刷新 GUI；歧义待确认，推测活动会过期，完成须有用户反馈或真实执行证据。待办落盘不等待五条摘要的向量索引批次。普通静默巡检默认每 45 分钟，可设 30–60 分钟或更长；明确提醒时间和关键任务事件单独处理。巡检频率不等于提醒频率，提醒结合当前活动和免打扰，支持延后/取消并去重。实施前须验证 MiniCPM 独立结构化事件通道与固定后端接线，普通模型回复不能直接作为写入指令。清单不整份自动上传云端、不进入 Git；不承诺程序退出或电脑休眠时准时提醒。本次不改实现或安装方式，可选眼镜等外设不作为前置条件。详见 [AGENTS.md](AGENTS.md) 与 CHANGELOG 附 A6。
 
-### JACBrain Agent 方案（2026-10-18 已确认）
+### JACBrain Agent 独立原型已验证（2026-10-18）
 
-**已确认，待实现。** 大脑层采用官方 DeepSeek Harness Python SDK、独立子进程运行时及 J.A.C. 专用工具插件，继续调用 LM Studio 的 `qwen/qwen3.6-35b-a3b`。目标补齐任务拆解、有界多步骤执行、反馈调整和会话恢复。MiniCPM 继续感知与原生播报，云端 OpenClaw、JSON/ChromaDB/BGE 记忆及末期待办提醒保持原分工与顺序。
+独立原型已接通官方 `deepseek-harness-sdk==0.2.1rc2`、同版本运行时和 J.A.C. 专用插件，继续使用本机精确 `qwen/qwen3.6-35b-a3b`。`agent.lock.json` 锁定官方源码标签、平台 wheel 和插件 SHA256。生产语音/GUI 仍使用原任务执行器，本阶段不扩大桌面权限。
 
-通过校验的语音任务可经统一 JACBrain 接口交给 Agent 编排；系统/联网查询、打开应用/网址、文件名搜索及站名解析复用为受控工具。简单明确指令可在同一接口保留确定性快速路径，每项任务只有一个执行者。既有单动作校验保留，多步骤任务单独定义工作目录、工具及读写范围。工具真实证据决定完成状态，模型声称完成不等于网页已加载或动作成功；停止/重连失效、预算、候选选择绑定与原生证据摘要随迁移保留。
+`verify_agent.py` 接收显式工作目录和两个文件名，每份最多 768 UTF-8 字节。Agent 实际读取、取得程序生成的逐行差异、提交中文摘要；控制器复核工具证据、输入哈希、运行时正常落盘关闭和取消状态后，原子发布报告及证据。禁用默认 shell、文件系统及云端工具。单任务串行，默认 120 秒、最多 8 次模型请求/8 次工具调用，并限制上下文与输出。专用 provider 将关闭思考映射为 `reasoning_effort="none"`，意外思考输出明确失败；启动时读取实际加载容量，不自动换模型或改加载参数。
 
-先在独立测试目录验证精确 Qwen provider 和“读取文本 → 整理差异 → 生成报告”，再等价迁移现有语音任务，随后逐项扩展文件编辑、代码执行和桌面工具。2026-10-17 查询到的 Qwen 8192-token 上下文只是当时快照，须读取实际加载配置、保持显式关闭思考并实测与 MiniCPM 同跑性能。Harness 历史不替代长期记忆，恢复不得重放结果不明的有副作用动作。运行状态拟存忽略的 `.cache/agent/`，报告拟存 `output/agent/`。本次仅同步文档，不安装 Harness、不加依赖、不改后端或生产权限；具体版本锁定和安装自检随联调落实。详见 [AGENTS.md 第十节](AGENTS.md) 与 CHANGELOG 附 A7；上游依据为[官方 Python SDK](https://github.com/deepseek-ai/deepseek-harness/blob/master/python/sdk/README.md) 和 [provider 配置](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/providers.md)。
+安装入口为 `setup_new_computer.py --only agent`，首版支持 macOS 14+ arm64 / Python 3.11，全部 wheel 校验 SHA256，国内镜像失败回退官方源。环境独立放入 `.cache/agent/venv`；纯 JavaScript 插件由捆绑运行时直接加载，无需额外 Node/pnpm 构建。状态、原生组件缓存与报告均在忽略的 `.cache/agent/`、`output/agent/`。`--inspect-session` 仅恢复历史供检查，不重放或继续旧动作。
+
+真实 Qwen 的差异文本、相同文本和夹带指令的文本三组任务已完成，历史恢复均通过；小样本不代表通用成功率。语音任务迁移、GUI/原生播报回归、MiniCPM 同跑性能和中断后自动续跑仍待验证。三层模型、长期记忆及末期提醒顺序保持。完整命令见[安装指南第十七节](new_computer_download/READMEfirst.md#17-jacbrain-agent-独立原型)，状态与边界见 AGENTS 第十节、CHANGELOG 附 A7。
 
 ### 当前实现状态
 
