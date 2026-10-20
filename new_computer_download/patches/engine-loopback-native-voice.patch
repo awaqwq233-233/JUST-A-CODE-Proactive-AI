@@ -348,7 +348,7 @@ index 851038a..2751e37 100644
      // cleanup
      {
 diff --git a/tools/server/ws_handler.cpp b/tools/server/ws_handler.cpp
-index 5cf6427..fa5d99b 100644
+index 5cf6427..3cebf98 100644
 --- a/tools/server/ws_handler.cpp
 +++ b/tools/server/ws_handler.cpp
 @@ -20,6 +20,22 @@
@@ -544,7 +544,7 @@ index 5cf6427..fa5d99b 100644
      };
      auto audio_state = std::make_shared<AudioCbState>();
      audio_state->session_id = session_id;
-@@ -749,6 +896,27 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+@@ -749,6 +896,28 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
          }
      };
  
@@ -568,11 +568,12 @@ index 5cf6427..fa5d99b 100644
 +        }
 +    };
 +    std::deque<std::string> jac_seen_speech;
++    std::string jac_utf8_pending;  // A literal code point may span successive input decodes.
 +
      // ================================================================
      // Step 3: Read loop — process input.append messages
      // ================================================================
-@@ -1082,6 +1250,37 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+@@ -1082,6 +1251,38 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
                  return;
              }
  
@@ -597,6 +598,7 @@ index 5cf6427..fa5d99b 100644
 +                if (!accepted) ack["code"] = duplicate ? "duplicate" : (valid ? "busy_or_invalid_tokens" : "invalid_request");
 +                send_event(ack);
 +                if (accepted) {
++                    jac_utf8_pending.clear();
 +                    jac_seen_speech.push_back(id);
 +                    if (jac_seen_speech.size() > 64) jac_seen_speech.pop_front();
 +                }
@@ -610,7 +612,26 @@ index 5cf6427..fa5d99b 100644
              TempMediaFiles tmp_files;
              int input_index = ++msg_counter;
              double prefill_ms = 0.0;
-@@ -1184,7 +1383,7 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+@@ -1146,7 +1347,8 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+ 
+             // Collect full text for response.done
+             std::string full_text;
+-            std::string utf8_pending;
++            std::string ordinary_utf8_pending;
++            std::string & utf8_pending = jac_speech_id.empty() ? ordinary_utf8_pending : jac_utf8_pending;
+ 
+             // Poll text_queue
+             while (true) {
+@@ -1162,7 +1364,7 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+                         octx->text_queue.pop_front();
+                     }
+ 
+-                    if (octx->text_done_flag && octx->text_queue.empty()) {
++                    if (octx->text_done_flag && octx->text_queue.empty() && frag.empty()) {
+                         break;
+                     }
+                 }
+@@ -1184,7 +1386,7 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
                          const std::string text = sanitize_utf8_stream(utf8_pending, frag);
                          full_text += text;
                          if (!text.empty()) {
@@ -619,8 +640,13 @@ index 5cf6427..fa5d99b 100644
                                  session_id, response_id, text,
                                  make_runtime_metrics(octx, prefill_ms,
                                                       elapsed_ms(t_generate_start),
-@@ -1213,7 +1412,7 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
-                 const std::string text = sanitize_utf8_stream(utf8_pending, "", true);
+@@ -1210,10 +1412,11 @@ void handle_ws_backend(httplib::ws::WebSocket & ws,
+             }
+             double generate_ms = elapsed_ms(t_generate_start);
+             {
+-                const std::string text = sanitize_utf8_stream(utf8_pending, "", true);
++                const std::string text = sanitize_utf8_stream(utf8_pending, "",
++                    jac_speech_id.empty() || octx->jac_speech_position >= octx->jac_speech_tokens.size());
                  if (!text.empty()) {
                      full_text += text;
 -                    send_event(make_text_delta(

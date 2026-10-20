@@ -32,7 +32,7 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 
 升级链：`MiniCPM-o-4_5` 解决不了 → 发起调用 `qwen/qwen3.6-35b-a3b` → 仍不够 → 交给云端 OpenClaw。
 
-2026-10-18 bo s s 已确认在大脑层引入 DeepSeek Harness，采用官方 Python SDK、独立运行时及 J.A.C. 专用工具插件。它为现有 Qwen 提供 Agent 执行框架，不增加模型层级；具体契约见第十节。当前仅完成方案确认和文档同步，生产入口尚未接入 Harness。
+2026-10-18 bo s s 已确认在大脑层引入 DeepSeek Harness，采用官方 Python SDK、独立运行时及 J.A.C. 专用工具插件。它为现有 Qwen 提供 Agent 执行框架，不增加模型层级；具体契约见第十节。独立文本比较原型已安装并通过真实 Qwen 多步骤与只读恢复验证；生产语音/GUI 已于 2026-10-20 接入统一 JACBrain 与 Harness，真人设备听感与长时同跑另行验收。
 
 ### 二、输入层
 
@@ -49,7 +49,7 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 - **引擎**：`tc-mb/llama.cpp-omni` master，commit `873056743b74e1a4ce5dcf7290e2298428e214db`。
 - **模型**：`openbmb/MiniCPM-o-4_5-gguf`，revision `db25077c33951fe163b42986fba0132e279872a2`。除 `MiniCPM-o-4_5-Q4_K_M.gguf` 外，必须包含 audio、vision、tts、token2wav-gguf；逐文件 SHA256 见 `backend.lock.json`。
 - **链路**：J.A.C. → Gateway `127.0.0.1:8006` → Worker `127.0.0.1:22400` → `llama-omni-server` `127.0.0.1:22500`。Worker 注册接口为本机 `:8007`。
-- **构建**：CMake Release、`GGML_METAL=ON`、`LLAMA_OPENSSL=OFF`，构建目标 `llama-omni-server` / `llama-omni-cli`。固定 commit 加上 `new_computer_download/patches/engine-loopback-native-voice.patch`：包含遵守 `--host` 的本机监听修复及 bo s s 2026-10-07 明确批准的原生音色条件接线；2026-10-08 按 bo s s 原生结果播报授权扩展同一组合补丁，加入有界字面文本 token 评估与原生 TTS/Token2Wav 音频归属确认；启动器只接受登记的完整组合补丁，不接受其他源码漂移。
+- **构建**：CMake Release、`GGML_METAL=ON`、`LLAMA_OPENSSL=OFF`，构建目标 `llama-omni-server` / `llama-omni-cli`。固定 commit 加上 `new_computer_download/patches/engine-loopback-native-voice.patch`：包含遵守 `--host` 的本机监听修复及 bo s s 2026-10-07 明确批准的原生音色条件接线；2026-10-08 按 bo s s 原生结果播报授权扩展同一组合补丁，加入有界字面文本 token 评估与原生 TTS/Token2Wav 音频归属确认；2026-10-20 原生回归修复任务文本跨 decode 的 UTF-8 尾字节截断及末片段丢弃，协议/模型/固定 commit 不变；启动器只接受登记的完整组合补丁，不接受其他源码漂移。
 - **起始参数**：`-ngl 99 -c 4096 -t 8`。其他参数依据该固定版本的 `--help` 与 M0 结果确定，不照搬旧 `llama-server` 命令。
 - **生命周期**：等待 `session.queue_done` → 发送 `session.init {payload: ...}` → 收到 `session.created` → 固定节拍 `input.append {input: ...}` → 接收 `response.output.delta` → `session.close / session.closed`。
 - **输出**：`kind=listen/text/audio`；音频是 **24kHz mono float32 PCM Base64**，独立于文本流。视频双工不用 `response.done` 作为每轮结束信号。
@@ -122,20 +122,20 @@ bo s s 已确认：在现有核心迁移完成后，最后落实本模块；智�
 
 ---
 
-### 十、JACBrain Agent（2026-10-18 确认，待实现）
+### 十、JACBrain Agent（2026-10-20 现有生产任务已迁移）
 
-bo s s 已确认采用“官方 Python SDK + J.A.C. 专用插件，先独立多步骤验证，再接生产语音/GUI”的路线。本轮仅更新架构文档，不安装 Harness、不新增运行依赖、不改变现有工具权限或后端协议。
+bo s s 已确认并授权按顺序实施“官方 Python SDK + J.A.C. 专用插件，先独立多步骤验证，再接生产语音/GUI”。独立原型已经验证，现有生产单步任务已迁移到统一 JACBrain 接口；后续多步骤扩展仍待实施，不改变现有语音工具权限或 MiniCPM 后端协议。
 
 - **定位与连接**：Qwen 继续由 LM Studio `127.0.0.1:12345` 提供推理。J.A.C. Python 适配层通过官方 SDK，以 stdio JSON-RPC 驱动独立 Harness 运行时；配置专用模型 provider，使用本机 `/v1` Chat Completions 接口与精确模型标识。SDK 的 `base_url` 快捷参数不能未经验证就当作通用 provider 配置；须按所选适配器验证工具调用、角色、token 上限和关闭思考参数。MiniCPM 继续承担听看说与原生播报，OpenClaw 仍为后续云端层。
 - **Agent 职责**：在本次已授权任务范围内拆解步骤、选择工具、接收真实反馈、有限重试或调整计划，交付文件与状态。现有 `run_agentic()` 是有限工具循环；Harness 的新增目标是统一多步骤编排、会话管理及恢复，不把旧循环误写为完全没有 Agent 基础。
-- **语音任务归属**：目标统一为“VAD/Whisper 完整句 → 来源/质量/时效校验 → JACBrain 任务接口 → Agent 或单步快速路径 → 受控工具 → 真实证据/文件 → Qt 与原生短播报”。现有打开应用、网址、文件名搜索、站名解析与系统/联网查询可交给 Agent 编排，原工具作为插件复用；明确简单动作可保留同一任务接口下的确定性快速路径。每项任务只能由一个执行路径拥有，不同时派发旧 runner 与 Harness。
+- **语音任务归属**：现有生产链路统一为“VAD/Whisper 完整句 → 来源/质量/时效校验 → JACBrain 任务接口 → Agent 或单步快速路径 → 受控工具 → 真实证据/文件 → Qt 与原生短播报”。现有打开应用、网址、文件名搜索、站名解析与系统/联网查询已使用 Harness 或同接口下的确定性路径，原工具继续复用；明确简单动作可保留同一任务接口下的确定性快速路径。每项任务只能由一个执行路径拥有，不同时派发旧 runner 与 Harness。
 - **权限与工具**：Agent 提出的计划不构成新授权。现有单步指令继续保持精确参数、单动作及应用/目录/网站边界；多步骤任务使用独立权限域，显式限定目标、工作目录、可读写范围、允许工具与动作次数，不通过放宽现有 `local` 规则获得通用执行能力。缺少必要范围则追问。路径/符号链接、网页不可信输入、站名候选令牌/编号/代次/期限等现有校验继续由工具边界实施，模型不能绕过或自行确认。自定义 profile 仅装入阶段所需工具，禁用未批准的默认 shell、文件修改、云端路由或其他旁路；后续代码执行和桌面操作逐项验证后开放，高风险动作按原规则确认。
 - **结果与播报**：工具实际结果及必要后置检查决定 completed/submitted/partial/failed/needs_input；模型文字或 Harness 回合结束不直接证明业务任务完成。保留浏览器交接不等于页面加载、进程存在不等于窗口前台等区别。报告原子发布，GUI 显示真实阶段，MiniCPM 只接收有界证据摘要；不朗读控制事件或思考正文，也不另加 TTS 服务。
 - **生命周期**：任务 ID、来源语句、授权范围、会话代次、工具调用 ID 和执行结果建立可核验关联。推理、工具与 SDK 等待均在后台，有总时限、步数/token/输出预算及取消；初期单任务串行。接入首版继承停止/重连失效与忙碌不积压规则，派发和发布前复核。Harness 会话历史不等于未完成动作可重放；执行结果不明的有副作用动作须先核对，不能因重试或恢复重复启动、写入。已提交给系统的动作无法撤回。跨 Gateway 轮换继续长任务需另做任务所有权、授权续期、恢复与播报归属验证，通过前不开放。
 - **模型与性能**：2026-10-17 本机查询到该 Qwen 已加载实例上下文为 8192 tokens，仅为当时快照；启动时读取实际配置，不把模型最大容量或 MiniCPM 的 `-c 4096` 当作 Qwen 当前容量。显式适配现有 `reasoning_effort="none"` 语义，禁止静默换模型/开思考。按实际容量裁剪工具 schema、提示与历史，摘要保留授权和证据引用。扩大上下文、增加并发或启用思考前实测与 MiniCPM 同跑的内存、延迟及音视频节拍。
-- **本地状态与记忆**：专用 Harness home 拟放忽略的 `.cache/agent/`，报告拟放 `output/agent/`，工作目录按任务显式指定；配置模板/插件源码可入 Git，实际会话、凭据、工作文件、缓存和媒体不入 Git。运行时仅接本机 Qwen，按需工具联网不携带整段历史，未批准的遥测/云端回退关闭。Harness 任务历史不替代 JSON 事实真源、ChromaDB 索引和 BGE embedding；原记忆批量写入/检索时机及末期主动提醒顺序保持。
+- **本地状态与记忆**：专用 Harness home 放忽略的 `.cache/agent/runs/<task_id>/home/`，原生缓存定向 `.cache/agent/native-cache/`，独立比较报告放 `output/agent/`，生产报告保留 `output/m2/qwen/`，工作目录按任务显式指定；配置模板/插件源码可入 Git，实际会话、凭据、工作文件、缓存和媒体不入 Git。运行时仅接本机 Qwen，按需工具联网不携带整段历史，未批准的遥测/云端回退关闭。Harness 任务历史不替代 JSON 事实真源、ChromaDB 索引和 BGE embedding；原记忆批量写入/检索时机及末期主动提醒顺序保持。
 - **实施与验收**：先锁定 SDK/同版本 runtime、插件和所需构建工具，在独立环境验证精确 Qwen 的多轮工具闭环、错误/取消/超时与恢复；用专用测试目录完成“读取指定文本 → 整理差异 → 生成报告”，不越出授权读写范围。随后迁移现有语音单步任务并做功能等价、重复/迟到/撤销、候选选择和原生播报回归，再逐项开放多步骤工具组合、文件编辑、代码执行及桌面能力。SDK 兼容、多步成功率、真实语音、音色听感和持续同跑性能分别验收。
-- **安装与版本**：实现时新增独立依赖/版本清单及一键安装阶段，检查 Python 3.11、macOS arm64 wheel、SDK/runtime 版本一致性、插件构建和本机模型能力；国内镜像失败回退可信官方源并校验制品，不在语音会话中下载。上游预览版本须固定，必要的小补丁单独登记；不直接跟随 master、不改写现有 `backend.lock.json` 的 MiniCPM 契约。本次不新增安装命令或锁定未经项目联调的 Harness 版本。
+- **安装与版本**：实现时新增独立依赖/版本清单及一键安装阶段，检查 Python 3.11、macOS arm64 wheel、SDK/runtime 版本一致性、插件构建和本机模型能力；国内镜像失败回退可信官方源并校验制品，不在语音会话中下载。上游预览版本须固定，必要的小补丁单独登记；不直接跟随 master、不改写现有 `backend.lock.json` 的 MiniCPM 契约。独立原型现已锁定并完成联调，安装入口保留 `setup_new_computer.py --only agent`，Gateway 安装阶段也会准备该独立环境；生产入口在采集前检查版本和插件，不自动安装或回退旧 runner。
 
 依据：[官方 Python SDK](https://github.com/deepseek-ai/deepseek-harness/blob/master/python/sdk/README.md)、[模型 provider 配置](https://github.com/deepseek-ai/deepseek-harness/blob/master/docs/user/guide/providers.md)。这些上游能力不代表 J.A.C. 已接通；具体版本与兼容性以实施时固定版本和真实联调为准。
 
@@ -152,7 +152,7 @@ bo s s 已确认采用“官方 Python SDK + J.A.C. 专用插件，先独立多�
 | 语音输出 | 参考 WAV Base64 + 原生 24k float32 PCM | 原生音色条件已接入 C++ Metal；会话核对已应用的参考音哈希 | 技术接线/重连/切换通过；听感待用户确认 |
 | 记忆 | **ChromaDB** + BGE-Small-ZH-v1.5（ONNX INT8） + JSON | fastembed + paraphrase-multilingual-MiniLM + 自研 MemoryStore | 重写 `src/memory/` |
 | 模型层数 | 三层（o-4_5 + qwen + 云端 OpenClaw） | 第一层 Gateway 已运行；M2a Qwen 独立只读/文件任务通过，M2b 语音转写/只读路由已接线且真机文字结果获用户确认，OpenClaw 未接入 | 扩展工具、记忆与云端通道 |
-| 大脑 Agent 框架 | 官方 DeepSeek Harness Python SDK + J.A.C. 专用插件，仍使用本机 Qwen | 2026-10-18 方案已确认；现有有限循环与受限任务仍为生产实现 | 独立多步验证 → 现有语音任务迁移 → 扩展工具，尚未安装或接入 |
+| 大脑 Agent 框架 | 官方 DeepSeek Harness Python SDK + J.A.C. 专用插件，仍使用本机 Qwen | 独立比较/恢复已验证；生产 TaskPipeline 已接统一 JACBrain/Harness，原权限执行器复用 | 真人听感与长时同跑另验 → 独立权限域扩展工具 |
 | 音频输入 | SoundDevice + 16k float32 mono + 固定 1 秒块 | Gateway 已接入；旧运行入口已移除 | M2b CPU Whisper small / WebRTC VAD 已旁路接入 |
 | 视频输入 | 独立线程 640×480、采集 5~10fps、默认每秒上行最新 1 帧 | Gateway 使用线程采集与独立 GUI 帧缓冲；无旧采集入口 | 新界面真机使用确认与后续性能验证 |
 | 运行环境 | Python 3.11 | Gateway CLI/GUI 已使用 `.cache/m0/venv` 3.11；旧 `.venv` 3.13 保留 | 已有旧环境保留，不再用于主程序 |
@@ -179,9 +179,11 @@ bo s s 已确认采用“官方 Python SDK + J.A.C. 专用插件，先独立多�
 - `codinglog_by_awaqwq233/` 仍只由 bo s s 手动维护，Agent 不得自动编辑；`brainstorming_projectPLAN/` 已获准由 Agent 按 bo s s 确认的架构决策编辑和同步。
 - **开发平台**：当前以 macOS（Apple Silicon）为主开发机，保持跨平台兼容代码；Windows 开发机已不再使用。
 
-## 当前开发状态（2026-10-18 更新）
+## 当前开发状态（2026-10-20 更新）
 
-- **JACBrain Agent 方案（2026-10-18）**：已确认第十节的官方 SDK/独立运行时/专用插件方案，并同步本地权威 DOCX。现有语音任务可逐步纳入 Agent 编排，执行权限与真实证据仍由程序工具层控制。当前仅文档更新，未安装 Harness、未新增生产多步骤能力；三层模型、记忆与末期主动提醒顺序不变。
+- **JACBrain 生产迁移（2026-10-20）**：`production.py`、锁定的 `production_plugin.mjs` 和 `verify_brain_tasks.py` 已接统一任务接口。完整来源与授权范围重新核对，SDK 仅在独立环境后台运行，任务/会话/调用 ID 绑定；跨进程单任务串行、停止/重连撤销、不自动恢复副作用。模型完整流与整批调用核验后才释放工具。系统/联网查询最多四回合/四调用；单动作及站名选择只登记一次，经 pre-step reject 以 blocked 暂停，外层确认唯一提议与 shutdown 后复核并实际执行，终态不冒充业务完成。网站候选仍绑定令牌/代次/期限，确认与缓存路径不请求模型。实际回执、UTF-8 原子报告与原生短播报继续复用；网页投影有界、保留原始编号和来源日期，答案只可引用模型可见段落。安装阶段已更新，原七包版本、Gateway 依赖和 MiniCPM 模型/协议不变；组合补丁修复跨块 UTF-8，锁文件仅登记旧补丁升级摘要；自动回归、真实 Qwen 与合成语音原生闭环结果见 CHANGELOG，真人设备听感与长时同跑稳定性另验。生产不开放通用多步骤、文件编辑、shell 或云端。
+
+- **JACBrain 独立原型（2026-10-18）**：`src/brain/agent/`、`verify_agent.py` 已接官方 SDK/runtime `0.2.1rc2`（源码 `687f282e8625c6b8d11ff58211a90524be2e4317`），七个 macOS arm64 / Python 3.11 wheel 与插件由 `agent.lock.json` 校验。`--only agent` 独立安装、自检、国内镜像回退已接线；纯 MJS 插件无额外构建依赖。只开放读取两份指定小文本（每份 768 UTF-8 字节）、生成差异和提交摘要草稿三个工具。程序逐级 NOFOLLOW 限定目录/文件，任务/调用 ID 关联、失败 ID 不重放、8 次工具/8 次模型/默认 120 秒预算、关闭思考、原子报告和运行时持久化确认均有边界。真实三组 Qwen 多步/报告及只读恢复通过；`--inspect-session` 不自动续跑。运行时原生解包用 `PKG_NATIVE_CACHE_PATH` 定向忽略缓存，不设置或覆盖用户 HOME。生产语音/GUI 已在下述阶段迁移，原生播报合成链路与短时同跑分开记录；不扩大当前权限、不改三层模型/记忆/末期提醒顺序。
 
 - **通用站名解析（2026-10-17）**：`website_resolver.py` 继承当前有界公网访问层，独立站名查询不套用天气规则；国内必应 RSS 请求失败或完整站名失配再试全球，最多 5 个主机候选/3 个首页，提取站名、标题、正文和 canonical/og:url/JSON-LD 名称及主机冲突。`brain/website_tasks.py` 使用一次 Qwen 候选编号选择，不接受模型生成 URL；唯一 HTTPS 证据候选且模型同意才自动派发一次，主站与论坛/下载分站区分；证据不是所有权认证。HTTP、验证页、同名或证据不足走 `needs_input`；无匹配/网络失败如实报告。现有 `local` 单工具规则未全局放宽，新增 `website`/`website_choice`/`website_forget`/`website_cancel` 独立权限。GUI 最多三个按钮及“打开第一个网站”后续语音，候选令牌/编号/代次/生成时间/60 秒有效期绑定、消费一次，候选生成前说完的迟到转写不能选择新候选；新任务、停止/重连、过期失效，GUI 不直接打开候选 URL。任务全程限 60 秒，搜索 25 秒，100ms 等待取消与派发同锁复核；实际动作不可撤回。待选/无结果/打开/缓存清理均生成本地证据和程序固定原生摘要，报表仍在 output/，统计不存站名正文。动态缓存 `.cache/sites/resolutions.json` 原子 JSON、128 条上限，自动证据 7 天/用户选择 30 天；命中重新读首页并核对主机，失败或变域重新检索。“重新查找X网站”“忘记X的网站地址”“清除网站缓存”或 GUI 清理按钮管理动态缓存，源码内常用快捷别名仍保留。解析/缓存/网络均在后台，不新增 Chroma 检索或持久化原始媒体。`verify_website.py --name` 默认只解析，`--open` 明确实际打开；探针缓存与生产缓存隔离。调研 SearXNG/DDGS 后继续复用 httpx，无新依赖/服务/后端协议/锁文件变化；三层架构、记忆与云端顺序不变。
 
@@ -222,7 +224,7 @@ bo s s 已确认采用“官方 Python SDK + J.A.C. 专用插件，先独立多�
 - `src/tools/`：Function Calling 工具层（装手）——新架构中归属大脑层 `qwen/qwen3.6-35b-a3b` 的 Tool Use / Agentic Coding。
 - `src/judgment/` 与 `src/runtime.py`：已删除，旧 MiniCPM 判断轮询与传统运行编排不再启动。
 - `src/memory/`：旧架构记忆子系统（fastembed + 自研 MemoryStore）——**新架构改 ChromaDB + BGE-Small-ZH-v1.5，此目录待重写**。
-- `src/omni/`：Gateway 客户端/协议/设备/桌面运行时和 GUI 后端控制器；旧 `client.py` / `server_launcher.py` / Voicebox 桥接 / 回灌 / 令牌过滤已删除。旧 router.py 仅保留草案；M2b 的生产路由由 TaskPipeline + BrainTaskRunner 承担，已扩展受限本地动作，不宣称通用 agent 可用。
+- `src/omni/`：Gateway 客户端/协议/设备/桌面运行时和 GUI 后端控制器；旧 `client.py` / `server_launcher.py` / Voicebox 桥接 / 回灌 / 令牌过滤已删除。旧 router.py 仅保留草案；M2b 的生产路由由 TaskPipeline + JACBrainTaskRunner 承担，继承 BrainTaskRunner 的权限与证据执行器，已扩展受限本地动作，不宣称通用 agent 可用。
 - `voices/silverwalf_voice.wav`：方案 B 原生音色参考 WAV，启动会话时编码发送给本机 Gateway。
 - `backend.lock.json`：后端与模型精确版本、SHA256、端口及协议配置。
 - `verify_gateway_tasks.py`：M2b 固定 Gateway 文件探针，真实 VAD/Whisper/Qwen 与原生结果音频核对，仅保存统计与报告文件名，不打开设备。

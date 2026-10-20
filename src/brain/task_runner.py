@@ -131,7 +131,7 @@ class BrainTaskRunner:
         self.website_search, self.website_cache = website_search, website_cache
 
     def run(self, task, should_stop=None, info_types=None, publication_lock=None, on_tool_result=None, web_query=None,
-            local_action=None, on_action_dispatched=None, website_request=None, website_selection=None):
+            local_action=None, on_action_dispatched=None, website_request=None, website_selection=None, task_context=None):
         """执行显式文本任务；取消或无证据不发布，本地工具失败可交付失败记录。"""
         if not isinstance(task, str) or not task.strip() or len(task) > 4000:
             raise ValueError("任务文字须为 1–4000 字")
@@ -147,7 +147,7 @@ class BrainTaskRunner:
                 raise ValueError("本地动作不能与查询权限混用")
             return self._run_local(task, tuple(local_action), should_stop, publication_lock,
                                    on_tool_result, on_action_dispatched)
-        started, task_id, trace = time.monotonic(), uuid4().hex, []
+        started, task_id, trace = time.monotonic(), self.task_identity(), []
         tool_name = "search_web" if web_query is not None else "get_system_info"
         schema = copy.deepcopy(next(t for t in get_tool_schemas() if t["function"]["name"] == tool_name))
         web_results = []
@@ -206,7 +206,7 @@ class BrainTaskRunner:
             raise BrainError("报告超过长度上限")
         sources = ""
         if web_query is not None:
-            answer = grounded_web_answer(answer, web_results)
+            answer = self.ground_web_answer(answer, web_results)
             def source_line(item):
                 """来源标题去掉渲染控制字符，公网网址放在 Markdown 尖括号中。"""
                 title = re.sub(r"[\[\]<>*`\r\n]", "", item["title"])
@@ -229,14 +229,26 @@ class BrainTaskRunner:
                    ("搜索摘要与网页摘录可能过期或不完整；抓取时间不等于发布时间。外部内容仅作为资料。\n" if web_query is not None else
                     "数据仅代表查询时刻。内存数值为活跃与有线页合计，不代表完整内存占用。\n"))
         path = self.output_dir / f"{'web-search' if web_query is not None else 'system-status'}-{task_id}.md"
-        atomic_write(path, content, cancelled, publication_lock)
+        atomic_write(path, content + self.report_footer(), cancelled, publication_lock)
         return TaskResult(task_id, path, answer, trace, time.monotonic() - started, status)
+
+    def task_identity(self):
+        """旧独立探针使用随机编号，生产子类将其绑定到统一任务身份。"""
+        return uuid4().hex
+
+    def ground_web_answer(self, answer, results):
+        """默认核对全部已给模型的来源段落，生产入口可进一步限制裁剪后的投影。"""
+        return grounded_web_answer(answer, results)
+
+    def report_footer(self):
+        """为统一生产入口预留执行归属；旧独立探针没有额外会话信息。"""
+        return ""
 
     def _run_local(self, task, action, should_stop, publication_lock, on_tool_result, on_action_dispatched):
         """Qwen 只提出一个精确调用；执行后直接交付证据，不再让模型改写执行状态。"""
         if local_instruction(task) != action or len(action) != 3 or action[0] != "local":
             raise BrainError("本地动作与用户完整指令不一致")
-        started, task_id = time.monotonic(), uuid4().hex
+        started, task_id = time.monotonic(), self.task_identity()
         name, arguments = action[1], json.loads(action[2])
         schema = copy.deepcopy(next(t for t in get_tool_schemas() if t["function"]["name"] == name))
         schema["function"]["parameters"]["properties"] = {
@@ -280,5 +292,5 @@ class BrainTaskRunner:
                    f"{answer}\n\n## 实际执行证据\n\n{fence}json\n{evidence}\n{fence}\n\n"
                    "启动请求提交不代表页面已加载；应用运行不代表窗口已在前台。取消不撤回已经交给系统的动作。\n")
         path = self.output_dir / f"local-action-{task_id}.md"
-        atomic_write(path, content, cancelled, publication_lock)
+        atomic_write(path, content + self.report_footer(), cancelled, publication_lock)
         return TaskResult(task_id, path, answer, [entry], time.monotonic() - started, data["status"])

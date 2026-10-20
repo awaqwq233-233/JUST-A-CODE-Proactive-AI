@@ -46,7 +46,10 @@ class ProbeCallbacks(GatewayCallbacks):
             self.files.append(path.name)
             if ["web"] in self.fields:
                 self.counts["web_answers"] += bool(re.search(r"\[\d+\]", detail["answer"]))
-        print(f"[大脑] {state}", flush=True)
+        code = detail.get("code")
+        if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code):
+            self.counts["reason_" + code] += 1
+        print(f"[大脑] {state}" + (f" ({code})" if code and re.fullmatch(r"[a-z_]{1,64}", str(code)) else ""), flush=True)
 
 
 def main(argv=None):

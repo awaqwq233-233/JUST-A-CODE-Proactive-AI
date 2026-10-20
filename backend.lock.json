@@ -33,7 +33,8 @@
         "LLAMA_CURL=OFF"
       ],
       "previous_patch_sha256": [
-        "705c68a3f06cda1856f2de09b2af7f4b2eae7040dec34b7367793be556385035"
+        "705c68a3f06cda1856f2de09b2af7f4b2eae7040dec34b7367793be556385035",
+        "2b098a064439d1ca3a3356484e022e9a44b6095e65b1bed6ea4ea2388e3635f9"
       ]
     }
   },
