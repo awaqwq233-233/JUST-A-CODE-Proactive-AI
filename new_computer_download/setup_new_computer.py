@@ -505,6 +505,14 @@ def step_verify(args):
 # ----------------------------------------------------------------------------
 # 主流程
 # ----------------------------------------------------------------------------
+def install_agent(*, mirror, dry_run=False):
+    """按脚本绝对路径载入独立安装器，兼容 CLI 和以模块导入的安装检查。"""
+    spec = importlib.util.spec_from_file_location("jac_prepare_agent", os.path.join(SCRIPT_DIR, "prepare_agent.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.install(mirror=mirror, dry_run=dry_run)
+
+
 def step_m0(args):
     """建立 3.11 环境（含 Gateway GUI 与独立 Qwen），保留已有 .venv。"""
     hr("方案 B Gateway / M2 独立环境")
@@ -524,6 +532,7 @@ def step_m0(args):
         log("[dry-run] 保留现有 .venv，不启动服务。")
         if not args.skip_transcription_model:
             log(f"[dry-run] 准备仓库外锁定 Whisper 资源及 CPU 自检：{args.whisper_model_dir}")
+        install_agent(mirror=index, dry_run=True)
         return True
     if not os.path.exists(m0_python):
         run_cmd([interpreter, "-m", "venv", m0_root])
@@ -545,6 +554,7 @@ def step_m0(args):
          "from src.omni.backend_control import BackendController; import httpx, fastapi, uvicorn; "
          "import onnxruntime, kaldi_native_fbank; from src.omni.voice_conditioning import prepare_voice; "
          "from src.brain.lm_studio import LMStudioClient; from src.brain.task_runner import BrainTaskRunner; "
+         "from src.brain.agent.production import JACBrainTaskRunner; "
          "from src.tools.web_search import WebSearchClient; import verify_web_search; "
          "from src.tools.search_query import web_instruction; "
          "from src.tools.local_intents import local_instruction; "
@@ -570,7 +580,7 @@ def step_m0(args):
          "from importlib.metadata import version; "
          "assert version('faster-whisper') == '1.2.1' and version('ctranslate2') == '4.8.2'; "
          "assert 'faster_whisper' not in sys.modules and 'ctranslate2' not in sys.modules; "
-         "assert 'torch' not in sys.modules and 'pyaudio' not in sys.modules; "
+         "assert 'torch' not in sys.modules and 'pyaudio' not in sys.modules and 'deepseek_harness' not in sys.modules; "
          "assert 'requests' not in sys.modules and 'llama_cpp' not in sys.modules; "
          "assert 'src.omni.client' not in sys.modules and 'src.judgment.judge' not in sys.modules; "
          "print('Gateway client, GUI, backend and independent Qwen dependencies verified')"],
@@ -594,6 +604,7 @@ def step_m0(args):
             return False
     else:
         log("[跳过] Whisper 资源；GUI 启动前须关闭本地转写或自行完成资源安装。")
+    install_agent(mirror=index)
     return True
 
 
@@ -623,9 +634,8 @@ def main():
     """主"""
     args = parse_args()
     if args.only == "agent":
-        from prepare_agent import install
-        install(mirror=OFFICIAL_PIP_INDEX if args.no_mirror else (args.mirror or DEFAULT_PIP_INDEX),
-                dry_run=args.dry_run)
+        install_agent(mirror=OFFICIAL_PIP_INDEX if args.no_mirror else (args.mirror or DEFAULT_PIP_INDEX),
+                      dry_run=args.dry_run)
         return
     if args.only in {"m0", "gateway", "all", "pip", "verify"}:
         raise SystemExit(0 if step_m0(args) else 1)

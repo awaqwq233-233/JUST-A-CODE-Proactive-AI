@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "stage": "independent-text-comparison",
+  "stage": "production-voice-tasks-and-independent-text-comparison",
   "python": "3.11",
   "platform": "macos-arm64",
   "minimum_macos": "14",
@@ -63,6 +63,12 @@
       "filename": "typing_inspection-0.4.4-py3-none-any.whl",
       "url": "https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl",
       "sha256": "65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147"
+    }
+  ],
+  "production_plugins": [
+    {
+      "path": "src/brain/agent/production_plugin.mjs",
+      "sha256": "6ed3135c21a1259fc4c3668f5dfdcac5b0348f0de46c6d232b30daad95abf8c3"
     }
   ]
 }

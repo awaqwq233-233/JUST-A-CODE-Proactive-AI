@@ -5,7 +5,6 @@ import json
 import re
 import time
 from datetime import datetime
-from uuid import uuid4
 
 from .lm_studio import BrainError, check_cancelled
 from src.tools.local_intents import local_instruction
@@ -59,7 +58,7 @@ def run_website(runner, task, fields, should_stop, publication_lock, on_tool_res
     from .task_runner import TaskResult, atomic_write
     if local_instruction(task) != fields or fields[0] not in {'website', 'website_choice', 'website_forget'}:
         raise BrainError('网站任务与完整指令不一致')
-    started, identifier, trace = time.monotonic(), uuid4().hex, []
+    started, identifier, trace = time.monotonic(), runner.task_identity(), []
     search = runner.website_search or WebsiteSearch()
     cache = runner.website_cache if runner.website_cache is not None else WebsiteCache()
 
@@ -87,7 +86,7 @@ def run_website(runner, task, fields, should_stop, publication_lock, on_tool_res
                    f'## 实际证据\n\n{fence}json\n{payload}\n{fence}\n\n'
                    '名称匹配不是网站身份认证；浏览器交接不代表页面已加载。\n')
         path = runner.output_dir / f'website-{identifier}.md'
-        atomic_write(path, content, cancelled, publication_lock)
+        atomic_write(path, content + runner.report_footer(), cancelled, publication_lock)
         return TaskResult(identifier, path, answer, trace, time.monotonic() - started, status, resolution)
 
     if fields[0] == 'website_forget':

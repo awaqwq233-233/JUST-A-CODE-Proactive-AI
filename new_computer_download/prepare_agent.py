@@ -22,9 +22,9 @@ OFFICIAL = "https://pypi.org/simple"
 
 def verify_plugin(lock):
     """确认本地源码与锁文件中的插件哈希一致。"""
-    plugin = lock["plugin"]
-    if hashlib.sha256((ROOT / plugin["path"]).read_bytes()).hexdigest() != plugin["sha256"]:
-        raise RuntimeError("Agent 插件与 agent.lock.json 不一致")
+    for plugin in [lock["plugin"], *lock.get("production_plugins", [])]:
+        if hashlib.sha256((ROOT / plugin["path"]).read_bytes()).hexdigest() != plugin["sha256"]:
+            raise RuntimeError("Agent 插件与 agent.lock.json 不一致")
 
 
 def self_test():
@@ -48,7 +48,18 @@ def self_test():
                          env={"JAC_LOCAL_KEY": "local-no-secret", "DO_NOT_TRACK": "1",
                               "PKG_NATIVE_CACHE_PATH": str(CACHE / "native-cache")}) as harness:
         harness.client.request("shutdown", None, response_model=ShutdownAck, timeout_seconds=8)
-    print("Agent 自检通过：固定 SDK/runtime、插件和本机 provider 初始化；未调用模型或设备。")
+    voice_config = work / "voice-tools.json"
+    voice_config.write_text(json.dumps({"tools": [], "max_steps": 2, "session_id": "self-test"}), encoding="utf-8")
+    patch.write_text(json.dumps(build_patch(8192, persona="仅初始化检查", plugin="production_plugin.mjs"),
+                               ensure_ascii=False), encoding="utf-8")
+    with DeepSeekHarness(dsh_home=str(work / "voice-home"), cwd=str(work), profile="sdk-minimal",
+                         patches=(str(patch),), provider="jac-local", model=MODEL,
+                         reasoning_effort="off", max_tokens=768, initialize_timeout_seconds=20,
+                         env={"JAC_LOCAL_KEY": "local-no-secret", "DO_NOT_TRACK": "1",
+                              "JAC_VOICE_CONFIG": str(voice_config),
+                              "PKG_NATIVE_CACHE_PATH": str(CACHE / "native-cache")}) as harness:
+        harness.client.request("shutdown", None, response_model=ShutdownAck, timeout_seconds=8)
+    print("Agent 自检通过：固定 SDK/runtime、独立/生产插件与本机 provider；未调用模型或设备。")
 
 
 def download_wheels(command, mirror):

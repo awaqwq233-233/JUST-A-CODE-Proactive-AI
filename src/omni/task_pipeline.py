@@ -227,6 +227,9 @@ class TaskPipeline:
         """后台完成资源/模型就绪，启动三个有界处理线程。"""
         from src.brain.lm_studio import LMStudioClient
         LMStudioClient(self.brain_url)  # 仅校验本机地址，不探测或加载大脑。
+        if self.runner_factory is None:
+            from src.brain.agent.production import check_installation
+            check_installation()
         self.segmenter = VadSegmenter(on_start=self._response_started, on_discard=self._response_discarded)
         try:
             self.decoder.start()
@@ -597,9 +600,8 @@ class TaskPipeline:
                     self._notify("running", {"id": utterance.identifier})
                 if not clarification and runner is None:
                     if self.runner_factory is None:
-                        from src.brain.llm import LocalBrain
-                        from src.brain.task_runner import BrainTaskRunner
-                        runner = BrainTaskRunner(LocalBrain(backend="lm_studio", lm_studio_url=self.brain_url))
+                        from src.brain.agent.production import JACBrainTaskRunner
+                        runner = JACBrainTaskRunner(self.brain_url)
                     else:
                         runner = self.runner_factory()
                 def tool_result(entry):
@@ -622,7 +624,10 @@ class TaskPipeline:
                     else:
                         scope = {"web_query": fields[1]} if fields[0] == "web" else {"info_types": fields}
                     result = runner.run(text, should_stop=lambda: not self.current(utterance.generation),
-                                        publication_lock=self.lock, on_tool_result=tool_result, **scope)
+                                        publication_lock=self.lock, on_tool_result=tool_result,
+                                        task_context={"kind": "voice" if not utterance.identifier.startswith('ui-') else "gui",
+                                                      "utterance_id": utterance.identifier, "generation": utterance.generation,
+                                                      "session": self.session, "ended_at": utterance.ended_at}, **scope)
                 with self.lock:
                     if self.current(utterance.generation):
                         status = getattr(result, "status", "completed")

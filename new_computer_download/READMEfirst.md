@@ -4,7 +4,7 @@
 
 ## English
 
-**Independent Agent prototype verified on 2026-10-18:** optional `--only agent` installs the pinned official Harness SDK/runtime and J.A.C. plugin into `.cache/agent/venv` on macOS 14+ arm64 / Python 3.11. Hash-checked wheels, mirror fallback and offline startup checks are included. Production voice still uses the existing runner. See section 17.
+**Independent Agent prototype verified on 2026-10-18:** optional `--only agent` installs the pinned official Harness SDK/runtime and J.A.C. plugin into `.cache/agent/venv` on macOS 14+ arm64 / Python 3.11. Hash-checked wheels, mirror fallback and offline startup checks are included. Production voice now uses the unified JACBrain/Harness interface, and `--only gateway` also installs this separate environment. Existing machines can run `--only agent`; startup checks it before capture. See section 17.
 
 Option B was approved on 2026-10-06. M0 has been accepted by the user with the 30-minute soak explicitly waived. This guide provisions the isolated M0/M1 backend, probes and production Gateway CLI/GUI. `setup_new_computer.py --only gateway` (compatible alias: `--only m0`) installs Python 3.11 dependencies including PySide6 and verifies client/GUI imports without opening devices. The installer defaults to Gateway; all/pip/verify also use this current dependency set. Old MiniCPM runtime modes are removed.
 
@@ -486,4 +486,18 @@ Qwen 仅能按本句调用一次对应工具，不能扩大路径或改写目标
 
 运行状态/完整会话/失败记录仅本地存于 `.cache/agent/runs/`，原生缓存通过 `PKG_NATIVE_CACHE_PATH` 放入 `.cache/agent/native-cache/`，不改用户 HOME。默认 shell、文件系统、云端、遥测插件未启用；子进程不继承云密钥或代理。关闭时显式核对官方 shutdown，避免把未落盘会话误报为可恢复。中断后不自动续跑，先检查任务记录和实际报告；完成状态以报告证据为准。
 
-当前三组真实 Qwen 文本任务和历史恢复已通过，生产语音/GUI 尚未迁移；真实语音、原生播报及与 MiniCPM 同跑性能仍需单独验收。Gateway 依赖、后端锁和日常启动方式不变。实际输入、会话、报告、模型与规划 DOCX 均不提交 Git。三层架构、长期记忆与末期提醒顺序保持。
+三组独立真实 Qwen 文本任务和历史恢复已通过。2026-10-20 生产语音/GUI 已迁移到统一 JACBrain/Harness：`--only gateway` 也会准备 `.cache/agent/venv`，已有安装运行上方 `--only agent` 即可补齐。启动语音前检查 Python 3.11、全部固定包版本和两个插件哈希，缺失或不符明确失败，不自动下载或回落。主进程不导入 SDK；Gateway 依赖、MiniCPM 模型哈希/上游 commit/协议及日常启动命令不变。原生回归修复了任务汉字跨 decode 被替换成“�”的问题，组合补丁与旧版本升级摘要已登记。已有安装除 Agent 环境外还须关闭后端，再执行以下更新构建；只接受锁定 commit 的干净源码或登记旧补丁，不覆盖未知修改。
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/new_computer_download/update_native_backend.py --build
+```
+
+更新器默认读取 GUI 保存的引擎目录。新机器按前文应用最新完整补丁构建即可。合成文件已用于原生链路和短时同跑验证，真人设备听感和长时稳定性仍分别验收。
+
+通过当前生产接口检查系统查询，不打开音视频设备：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_brain_tasks.py --task "查一下电池电量"
+```
+
+生产报告保存到 `output/m2/qwen/`，统一任务来源、授权和调用证据在 `.cache/agent/runs/<task_id>/`。探针的应用/网址指令会实际执行；网站候选确认只能回到原语音/GUI 会话。只读查询有界多回合，单动作提议登记后由官方 pre-step 钩子暂停，运行时 blocked 为预期提议状态；工具实际执行结果才决定 completed/submitted 等业务状态。停止/重连取消旧任务与播报，不支持跨轮换续跑。实际输入、会话、报告、模型与规划 DOCX 均不提交 Git。三层架构、长期记忆与末期提醒顺序保持。

@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 from urllib.request import build_opener, ProxyHandler
+from urllib.parse import urlsplit
 import uuid
 
 from .boundary import AgentRefused, TaskBoundary, atomic_json, open_directory
@@ -20,10 +21,15 @@ from .profile import MODEL, ROOT, build_patch
 CACHE = ROOT / ".cache/agent"
 
 
-def loaded_context():
+def loaded_context(base_url="http://127.0.0.1:12345"):
     """只读取本机原生清单，核对精确已加载实例及实际上下文/工具/关闭思考能力。"""
+    url = urlsplit(base_url)
+    if (url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or url.username or url.password or url.query or url.fragment or url.path not in {"", "/"}):
+        raise AgentRefused("大脑地址须为无路径的本机 HTTP 地址")
+    base_url = base_url.rstrip("/")
     opener = build_opener(ProxyHandler({}))
-    with opener.open("http://127.0.0.1:12345/api/v1/models", timeout=5) as response:
+    with opener.open(base_url + "/api/v1/models", timeout=5) as response:
         models = json.loads(response.read(262144))["models"]
     for model in models:
         for instance in model.get("loaded_instances", []):
@@ -212,6 +218,8 @@ def inspect_session(task_id):
         env = {"PATH": os.environ.get("PATH", ""), "PYTHONUTF8": "1", "PYTHONPATH": str(ROOT),
                "JAC_LOCAL_KEY": "local-no-secret", "DO_NOT_TRACK": "1",
                "XDG_CACHE_HOME": str(CACHE / "native-cache"), "PKG_NATIVE_CACHE_PATH": str(CACHE / "native-cache")}
+        if config.get("production"):
+            env["JAC_VOICE_CONFIG"] = str(run_dir / "voice-tools.json")
         response = subprocess.run([str(CACHE / "venv/bin/python"), "-m", "src.brain.agent.worker",
                                    str(run_dir / "inspect.json")], cwd=ROOT, env=env,
                                   capture_output=True, text=True, encoding="utf-8", timeout=25, check=True)

@@ -167,9 +167,12 @@ def test_installer_dry_run_never_executes_or_writes(tmp_path, monkeypatch):
         pytest.fail("dry-run 执行了外部命令")
 
     monkeypatch.setattr(installer, "run_cmd", forbidden)
+    agent = []
+    monkeypatch.setattr(installer, "install_agent", lambda **kwargs: agent.append(kwargs))
     args = SimpleNamespace(mirror=None, no_mirror=False, dry_run=True,
                            skip_transcription_model=False, whisper_model_dir=str(tmp_path / "external-whisper"))
     assert installer.step_m0(args) is True
+    assert agent == [{"mirror": installer.DEFAULT_PIP_INDEX, "dry_run": True}]
     assert list(tmp_path.iterdir()) == []
 
 
@@ -194,6 +197,8 @@ def test_installer_mirror_failure_falls_back_without_disabling_tls(tmp_path, mon
     monkeypatch.setattr(installer, "PROJECT_ROOT", str(tmp_path))
     monkeypatch.setattr(installer.os.path, "exists", lambda path: True)
     calls = []
+    agent = []
+    monkeypatch.setattr(installer, "install_agent", lambda **kwargs: agent.append(kwargs))
 
     def command(arguments, **kwargs):
         """依次模拟正确版本、镜像失败和官方安装成功。"""
@@ -207,6 +212,7 @@ def test_installer_mirror_failure_falls_back_without_disabling_tls(tmp_path, mon
     assert "PySide6" in calls[-1][-1] and "GatewayClient" in calls[-1][-1]
     assert all("--trusted-host" not in call for call in calls)
     assert all(str(tmp_path / ".venv") not in argument for call in calls for argument in call)
+    assert agent == [{"mirror": installer.DEFAULT_PIP_INDEX}]
 
 
 def test_installer_rejects_dependency_import_failure(tmp_path, monkeypatch):

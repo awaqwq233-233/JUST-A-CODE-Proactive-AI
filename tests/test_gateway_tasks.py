@@ -15,6 +15,12 @@ from src.omni.task_pipeline import TaskPipeline, Utterance, VadSegmenter, confir
 from src.omni.response_gate import ResponseGate
 
 
+@pytest.fixture(autouse=True)
+def isolate_agent_installation(monkeypatch):
+    """管线单元测试不依赖可选独立 SDK；真实安装与缺失拒绝由 Agent 集成测试覆盖。"""
+    monkeypatch.setattr("src.brain.agent.production.check_installation", lambda: None)
+
+
 class Detector:
     """用确定的幅值代替 VAD 判定，切句逻辑仍完整执行。"""
 
