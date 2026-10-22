@@ -1,5 +1,5 @@
 diff --git a/tools/omni/omni.cpp b/tools/omni/omni.cpp
-index 3e029c6..3bbe685 100644
+index 3e029c6..07d8435 100644
 --- a/tools/omni/omni.cpp
 +++ b/tools/omni/omni.cpp
 @@ -307,6 +307,7 @@ struct omni_output {
@@ -10,7 +10,44 @@ index 3e029c6..3bbe685 100644
      std::string text;
      int n_past;
      bool llm_finish = false;
-@@ -1396,7 +1397,16 @@ static const char * llama_loop_with_hidden(struct omni_context * ctx_omni, commo
+@@ -1020,14 +1021,15 @@ static void kv_cache_slide_window(struct omni_context* ctx_omni, common_params*
+                 ctx_omni->n_past -= n_discard;
+                 // 没有可信的 round boundary 了，清空以避免后续按错位的 boundary 切割
+                 ctx_omni->round_start_positions.clear();
+-                if (ctx_omni->ctx_tts_llama) {
++                // LLM input rollover must not erase an in-flight literal TTS utterance.
++                if (ctx_omni->ctx_tts_llama && !ctx_omni->jac_speech_busy.load()) {
+                     llama_memory_t tts_mem = llama_get_memory(ctx_omni->ctx_tts_llama);
+                     if (tts_mem) llama_memory_seq_rm(tts_mem, 0, 0, -1);
+                     ctx_omni->tts_n_past_accumulated = 0;
+                     ctx_omni->tts_all_generated_tokens.clear();
+                     ctx_omni->tts_condition_saved = false;
+                 }
+-                print_with_timestamp("⚠️ slide DONE: rounds<2 tail-keep: n_past %d→%d, freed %d (kept last %d), TTS KV cleared\n",
++                print_with_timestamp("⚠️ slide DONE: rounds<2 tail-keep: n_past %d→%d, freed %d (kept last %d)\n",
+                                      old_n_past, ctx_omni->n_past, n_discard, target_keep_tokens);
+             }
+         } else {
+@@ -1065,7 +1067,8 @@ static void kv_cache_slide_window(struct omni_context* ctx_omni, common_params*
+                 }
+                 ctx_omni->round_start_positions = new_rounds;
+ 
+-                if (ctx_omni->ctx_tts_llama) {
++                // LLM input rollover must not erase an in-flight literal TTS utterance.
++                if (ctx_omni->ctx_tts_llama && !ctx_omni->jac_speech_busy.load()) {
+                     llama_memory_t tts_mem = llama_get_memory(ctx_omni->ctx_tts_llama);
+                     if (tts_mem) llama_memory_seq_rm(tts_mem, 0, 0, -1);
+                     ctx_omni->tts_n_past_accumulated = 0;
+@@ -1073,7 +1076,7 @@ static void kv_cache_slide_window(struct omni_context* ctx_omni, common_params*
+                     ctx_omni->tts_condition_saved = false;
+                 }
+ 
+-                print_with_timestamp("⚠️ slide DONE: n_past %d→%d, freed %d, boundaries_kept=%d, TTS KV cleared\n",
++                print_with_timestamp("⚠️ slide DONE: n_past %d→%d, freed %d, boundaries_kept=%d\n",
+                                      old_n_past, ctx_omni->n_past, n_discard, (int)new_rounds.size());
+             }
+         }
+@@ -1396,7 +1399,16 @@ static const char * llama_loop_with_hidden(struct omni_context * ctx_omni, commo
  }
  
  // 新增：返回token ID的版本
@@ -28,7 +65,7 @@ index 3e029c6..3bbe685 100644
      const char * tmp = sample_with_hidden_and_token(smpl, ctx_omni, params, &n_past, hidden_states, token_id);
      return tmp;
  }
-@@ -5687,7 +5697,9 @@ static bool generate_audio_tokens_local(
+@@ -5687,7 +5699,9 @@ static bool generate_audio_tokens_local(
      // 🔧 [单双工适配] max_audio_tokens:
      // - 双工模式: 26 (与 Python 对齐，max_token_per_chunk = 25 + 1)
      // - 单工模式: 500 (允许更长的生成，靠 EOS 结束)
@@ -39,7 +76,7 @@ index 3e029c6..3bbe685 100644
      print_with_timestamp("TTS Local: mode=%s, max_audio_tokens=%d\n", 
                           ctx_omni->duplex_mode ? "duplex" : "simplex", max_audio_tokens);
      
-@@ -5828,6 +5840,7 @@ static bool generate_audio_tokens_local(
+@@ -5828,6 +5842,7 @@ static bool generate_audio_tokens_local(
      bool first_chunk_pushed = false;
      std::vector<int32_t> stream_buffer;
      
@@ -47,7 +84,7 @@ index 3e029c6..3bbe685 100644
      for (int t = 0; t < max_audio_tokens; ++t) {
          // 🔧 [差异1修复] 计算 force_no_eos
          // Python generate_chunk: if force_no_stop or t < min_new_tokens: logits[:, eos_token] = -torch.inf
-@@ -5854,6 +5867,7 @@ static bool generate_audio_tokens_local(
+@@ -5854,6 +5869,7 @@ static bool generate_audio_tokens_local(
          );
          
          if (sampled_token_abs == 0) {
@@ -55,7 +92,7 @@ index 3e029c6..3bbe685 100644
              LOG_ERR("TTS Local: sample_tts_token failed at step %d\n", t);
              break;
          }
-@@ -5861,6 +5875,7 @@ static bool generate_audio_tokens_local(
+@@ -5861,6 +5877,7 @@ static bool generate_audio_tokens_local(
          // Convert to relative index and check EOS
          int relative_idx = sampled_token_abs - audio_bos_token_id;
          if (relative_idx < 0 || relative_idx >= num_audio_tokens) {
@@ -63,7 +100,7 @@ index 3e029c6..3bbe685 100644
              LOG_ERR("TTS Local: invalid token ID %d (relative_idx: %d) at step %d\n",
                      sampled_token_abs, relative_idx, t);
              break;
-@@ -5878,6 +5893,7 @@ static bool generate_audio_tokens_local(
+@@ -5878,6 +5895,7 @@ static bool generate_audio_tokens_local(
          // 如果是 EOS，立即从 buffer 中移除，防止被推送到 T2W
          bool is_eos = (relative_idx == num_audio_tokens - 1);
          if (is_eos) {
@@ -71,7 +108,7 @@ index 3e029c6..3bbe685 100644
              output_audio_tokens.pop_back();
              stream_buffer.pop_back();
              chunk_generated_tokens.pop_back();
-@@ -5899,6 +5915,7 @@ static bool generate_audio_tokens_local(
+@@ -5899,6 +5917,7 @@ static bool generate_audio_tokens_local(
          if ((int)stream_buffer.size() >= push_threshold && ctx_omni->t2w_thread_info && !is_end_of_turn) {
              first_chunk_pushed = true;
              T2WOut *t2w_out = new T2WOut();
@@ -79,7 +116,7 @@ index 3e029c6..3bbe685 100644
              t2w_out->audio_tokens.assign(stream_buffer.begin(), stream_buffer.end());
              t2w_out->is_final = false;
              t2w_out->is_chunk_end = false;  // 🔧 中间推送，不是 chunk 结束
-@@ -5926,9 +5943,11 @@ static bool generate_audio_tokens_local(
+@@ -5926,9 +5945,11 @@ static bool generate_audio_tokens_local(
      // 解决：在 chunk 结束时发送 is_chunk_end=true 信号，让 T2W flush 掉 buffer 中的剩余 tokens
      if (ctx_omni->t2w_thread_info) {
          T2WOut *t2w_out = new T2WOut();
@@ -91,7 +128,7 @@ index 3e029c6..3bbe685 100644
          t2w_out->is_final = is_end_of_turn;
          t2w_out->is_chunk_end = !is_end_of_turn;  // 非 turn 结束时才用 is_chunk_end
          t2w_out->round_idx = ctx_omni->simplex_round_idx;  // 🔧 传递轮次索引
-@@ -6324,6 +6343,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+@@ -6324,6 +6345,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
              // 累积所有队列中的数据
              while (!queue.empty()) {
                  LLMOut *llm_out = queue.front();
@@ -99,7 +136,7 @@ index 3e029c6..3bbe685 100644
                  llm_finish |= llm_out->llm_finish;
                  bool item_is_eot = llm_out->is_end_of_turn;
                  accumulated_is_end_of_turn |= item_is_eot;
-@@ -6391,6 +6411,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+@@ -6391,6 +6413,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
                      
                      if (ctx_omni->t2w_thread_info) {
                          T2WOut *t2w_out = new T2WOut();
@@ -107,7 +144,7 @@ index 3e029c6..3bbe685 100644
                          t2w_out->audio_tokens.clear();
                          t2w_out->is_final = false;
                          t2w_out->is_chunk_end = true;
-@@ -6458,6 +6479,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+@@ -6458,6 +6481,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
                  // LISTEN/CHUNK_EOS
                  if (ctx_omni->t2w_thread_info) {
                      T2WOut *t2w_out = new T2WOut();
@@ -115,7 +152,7 @@ index 3e029c6..3bbe685 100644
                      t2w_out->audio_tokens.clear();
                      t2w_out->is_final = false;
                      t2w_out->is_chunk_end = true;
-@@ -6478,6 +6500,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+@@ -6478,6 +6502,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
                  // 非双工模式
                  if (ctx_omni->t2w_thread_info) {
                      T2WOut *t2w_out = new T2WOut();
@@ -123,7 +160,7 @@ index 3e029c6..3bbe685 100644
                      t2w_out->audio_tokens.clear();
                      t2w_out->is_final = true;
                      t2w_out->is_chunk_end = false;
-@@ -6715,6 +6738,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+@@ -6715,6 +6740,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
                      // LISTEN/CHUNK_EOS: 保持 TTS 状态
                      if (ctx_omni->t2w_thread_info) {
                          T2WOut *t2w_out = new T2WOut();
@@ -131,7 +168,7 @@ index 3e029c6..3bbe685 100644
                          t2w_out->audio_tokens.clear();
                          t2w_out->is_final = false;
                          t2w_out->is_chunk_end = true;
-@@ -6731,6 +6755,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+@@ -6731,6 +6757,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
                      // 真正的轮次结束
                      if (ctx_omni->t2w_thread_info && !turn_eos_flushed) {
                          T2WOut *t2w_out = new T2WOut();
@@ -139,7 +176,7 @@ index 3e029c6..3bbe685 100644
                          t2w_out->audio_tokens.clear();
                          t2w_out->is_final = true;
                          t2w_out->round_idx = ctx_omni->simplex_round_idx;  // 🔧 传递轮次索引
-@@ -6778,6 +6803,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
+@@ -6778,6 +6805,7 @@ void tts_thread_func_duplex(struct omni_context * ctx_omni, common_params *param
                  } else {
                      if (ctx_omni->t2w_thread_info) {
                          T2WOut *t2w_out = new T2WOut();
@@ -147,7 +184,7 @@ index 3e029c6..3bbe685 100644
                          t2w_out->audio_tokens.clear();
                          t2w_out->is_final = true;
                          t2w_out->is_chunk_end = false;
-@@ -8911,6 +8937,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+@@ -8911,6 +8939,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
      int wav_idx = 0;
      const int sample_rate = omni::flow::Token2Wav::kSampleRate;
      
@@ -155,7 +192,7 @@ index 3e029c6..3bbe685 100644
      while (t2w_thread_running) {
          // 🔧 [P0-打断检测] 检测 break_event 并清空队列
          if (ctx_omni->break_event.load()) {
-@@ -8958,6 +8985,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+@@ -8958,6 +8987,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
          
          // Get all available tokens from queue
          std::vector<llama_token> new_tokens;
@@ -163,7 +200,7 @@ index 3e029c6..3bbe685 100644
          bool is_final = false;
          bool is_chunk_end = false;  // 标记 TTS chunk 结束
          int received_round_idx = -1;  // 🔧 保存传入的 round_idx
-@@ -8966,6 +8994,9 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+@@ -8966,6 +8996,9 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
          bool have_enqueue_time = false;
          while (!queue.empty()) {
              T2WOut *t2w_out = queue.front();
@@ -173,7 +210,7 @@ index 3e029c6..3bbe685 100644
              queue.pop();
              if (!have_enqueue_time || t2w_out->enqueue_time < oldest_enqueue_time) {
                  oldest_enqueue_time = t2w_out->enqueue_time;
-@@ -8980,6 +9011,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+@@ -8980,6 +9013,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
                  received_round_idx = t2w_out->round_idx;
              }
              delete t2w_out;
@@ -181,7 +218,7 @@ index 3e029c6..3bbe685 100644
          }
          
          lock.unlock();
-@@ -9077,7 +9109,10 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+@@ -9077,7 +9111,10 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
                  
                  if (!chunk_wav.empty()) {
                      // Audio output callback (for WS protocol)
@@ -193,7 +230,7 @@ index 3e029c6..3bbe685 100644
                          ctx_omni->audio_output_cb(chunk_wav.data(), static_cast<int>(chunk_wav.size()),
                                                    sample_rate, is_last_window);
                      }
-@@ -9137,6 +9172,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+@@ -9137,6 +9174,7 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
                      }
                  }
              } else {
@@ -201,7 +238,7 @@ index 3e029c6..3bbe685 100644
                  LOG_ERR("T2W线程: feed_window 失败\n");
              }
              
-@@ -9223,7 +9259,18 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
+@@ -9223,7 +9261,18 @@ void t2w_thread_func_cpp(struct omni_context * ctx_omni, common_params *params)
                  break;
              }
          }
@@ -221,7 +258,7 @@ index 3e029c6..3bbe685 100644
      }
      
      print_with_timestamp("T2W(C++) 线程: 停止\n");
-@@ -9838,7 +9885,8 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
+@@ -9838,7 +9887,8 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
      int decode_start_cache_len = ctx_omni->n_past;
  
      // ---- force_listen：会话开局强制 LISTEN N 次 ----
@@ -231,7 +268,18 @@ index 3e029c6..3bbe685 100644
          ctx_omni->force_listen_used++;
          if (ctx_omni->special_token_listen >= 0) {
              common_sampler_accept(ctx_omni->ctx_sampler, ctx_omni->special_token_listen, true);
-@@ -9899,9 +9947,15 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
+@@ -9852,7 +9902,9 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
+         ctx_omni->slide_last_was_listen = true;
+         ctx_omni->ended_with_listen     = true;
+         ctx_omni->current_turn_ended    = false;
+-        if (ctx_omni->use_tts) {
++        // Literal text exhaustion does not finish in-flight TTS. Its final item must
++        // retain the preceding chunks and let Token2Wav own task completion.
++        if (ctx_omni->use_tts && !ctx_omni->jac_speech_busy.load()) {
+             ctx_omni->speek_done = true;
+         }
+         print_with_timestamp("Duplex decode: force_listen %d/%d, emit __IS_LISTEN__\n",
+@@ -9899,9 +9951,15 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
              float *      hidden_states = nullptr;
              llama_token  sampled_token = 0;
  
@@ -248,7 +296,7 @@ index 3e029c6..3bbe685 100644
  
              total_tokens_generated++;
  
-@@ -9917,6 +9971,7 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
+@@ -9917,6 +9975,7 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
                  }
              }
  
@@ -256,7 +304,7 @@ index 3e029c6..3bbe685 100644
              if (tmp == nullptr) {
                  LOG_ERR("Duplex decode: llama_loop returned nullptr\n");
                  break;
-@@ -10011,6 +10066,7 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
+@@ -10011,6 +10070,7 @@ static bool duplex_do_decode(omni_context * ctx_omni, common_params * params,
              && (!response.empty() || llm_finish))
          {
              LLMOut * llm_out = new LLMOut();
@@ -264,7 +312,7 @@ index 3e029c6..3bbe685 100644
              llm_out->text            = response;
              llm_out->n_past          = ctx_omni->n_past;
              llm_out->llm_finish      = llm_finish;
-@@ -11704,3 +11760,23 @@ bool clean_kvcache(struct omni_context * ctx_omni) {
+@@ -11704,3 +11764,23 @@ bool clean_kvcache(struct omni_context * ctx_omni) {
      
      return true;
  }

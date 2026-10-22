@@ -199,6 +199,15 @@ def visual_question_key(text):
     return key if re.fullmatch(r"(?:请|请你)?(?:描述一下)?(?:你现在|现在你|你|现在)?(?:看到了|看见了|看到|看见)(?:什么)", key) else None
 
 
+def conversation_retry_key(text):
+    """只复核无工具语义的视觉问句和展开追问，不补写主题、动作或目标。"""
+    visual = visual_question_key(text)
+    if visual is not None:
+        return visual
+    key = normalize_transcript(text).translate(str.maketrans("詳細點體繼續說", "详细点体继续说"))
+    return key if re.fullmatch(r"(?:请|请你)?(?:再)?(?:说|讲|描述)?(?:详细|具体)(?:一)?点(?:儿)?|(?:请|请你)?继续(?:说|讲)", key) else None
+
+
 class TaskPipeline:
     """三个后台线程分别负责 VAD、Whisper 和 Qwen；不占用 Qt/WS 回调。"""
 
@@ -342,14 +351,15 @@ class TaskPipeline:
             return True
 
     def _retry_visual_question(self, utterance, segments, reason):
-        """短视觉候选保留全 PCM 仅加不同前导静音；两次原阈值合格且逐字一致才恢复。"""
+        """短视觉/展开追问仅加前导静音；两次原阈值合格且同类逐字一致才恢复。"""
         if reason not in {"low_confidence", "no_speech"} or len(utterance.samples) > 4 * 16000:
             return None
         if any(not isinstance(s, dict) or not isinstance(s.get("text"), str) for s in segments):
             return None
         candidate = "".join(s.get("text", "") for s in segments)
         key = normalize_transcript(candidate).translate(str.maketrans({"麼": "么", "麽": "么", "見": "见"}))
-        if (len(key) > 20 or not re.search(r"(?:看到|看见).*什么", key)
+        followup = conversation_retry_key(candidate)
+        if (len(key) > 20 or not (re.search(r"(?:看到|看见).*什么", key) or followup)
                 or is_system_request(candidate) or is_online_request(candidate) or is_local_request(candidate)):
             return None
         accepted, keys = [], []
@@ -360,8 +370,8 @@ class TaskPipeline:
                 self.counters["visual_retry_attempts"] += 1
             pcm = np.concatenate((np.zeros(length, dtype="float32"), utterance.samples))
             text = confirmed_text(self.decoder.transcribe(pcm))
-            current_key = visual_question_key(text) if text is not None else None
-            if current_key is None:
+            current_key = conversation_retry_key(text) if text is not None else None
+            if current_key is None or (followup is not None and current_key != followup):
                 with self.lock:
                     self.counters["visual_retry_rejected"] += 1
                 return None

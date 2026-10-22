@@ -648,6 +648,7 @@ class MainWindow(QMainWindow):
         labels.update(action_dispatched="启动请求已提交，正在核验结果", submitted="请求已提交，执行记录已保存",
                       partial="部分搜索结果已保存", failed="任务未完成，执行记录已保存")
         labels["transcription_rejected"] = "未确认"
+        labels["conversation_waiting"] = "已识别，暂未收到回复"
         labels.update(no_answer="未取得答案，查询记录已保存", needs_input="需要补充信息")
         if detail.get("purpose") == "clarification":
             labels.update(speech_queued="追问等待播报", speech_sent="正在准备追问语音", speech_started="原生追问语音处理中",
@@ -671,6 +672,7 @@ class MainWindow(QMainWindow):
                        local_failed="本地任务未完成核验；若已提示启动请求提交，该动作不会自动撤回",
                        web_failed="联网查询未完成，请检查网络、Qwen 或换个关键词；未发布结果",
                        response_wait_timeout="等待转写超时，普通回复未播放",
+                       conversation_no_response="感知模型尚未返回内容；追问时可补充上一句主题",
                        response_buffer_full="等待转写时回复超限，普通回复未播放")
         message = labels.get(state, state)
         if detail.get("code"):
@@ -681,7 +683,7 @@ class MainWindow(QMainWindow):
                        "invalid_transcription":"识别结果不完整"}
             message += "（语句 " + str(detail.get("sequence", "")) + "，" + quality.get(detail["reason"], "识别未通过") + "）"
         self._end_reply()
-        source = "语音" if state == "transcription_rejected" else "大脑"
+        source = "语音" if state in {"transcription_rejected", "conversation_waiting"} else "大脑"
         self._insert_text(self.console, "\n\n" + source + " · " + message)
         if state == "action_dispatched":
             self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]))

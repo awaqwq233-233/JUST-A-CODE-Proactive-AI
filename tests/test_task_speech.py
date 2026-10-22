@@ -151,7 +151,7 @@ def test_cancel_discards_active_generation_and_already_queued_audio():
 
 def test_playback_cancels_pending_and_partial_task_blocks():
     """SoundDevice 回调对取消块填零，普通对话块仍顺序播放。"""
-    devices = LiveDevices(None, None, 0, video_enabled=False)
+    devices = LiveDevices(None, None, 0, video_enabled=False, playback_prebuffer_seconds=0)
     guard = threading.Event()
     devices.enqueue_output(np.ones(3, dtype='float32') * .1)
     devices.enqueue_task_output(np.ones(20, dtype='float32') * .2, guard)

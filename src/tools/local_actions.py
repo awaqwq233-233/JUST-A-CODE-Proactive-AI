@@ -17,6 +17,7 @@ MAC_APPS = {
     "Safari": "com.apple.Safari", "Calendar": "com.apple.iCal",
     "Notes": "com.apple.Notes", "Calculator": "com.apple.calculator",
     "TextEdit": "com.apple.TextEdit",
+    "Adobe Lightroom Classic": "com.adobe.LightroomClassicCC7",
 }
 
 

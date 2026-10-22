@@ -10,6 +10,8 @@ J.A.C. aims to perceive its surroundings, plan ahead, warn of hazards and perfor
 
 ### Architecture and current status
 
+**Live-feedback fixes (2026-10-22):** CPU Whisper now uses a small Chinese/English vocabulary hint, including Python and Lightroom, without command examples, text substitutions or lower confidence thresholds. Neutral short follow-ups can receive two matching acoustic rechecks, and the UI reports an accepted utterance with no native reply after 12 seconds. Native two-turn replay still produced silence or an incomplete acknowledgment despite correct transcription; prompt experiments did not reliably help and were reverted. Contextual follow-up remains unresolved. Lightroom / Lightroom Classic now targets the fixed local Adobe Lightroom Classic application. Explicit local-app requests cannot fall through to website search; explicit websites remain supported. Native playback adds a bounded 0.8-second prebuffer and resume-gap statistics, preserving PCM and cancellation. This adds initial waiting and cannot compensate for sustained slow generation. Reference/cache checks passed, but generated-audio recognition still did not recover the complete task sentence; speech completeness, voice similarity and live smoothness remain unaccepted. Native task speech now preserves in-flight TTS state after literal text is consumed and during LLM context rollover. It requires rebuilding the registered backend patch on existing installations; package versions and model files are unchanged.
+
 Option B was approved on 2026-10-06. The three model tiers remain:
 
 | Tier | Runtime | Responsibility |
@@ -124,7 +126,7 @@ Short visual questions are explicitly covered by the perception prompt. Rejected
 
 ### M2c: bounded local computer tasks (updated 2026-10-17)
 
-The production voice path now supports one explicit local action per utterance: opening a listed application, opening an explicit HTTP(S) URL, or searching filenames inside a specified directory. Examples: “打开计算器”, “打开Safari”, “打开Python官网”, and “在下载目录查找文件名包含报告的文件”. The macOS application list is Safari, Calendar, Notes, Calculator and TextEdit. Known website names are 百度, GitHub, Python, and B站 / 哔哩哔哩 / bilibili. They accept 网页 / 网站 / 官网 / 官方网站, including “打开B站” and “打开B站网页”, with traditional Chinese variants. Literal URLs retain their punctuation and path/query characters. Unlisted names now enter evidence-based website resolution; Qwen selects an observed candidate ID and never invents a URL. Explicit application requests never fall back to opening a website. File searches without a directory ask for the complete request. Paths and filename keywords retain the confirmed transcript; script conversion and homophone correction are not applied to these values.
+The production voice path now supports one explicit local action per utterance: opening a listed application, opening an explicit HTTP(S) URL, or searching filenames inside a specified directory. Examples: “打开计算器”, “打开Safari”, “打开Python官网”, and “在下载目录查找文件名包含报告的文件”. The macOS application list is Safari, Calendar, Notes, Calculator, TextEdit and Adobe Lightroom Classic; Lightroom aliases target Classic. Explicit local wording such as “打开电脑上的Lightroom软件” stays local. Known website names are 百度, GitHub, Python, and B站 / 哔哩哔哩 / bilibili. They accept 网页 / 网站 / 官网 / 官方网站, including “打开B站” and “打开B站网页”, with traditional Chinese variants. Literal URLs retain their punctuation and path/query characters. Unlisted names now enter evidence-based website resolution; Qwen selects an observed candidate ID and never invents a URL. Explicit application requests never fall back to opening a website. File searches without a directory ask for the complete request. Paths and filename keywords retain the confirmed transcript; script conversion and homophone correction are not applied to these values.
 
 Qwen receives only one authorized tool with exact argument enums. Changed parameters, multiple calls, negations, quoted requests and unsupported compound actions are rejected before execution. Results and native speech use actual tool evidence, without another model-generated success claim. The GUI distinguishes a submitted launch request, a detected running macOS process, partial search results and failure. Browser handoff does **not** verify page loading; a running process does **not** verify a foreground window.
 
@@ -184,6 +186,8 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 
 ### 当前实现状态
 
+**真人反馈修复（2026-10-22）**：Whisper small 增加含 Python、Lightroom 的有限中英词汇提示，不含执行句示例、不做同音猜改、不降低质量门槛。无工具语义的短展开追问可经两次一致的声学复核恢复；识别放行后 12 秒没有普通回复时明确显示提示。原生两轮回放仍出现转写正确但沉默或只答简短应答，提示实验无稳定改善已撤回；上下文追问尚未修复。原生播放增加 0.8 秒预缓冲和续播空档统计，保留 PCM 与取消边界，首音增加等待；持续供音不足仍可能停顿。原参考及条件缓存校验通过，但生成音频离线复核仍未还原完整任务句，播报完整性、克隆相似度和真人流畅度仍未验收。原生任务播报另修复字面文本送完后提前重置 TTS 尾段及滑窗误清理的问题，已有安装须更新登记补丁并重新编译；包版本和模型文件不变。
+
 **M0 已通过且 30 分钟长测免测；M1 听看说、GUI 预览与手动启停已于 2026-10-07 获用户真机验收。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。M2a 独立 Qwen 只读工具调用与中文文件输出已实测通过；M2b 已接入 Gateway CLI/GUI 的并行转写和明确系统指令路由，并于 2026-10-08 获用户确认真机文字结果正常；原生结果播报已接入，ChromaDB 与云端任务尚未接入。旧 MiniCPM 客户端、:9060 启动器、轮询 judge 与传统运行入口已移除，所有入口统一使用 Gateway。当前验收不等于无限会话或长期稳定性验证。
 
 固定版本 Gateway 的视频会话限 300 秒、音频会话限 600 秒。M1 默认每 240 秒上行后关闭并重建视频会话，重新注入参考音、已确认上下文和有界助手历史；重连时明确暂停采集，未转写的用户原话不会凭空恢复，目前存在采集间隙。
@@ -242,7 +246,7 @@ GUI 独立显示用户原话、任务进度，完成后可点“打开最新报�
 
 ### M2c：受限本地电脑任务（2026-10-17 更新）
 
-生产语音已接入三类单动作：“打开计算器”“打开Safari”“打开Python官网”“在下载目录查找文件名包含报告的文件”。应用白名单为 macOS Safari、日历、备忘录、计算器、文本编辑；支持明确的标准 HTTP(S) 网址及百度、GitHub、Python、B站／哔哩哔哩／bilibili 名称，可带“网页／网站／官网／官方网站”及繁体写法，例如“打开B站”“打开B站网页”。未预设的站名会自动搜索并核对候选，Qwen 只选查到的编号，不自行猜写域名或纠正同音；明确要求打开应用时不会改为打开网站。网址中的路径、参数和标点原样保留；语音识别不保留完整网址时不执行，可使用已支持的网站名称。搜索必须说明目录和文件名关键词，缺目录只追问，须重新说完整指令。文件路径和关键词保留确认转写的字符，不自动繁简改写或猜同音；若与真实文件名不符，请按 GUI 转写纠正。
+生产语音已接入三类单动作：“打开计算器”“打开Safari”“打开Python官网”“在下载目录查找文件名包含报告的文件”。应用白名单为 macOS Safari、日历、备忘录、计算器、文本编辑、Adobe Lightroom Classic（Lightroom 别名指向 Classic）；“打开电脑上的Lightroom软件”等明确本机说法保持本地执行，未知本机应用拒绝而不搜索网站；支持明确的标准 HTTP(S) 网址及百度、GitHub、Python、B站／哔哩哔哩／bilibili 名称，可带“网页／网站／官网／官方网站”及繁体写法，例如“打开B站”“打开B站网页”。未预设的站名会自动搜索并核对候选，Qwen 只选查到的编号，不自行猜写域名或纠正同音；明确要求打开应用时不会改为打开网站。网址中的路径、参数和标点原样保留；语音识别不保留完整网址时不执行，可使用已支持的网站名称。搜索必须说明目录和文件名关键词，缺目录只追问，须重新说完整指令。文件路径和关键词保留确认转写的字符，不自动繁简改写或猜同音；若与真实文件名不符，请按 GUI 转写纠正。
 
 Qwen 每句仅获一个工具及精确参数枚举，改参数、重复或多项调用、否定、转述、引用与未支持复合句均不能执行。GUI 分别显示启动请求提交、检测到应用运行、部分搜索与失败；浏览器接收请求不等于页面加载成功，进程运行不等于窗口在前台。结果文件与原生播报从工具证据生成，不让模型重新编造执行状态。
 

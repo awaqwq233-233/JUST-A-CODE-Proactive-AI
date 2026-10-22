@@ -404,7 +404,8 @@ def test_new_sentence_cancels_visual_retry_before_second_decode():
     assert calls == [True] and pipeline.response_state()[1] == "pending"
 
 
-def test_recovered_visual_question_releases_held_native_reply_without_tools():
+@pytest.mark.parametrize("question", ["你看到了什么", "再详细一点"])
+def test_recovered_visual_question_releases_held_native_reply_without_tools(question):
     """生产识别线程复核短句后释放门控文字/PCM，只有视觉对话、无工具和报告。"""
     callbacks = Callbacks()
     class VisualDecoder(Decoder):
@@ -416,7 +417,7 @@ def test_recovered_visual_question_releases_held_native_reply_without_tools():
         def transcribe(self, samples):
             """模拟可重复的音频窗口敏感性。"""
             self.calls += 1
-            return [dict(text="你看到了什么", avg_logprob=-1 if self.calls == 1 else -.1,
+            return [dict(text=question, avg_logprob=-1 if self.calls == 1 else -.1,
                          no_speech_prob=.01, compression_ratio=1)]
     pipeline = TaskPipeline(callbacks, decoder_factory=VisualDecoder)
     try:
@@ -429,7 +430,7 @@ def test_recovered_visual_question_releases_held_native_reply_without_tools():
         deadline = time.monotonic()+2
         while not callbacks.texts and time.monotonic()<deadline:
             time.sleep(.01)
-        assert callbacks.texts == ["你看到了什么"]
+        assert callbacks.texts == [question]
         assert len(gate.poll()) == 2 and pipeline.tasks.empty() and not callbacks.events
         assert pipeline.stats()["visual_retry_confirmed"] == 1
         assert not pipeline.stats().get("quality_rejected")

@@ -344,6 +344,10 @@ class GatewayClient:
                 self._stats["played_audio_samples"] += devices.played_samples
                 self._stats["input_status_events"] += devices.input_status_events
                 self._stats["output_status_events"] += devices.output_status_events
+                for name in ("playback_prebuffer_waits", "playback_resume_gap_events"):
+                    self._stats[name] += getattr(devices, name, 0)
+                self._stats["playback_resume_gap_max_ms"] = max(
+                    self._stats["playback_resume_gap_max_ms"], getattr(devices, "playback_resume_gap_max_ms", 0))
                 self._stats["camera_frames"] += devices.captured_frames
                 self._stats["audio_queue_max"] = max(self._stats["audio_queue_max"], devices.audio_queue_max)
                 self._stats["playback_queue_max"] = max(self._stats["playback_queue_max"], devices.playback_queue_max)

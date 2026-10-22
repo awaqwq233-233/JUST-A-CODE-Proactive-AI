@@ -122,7 +122,7 @@ def test_recognition_and_tool_progress_do_not_reset_running_brain():
     runtime.task_callback = lambda state, detail: events.append(state)
     callbacks = desktop.DesktopCallbacks(runtime)
     callbacks.on_task_event("running", {})
-    for state in ("transcription_rejected", "rejected", "tool_completed"):
+    for state in ("transcription_rejected", "conversation_waiting", "rejected", "tool_completed"):
         callbacks.on_task_event(state, {})
         assert runtime.context.is_thinking
     callbacks.on_task_event("completed", {"path": "report.md"})

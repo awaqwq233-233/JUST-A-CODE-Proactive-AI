@@ -49,7 +49,7 @@ J.A.C. 由三层模型协同，按「本地低延迟 → 本地重推理 → 云
 - **引擎**：`tc-mb/llama.cpp-omni` master，commit `873056743b74e1a4ce5dcf7290e2298428e214db`。
 - **模型**：`openbmb/MiniCPM-o-4_5-gguf`，revision `db25077c33951fe163b42986fba0132e279872a2`。除 `MiniCPM-o-4_5-Q4_K_M.gguf` 外，必须包含 audio、vision、tts、token2wav-gguf；逐文件 SHA256 见 `backend.lock.json`。
 - **链路**：J.A.C. → Gateway `127.0.0.1:8006` → Worker `127.0.0.1:22400` → `llama-omni-server` `127.0.0.1:22500`。Worker 注册接口为本机 `:8007`。
-- **构建**：CMake Release、`GGML_METAL=ON`、`LLAMA_OPENSSL=OFF`，构建目标 `llama-omni-server` / `llama-omni-cli`。固定 commit 加上 `new_computer_download/patches/engine-loopback-native-voice.patch`：包含遵守 `--host` 的本机监听修复及 bo s s 2026-10-07 明确批准的原生音色条件接线；2026-10-08 按 bo s s 原生结果播报授权扩展同一组合补丁，加入有界字面文本 token 评估与原生 TTS/Token2Wav 音频归属确认；2026-10-20 原生回归修复任务文本跨 decode 的 UTF-8 尾字节截断及末片段丢弃，协议/模型/固定 commit 不变；启动器只接受登记的完整组合补丁，不接受其他源码漂移。
+- **构建**：CMake Release、`GGML_METAL=ON`、`LLAMA_OPENSSL=OFF`，构建目标 `llama-omni-server` / `llama-omni-cli`。固定 commit 加上 `new_computer_download/patches/engine-loopback-native-voice.patch`：包含遵守 `--host` 的本机监听修复及 bo s s 2026-10-07 明确批准的原生音色条件接线；2026-10-08 按 bo s s 原生结果播报授权扩展同一组合补丁，加入有界字面文本 token 评估与原生 TTS/Token2Wav 音频归属确认；2026-10-20 原生回归修复任务文本跨 decode 的 UTF-8 尾字节截断及末片段丢弃，2026-10-22 修复字面文本送完后强制 LISTEN 提前重置仍在合成的 TTS 尾段，并阻止 LLM 滑窗清空在途任务 TTS KV，协议/模型/固定 commit 不变；启动器只接受登记的完整组合补丁，不接受其他源码漂移。
 - **起始参数**：`-ngl 99 -c 4096 -t 8`。其他参数依据该固定版本的 `--help` 与 M0 结果确定，不照搬旧 `llama-server` 命令。
 - **生命周期**：等待 `session.queue_done` → 发送 `session.init {payload: ...}` → 收到 `session.created` → 固定节拍 `input.append {input: ...}` → 接收 `response.output.delta` → `session.close / session.closed`。
 - **输出**：`kind=listen/text/audio`；音频是 **24kHz mono float32 PCM Base64**，独立于文本流。视频双工不用 `response.done` 作为每轮结束信号。
@@ -179,7 +179,9 @@ bo s s 已确认并授权按顺序实施“官方 Python SDK + J.A.C. 专用插�
 - `codinglog_by_awaqwq233/` 仍只由 bo s s 手动维护，Agent 不得自动编辑；`brainstorming_projectPLAN/` 已获准由 Agent 按 bo s s 确认的架构决策编辑和同步。
 - **开发平台**：当前以 macOS（Apple Silicon）为主开发机，保持跨平台兼容代码；Windows 开发机已不再使用。
 
-## 当前开发状态（2026-10-20 更新）
+## 当前开发状态（2026-10-22 更新）
+
+- **真人反馈修复（2026-10-22）**：CPU Whisper small 增加有限中英词汇提示，不含执行句示例，不降低质量门槛、不做文本猜改；普通视觉问句的双重声学复核扩展到无工具语义的短展开追问，普通识别后 12 秒未收到输出时显示原因提示。原生两轮回放仍未通过上下文追问验收，提示实验无稳定改善已撤回；不得将声学复核和提示显示写成上下文问题已经解决。Lightroom / Lightroom Classic 绑定固定 Adobe Lightroom Classic bundle ID；明确“电脑上的…软件”优先按应用处理，未知本机应用拒绝而不搜索网站，明确官网与原有站名保持。生产原生播放默认增加 0.8 秒预缓冲及续播空档统计，保留样本和取消边界；首音有额外等待，不能保证消除持续供音不足。原参考和条件缓存校验通过，生成音频仍有漏读/发音质量疑点，播报完整性和克隆相似度仍待改善/真人复验；模型和协议不变；原生任务播报追加尾段状态修复，完整组合补丁已登记旧摘要，已有安装须更新并重新编译。详见 CHANGELOG 最新条目。
 
 - **JACBrain 生产迁移（2026-10-20）**：`production.py`、锁定的 `production_plugin.mjs` 和 `verify_brain_tasks.py` 已接统一任务接口。完整来源与授权范围重新核对，SDK 仅在独立环境后台运行，任务/会话/调用 ID 绑定；跨进程单任务串行、停止/重连撤销、不自动恢复副作用。模型完整流与整批调用核验后才释放工具。系统/联网查询最多四回合/四调用；单动作及站名选择只登记一次，经 pre-step reject 以 blocked 暂停，外层确认唯一提议与 shutdown 后复核并实际执行，终态不冒充业务完成。网站候选仍绑定令牌/代次/期限，确认与缓存路径不请求模型。实际回执、UTF-8 原子报告与原生短播报继续复用；网页投影有界、保留原始编号和来源日期，答案只可引用模型可见段落。安装阶段已更新，原七包版本、Gateway 依赖和 MiniCPM 模型/协议不变；组合补丁修复跨块 UTF-8，锁文件仅登记旧补丁升级摘要；自动回归、真实 Qwen 与合成语音原生闭环结果见 CHANGELOG，真人设备听感与长时同跑稳定性另验。生产不开放通用多步骤、文件编辑、shell 或云端。
 

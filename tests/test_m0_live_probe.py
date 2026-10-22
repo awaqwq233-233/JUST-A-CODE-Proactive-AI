@@ -28,7 +28,7 @@ def test_microphone_callback_only_copies_and_reports_overflow():
 
 def test_native_output_preserves_order_and_fills_silence():
     """不同大小的原生音频增量按原始顺序播放，空闲部分填静音。"""
-    devices = live.LiveDevices(None, None, 0)
+    devices = live.LiveDevices(None, None, 0, playback_prebuffer_seconds=0)
     devices.enqueue_output(np.array([0.1, 0.2], dtype="float32"))
     devices.enqueue_output(np.array([0.3, 0.4, 0.5], dtype="float32"))
     first = np.zeros((4, 1), dtype="float32")
