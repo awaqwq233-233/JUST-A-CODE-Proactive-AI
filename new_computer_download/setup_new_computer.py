@@ -574,7 +574,7 @@ def step_m0(args):
          "assert local_instruction('在下载目录查找报告文件')[:2] == ('local', 'search_files'); "
          "assert web_instruction('帮我上网查寻明天的天气') == ('weather_city',); "
          "assert web_instruction('让我上网查一下明天海口的天气') == ('web', '明天海口的天气'); "
-         "import verify_toolcall; "
+         "import verify_toolcall, verify_native_reliability; "
          "import webrtcvad; from src.omni.task_pipeline import TaskPipeline; "
          "from src.omni.task_speech import TaskSpeechQueue; "
          "from src.omni.response_gate import ResponseGate; "
