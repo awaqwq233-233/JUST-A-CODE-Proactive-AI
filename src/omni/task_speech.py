@@ -9,6 +9,17 @@ import time
 
 def speech_summary(result, fields):
     """从已交付的工具证据生成短句，不让感知模型重新推理或编造数字。"""
+    if fields[0] == 'assistant':
+        if result.status == 'deferred':
+            return 'bo s s，这项任务需要云端处理。OpenClaw尚未接入，任务未提交，手机未发送；交接单已保存在本机。'
+        answer = re.sub(r"[#*`\n\r\t]+", " ", result.answer).strip()
+        safe = not re.search(r"[\x00-\x1f\x7f<>]|https?://", answer)
+        if safe and len(answer) <= 140:
+            return answer if answer.startswith('bo s s') else 'bo s s，' + answer
+        if result.status == 'needs_input':
+            return 'bo s s，任务需要补充资料或权限，请查看界面中的具体说明。'
+        prefix = '已完成当前可读取范围的处理' if result.status == 'partial' else '本地任务处理完成'
+        return 'bo s s，' + prefix + '。结果较长，已生成文本和相关文件，请打开最新报告查看。'
     message = "系统状态查询已完成，报告已生成，请查看界面中的完整结果。"
     if fields[0].startswith('website'):
         if result.status == 'needs_input':

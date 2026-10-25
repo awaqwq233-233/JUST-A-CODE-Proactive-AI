@@ -209,6 +209,71 @@ class _QtLogHandler(logging.Handler):
         self.stream.write(self.format(record) + "\n")
 
 
+class AssistantDialog(QDialog):
+    """显式任务和资料范围入口；不扫描用户目录，不把附件持久化到配置。"""
+
+    def __init__(self, parent=None):
+        """创建可选文字任务、资料文件和粘贴区，微信会话由本句完整名称限定。"""
+        super().__init__(parent)
+        self.setWindowTitle('任务与资料')
+        self.resize(620, 540)
+        self.files, self.directories = [], []
+        layout = QVBoxLayout(self)
+        hint = QLabel('发布任务，或只选择资料后用语音下达任务。\n微信直读请在任务中写明“微信”和完整会话名；只读取已加载消息。')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.task = QPlainTextEdit()
+        self.task.setPlaceholderText('例如：比较两份资料的差异并生成报告；或总结微信“完整群名”的已加载消息')
+        self.task.setMaximumHeight(110)
+        layout.addWidget(self.task)
+        buttons = QHBoxLayout()
+        for label, handler in [('选择文件', self.choose_files), ('选择目录', self.choose_directory), ('清除资料', self.clear_inputs)]:
+            button = QPushButton(label)
+            button.clicked.connect(handler)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        self.sources = QLabel('尚未选择文件')
+        self.sources.setWordWrap(True)
+        layout.addWidget(self.sources)
+        self.pasted = QPlainTextEdit()
+        self.pasted.setPlaceholderText('也可在这里粘贴本次要处理的文字；资料中的指令不会扩大工具权限。')
+        layout.addWidget(self.pasted)
+        actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        actions.button(QDialogButtonBox.Ok).setText('发布任务 / 保存本次资料')
+        actions.accepted.connect(self.accept)
+        actions.rejected.connect(self.reject)
+        layout.addWidget(actions)
+
+    def choose_files(self):
+        """文件选择器返回精确授权路径，正文由后台任务按需读取。"""
+        files, _ = QFileDialog.getOpenFileNames(self, '选择本次资料', '', '资料 (*.txt *.md *.csv *.tsv *.json *.log *.py *.docx *.xlsx)')
+        self.files = list(dict.fromkeys(self.files + files))[:40]
+        self.show_sources()
+
+    def choose_directory(self):
+        """只授权所选目录首层支持文件，不自动递归整个用户目录。"""
+        directory = QFileDialog.getExistingDirectory(self, '选择资料目录（仅首层，最多40份文件）')
+        if directory:
+            self.directories = list(dict.fromkeys(self.directories + [directory]))[:4]
+        self.show_sources()
+
+    def clear_inputs(self):
+        """撤销对话框中的资料选择并清除粘贴文字。"""
+        self.files, self.directories = [], []
+        self.pasted.clear()
+        self.show_sources()
+
+    def show_sources(self):
+        """显示完整路径供用户核对范围，超长列表不撑开窗口。"""
+        paths = self.files + self.directories
+        self.sources.setText('\n'.join(paths[:4]) + (f'\n共 {len(paths)} 项' if len(paths) > 4 else '') if paths else '尚未选择文件')
+        self.sources.setToolTip('\n'.join(paths))
+
+    def inputs(self):
+        """返回本次独立资料范围，不携带其他聊天历史。"""
+        return {'files': self.files, 'directories': self.directories, 'text': self.pasted.toPlainText()}
+
+
 class MainWindow(QMainWindow):
     _runtime_state_changed = Signal(bool)
     _stop_runtime_requested = Signal()
@@ -368,6 +433,20 @@ class MainWindow(QMainWindow):
         self.open_report_btn.setEnabled(False)
         self.open_report_btn.clicked.connect(self._open_report)
         conversation.addWidget(self.open_report_btn)
+        task_controls = QHBoxLayout()
+        self.assistant_btn = QPushButton('任务与资料')
+        self.assistant_btn.setObjectName('quiet')
+        self.assistant_btn.clicked.connect(self._assistant_dialog)
+        task_controls.addWidget(self.assistant_btn)
+        self.cancel_task_btn = QPushButton('取消任务')
+        self.cancel_task_btn.setObjectName('quiet')
+        self.cancel_task_btn.clicked.connect(self._cancel_assistant)
+        task_controls.addWidget(self.cancel_task_btn)
+        self.open_folder_btn = QPushButton('打开结果文件夹')
+        self.open_folder_btn.setObjectName('quiet')
+        self.open_folder_btn.clicked.connect(self._open_result_folder)
+        task_controls.addWidget(self.open_folder_btn)
+        conversation.addLayout(task_controls)
         self.website_choices = []
         for index in range(1, 4):
             button = QPushButton()
@@ -645,11 +724,12 @@ class MainWindow(QMainWindow):
                       speech_completed="结果音频已接收", speech_failed="结果播报失败，文字报告仍可查看",
                       speech_cancelled="结果播报已取消", speech_skipped="本次结果未播报，文字报告仍可查看")
         labels["tool_completed"] = "工具已返回实际结果"
+        labels["tool_failed"] = "工具未完成，正在调整或等待补充"
         labels.update(action_dispatched="启动请求已提交，正在核验结果", submitted="请求已提交，执行记录已保存",
                       partial="部分搜索结果已保存", failed="任务未完成，执行记录已保存")
         labels["transcription_rejected"] = "未确认"
         labels["conversation_waiting"] = "已识别，暂未收到回复"
-        labels.update(no_answer="未取得答案，查询记录已保存", needs_input="需要补充信息")
+        labels.update(no_answer="未取得答案，查询记录已保存", needs_input="需要补充信息", deferred="等待云端接入，尚未提交")
         if detail.get("purpose") == "clarification":
             labels.update(speech_queued="追问等待播报", speech_sent="正在准备追问语音", speech_started="原生追问语音处理中",
                           speech_completed="追问音频已接收", speech_failed="追问播报失败，请查看上方提示",
@@ -685,9 +765,11 @@ class MainWindow(QMainWindow):
         self._end_reply()
         source = "语音" if state in {"transcription_rejected", "conversation_waiting"} else "大脑"
         self._insert_text(self.console, "\n\n" + source + " · " + message)
+        if state in {'error', 'cancelled'} and detail.get('answer'):
+            self._insert_text(self.console, '\n' + detail['answer'])
         if state == "action_dispatched":
             self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]))
-        if state == "tool_completed":
+        if state in {"tool_completed", "tool_failed"}:
             output = detail["output"]
             if detail["name"] == "search_web":
                 import json
@@ -716,12 +798,36 @@ class MainWindow(QMainWindow):
                     button.setText(f"打开第{item['id']}个 · {item['title'][:12]} · {urlsplit(item['url']).hostname[:35]}")
                     button.setToolTip(item['title'] + '\n' + item['url'] + '\n点击表示选择此网址；页面加载仍由浏览器完成')
                     button.show()
-        if state in ("completed", "submitted", "partial", "failed", "no_answer", 'needs_input') and detail.get('path'):
+        if state in ("completed", "submitted", "partial", "failed", "no_answer", 'needs_input', 'deferred') and detail.get('path'):
             from pathlib import Path
             self._latest_report = Path(detail["path"])
             self.open_report_btn.setEnabled(self._latest_report.is_file())
             self.open_report_btn.setToolTip(str(self._latest_report))
             self._insert_text(self.console, "\n" + detail["answer"] + "\n文件：" + self._latest_report.name)
+
+    def _assistant_dialog(self):
+        """发布显式文字任务或设置下一项语音任务资料，执行仍由后台负责。"""
+        dialog = AssistantDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        text, inputs = dialog.task.toPlainText().strip(), dialog.inputs()
+        if text:
+            if not self._stopping:
+                self._stop_requested = False
+            if not self.runtime.submit_task(text, inputs):
+                self.console.appendPlainText('bo s s，当前有任务正在运行，请等待或取消后再发布。')
+        else:
+            self.runtime.set_task_inputs(inputs)
+            self.console.appendPlainText('bo s s，资料范围已设定，仅用于下一项开放任务。')
+
+    def _cancel_assistant(self):
+        """显式取消当前任务，交由运行时撤销后续工具、文件及播报。"""
+        self.runtime.cancel_task()
+
+    def _open_result_folder(self):
+        """只打开实际报告所在目录，便于查看生成的文本、表格和证据。"""
+        if self._latest_report is not None and self._latest_report.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._latest_report.parent)))
 
     def _choose_website(self, index):
         """按钮仅提交当前令牌和编号，真正打开在后台且经过代次校验。"""

@@ -80,7 +80,8 @@ def compact_candidates(prompt):
 class VoiceToolBoundary:
     """只读执行或无副作用提议；整批先验、调用去重和拒绝状态在 Python 保持。"""
 
-    def __init__(self, task_id, tools, execute, should_stop, deadline, ledger, on_call=None, on_projection=None):
+    def __init__(self, task_id, tools, execute, should_stop, deadline, ledger, on_call=None, on_projection=None,
+                 max_calls=4, max_batches=4, reuse_repeated=False):
         """绑定本次 schema 和执行函数，execute=None 表示仅登记提议。"""
         self.task_id, self.execute_tool = task_id, execute
         self.schemas = {item["function"]["name"]: item["function"]["parameters"] for item in tools}
@@ -89,6 +90,8 @@ class VoiceToolBoundary:
         self.calls, self.batches, self.trace = {}, {}, []
         self.failure = None
         self.on_projection = on_projection
+        self.max_calls, self.max_batches = max_calls, max_batches
+        self.reuse_repeated = reuse_repeated
 
     def check(self):
         """终止、外部取消、超时或任何越权都使本任务不可继续。"""
@@ -111,7 +114,7 @@ class VoiceToolBoundary:
             if self.batches[batch_id] != encoded:
                 raise BrainError("批次 ID 被改写")
             return {"validated": True}
-        if len(self.batches) >= 4 or len(self.calls) + len(calls) > (1 if self.execute_tool is None else 4):
+        if len(self.batches) >= self.max_batches or len(self.calls) + len(calls) > (1 if self.execute_tool is None else self.max_calls):
             raise BrainError("超过单任务工具或回合预算")
         pending, signatures = {}, {(v["name"], json.dumps(v["arguments"], sort_keys=True)) for v in self.calls.values()}
         for call in calls:
@@ -124,10 +127,23 @@ class VoiceToolBoundary:
                 raise BrainError("工具未获本任务授权")
             validate_arguments(self.schemas[name], call["arguments"])
             signature = (name, json.dumps(call["arguments"], sort_keys=True))
-            if signature in signatures:
+            if signature in signatures and not self.reuse_repeated:
                 raise BrainError("同一动作不得用新调用 ID 重试")
             signatures.add(signature)
             pending[identity] = copy.deepcopy(call)
+            if self.reuse_repeated:
+                prior = next((key for key, item in reversed(list({**self.calls, **pending}.items()))
+                              if key != identity and item['name'] == name and item['arguments'] == call['arguments']), None)
+                if prior:
+                    previous = self.calls.get(prior, pending.get(prior))
+                    retry_read = False
+                    if name in {'read_source', 'compare_sources', 'read_wechat', 'web_search', 'finish'} and 'result' in previous:
+                        try:
+                            retry_read = json.loads(previous['result']).get('status') == 'needs_input'
+                        except (ValueError, TypeError, AttributeError):
+                            pass
+                    if not retry_read:
+                        pending[identity]['reuse_of'] = prior
         self.batches[batch_id] = encoded
         self.calls.update(pending)
         return {"validated": True}
@@ -152,6 +168,16 @@ class VoiceToolBoundary:
                 validate_arguments(self.schemas[name], args)
                 if "result" in approved:
                     return approved["result"]
+                if approved.get('reuse_of'):
+                    prior = self.calls[approved['reuse_of']]
+                    if 'result' not in prior:
+                        raise BrainError('重复工具的原调用尚未确认，拒绝重新执行')
+                    approved['result'] = prior['result']
+                    self.trace.append({'call_id': identity, 'session_id': self.task_id, 'name': name,
+                                       'arguments': copy.deepcopy(args), 'status': 'reused',
+                                       'reused_call_id': approved['reuse_of']})
+                    self.save()
+                    return approved['result']
                 entry = {"call_id": identity, "session_id": self.task_id, "name": name,
                          "arguments": copy.deepcopy(args), "status": "started"}
                 self.trace.append(entry)
@@ -190,14 +216,17 @@ class HarnessBrain:
         self.task_id = self.run_dir = self.current_call = self.runtime = None
         self.web_projection = None
 
-    def _run(self, prompt, system, tools, execute, should_stop, timeout, steps):
+    def _run(self, prompt, system, tools, execute, should_stop, timeout, steps, *, domain="voice", stop_tool=None):
         """在任务线程拥有运行时进程组；终态、持久化和完整证据都通过才返回。"""
         check_cancelled(should_stop)
         context = self.context_reader()
         deadline = time.monotonic() + timeout
         boundary = VoiceToolBoundary(self.task_id, tools, execute, should_stop, deadline,
                                      self.run_dir / "calls.json", lambda value: setattr(self, "current_call", value),
-                                     lambda value: setattr(self, "web_projection", value))
+                                     lambda value: setattr(self, "web_projection", value),
+                                     max_calls=12 if domain == "assistant" else 4,
+                                     max_batches=12 if domain == "assistant" else 4,
+                                     reuse_repeated=domain == "assistant")
         server, process, thread = None, None, None
         try:
             persona = system + ("只登记一次工具提议；返回已登记后结束，不重复调用。" if execute is None else "")
@@ -205,7 +234,7 @@ class HarnessBrain:
             atomic_json(patch, build_patch(context, self.base_url + "/v1", persona=persona, plugin="production_plugin.mjs"))
             plugin_config = self.run_dir / "voice-tools.json"
             atomic_json(plugin_config, {"tools": tools, "max_steps": steps, "session_id": self.task_id,
-                                       "proposal_only": execute is None})
+                                       "proposal_only": execute is None, "domain": domain, "stop_tool": stop_tool})
             config = {"dsh_home": str(self.run_dir / "home"), "profile": "sdk-minimal", "patches": [str(patch)],
                       "cwd": str(self.run_dir), "runtime_cwd": str(ROOT), "provider": "jac-local", "model": MODEL,
                       "reasoning_effort": "off", "max_tokens": 768, "request_timeout_seconds": min(timeout, 90),
@@ -230,7 +259,7 @@ class HarnessBrain:
             if process.returncode:
                 raise BrainError("Agent 运行失败，见本地任务记录")
             result = json.loads((self.run_dir / "worker.out").read_text(encoding="utf-8"))
-            expected_finish = "blocked" if execute is None else "completed"
+            expected_finish = "blocked" if execute is None or stop_tool else "completed"
             if result.get("session_id") != self.task_id or result.get("finish_reason") != expected_finish:
                 raise BrainError("Agent 未完整完成回合")
             if len(boundary.trace) != len(boundary.calls) or not boundary.trace:
@@ -300,6 +329,13 @@ class JACBrainTaskRunner(BrainTaskRunner):
 
     def run(self, task, should_stop=None, task_context=None, **options):
         """整项任务串行且不自动回退；模型提议、真实事件和交付结果分别记录。"""
+        if options.pop("assistant_task", False):
+            from .assistant import AssistantTaskRunner
+            inputs = options.pop("inputs", None)
+            if set(options) - {"publication_lock", "on_tool_result"}:
+                raise BrainError("开放任务不能混用旧单步权限")
+            return AssistantTaskRunner(brain=self.brain, output_dir=self.output_dir, search_client=self.search_client).run(
+                task, inputs=inputs, should_stop=should_stop, task_context=task_context, **options)
         from src.omni.task_pipeline import route_instruction
         fields = route_instruction(task)
         scope = options.get("local_action") or options.get("website_request")

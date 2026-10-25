@@ -25,7 +25,7 @@ export function apply(ctx) {
   let proposalComplete = false;
   /** 单动作提议登记后暂停 SDK 回合，由外层核验和执行，不再请求模型重复提议。 */
   ctx.on('agent/pre-step', async (_payload, next) => {
-    if (config.proposal_only && proposalComplete) return { kind: 'reject' };
+    if (proposalComplete) return { kind: 'reject' };
     return next();
   });
   for (const tool of config.tools) {
@@ -35,6 +35,7 @@ export function apply(ctx) {
       async execute(args, exec) {
         const result = await request(spec.name, args, exec.callId, exec.agent.id, exec.signal);
         if (config.proposal_only) proposalComplete = true;
+        if (spec.name === config.stop_tool && JSON.parse(result).status === 'staged') proposalComplete = true;
         return result;
       },
     });
@@ -48,8 +49,12 @@ export function apply(ctx) {
         || ++steps > config.max_steps) throw new Error('JAC model contract or step budget');
     if ((options.tools || []).some(tool => !allowed.includes(tool.name)))
       throw new Error('JAC unexpected schema');
-    if (Buffer.byteLength(JSON.stringify({ messages: options.messages, tools: options.tools, system: options.system }))
-        > Number(process.env.JAC_CONTEXT_LIMIT) - 1536) throw new Error('JAC context budget');
+    const input = JSON.stringify({ messages: options.messages, tools: options.tools, system: options.system });
+    // 独立任务按文字估算容量，最终仍受模型实际上下文限制；旧语音域预算保持。
+    const estimate = config.domain === 'assistant'
+      ? Math.ceil(input.replace(/[^\x00-\x7f]/g, '').length / 2) + (input.match(/[^\x00-\x7f]/g) || []).length * 2
+      : Buffer.byteLength(input);
+    if (estimate > Number(process.env.JAC_CONTEXT_LIMIT) - 1536) throw new Error('JAC context budget');
     const chunks = [], calls = [];
     let finish;
     for await (const chunk of next()) {
@@ -62,7 +67,7 @@ export function apply(ctx) {
       if (chunk.type === 'usage') {
         tokens += chunk.usage.totalTokens ?? (chunk.usage.inputTokens + chunk.usage.outputTokens
           + (chunk.usage.cacheReadTokens || 0) + (chunk.usage.cacheWriteTokens || 0));
-        if (tokens > 24000) throw new Error('JAC token budget');
+        if (tokens > (config.domain === 'assistant' ? 64000 : 24000)) throw new Error('JAC token budget');
       }
       bytes += Buffer.byteLength(JSON.stringify(chunk));
       if (bytes > 262144) throw new Error('JAC output budget');

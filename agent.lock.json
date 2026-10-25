@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "stage": "production-voice-tasks-and-independent-text-comparison",
+  "stage": "production-assistant-tools-and-openclaw-contract",
   "python": "3.11",
   "platform": "macos-arm64",
   "minimum_macos": "14",
@@ -68,7 +68,7 @@
   "production_plugins": [
     {
       "path": "src/brain/agent/production_plugin.mjs",
-      "sha256": "6ed3135c21a1259fc4c3668f5dfdcac5b0348f0de46c6d232b30daad95abf8c3"
+      "sha256": "bf4e7fc1c3711f6e3349aa11397fdac01f0353002ee9c94f9cf1907161afa43d"
     }
   ]
 }

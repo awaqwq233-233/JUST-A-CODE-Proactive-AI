@@ -555,6 +555,8 @@ def step_m0(args):
          "import onnxruntime, kaldi_native_fbank; from src.omni.voice_conditioning import prepare_voice; "
          "from src.brain.lm_studio import LMStudioClient; from src.brain.task_runner import BrainTaskRunner; "
          "from src.brain.agent.production import JACBrainTaskRunner; "
+         "from src.brain.agent.assistant import AssistantTaskRunner; "
+         "from src.tools.wechat import check_wechat; "
          "from src.tools.web_search import WebSearchClient; import verify_web_search; "
          "from src.tools.search_query import web_instruction; "
          "from src.tools.local_intents import local_instruction; "

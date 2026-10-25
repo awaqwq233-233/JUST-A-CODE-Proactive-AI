@@ -542,3 +542,36 @@ Qwen 仅能按本句调用一次对应工具，不能扩大路径或改写目标
 ```bash
 /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_native_reliability.py --save-generated-audio
 ```
+
+
+### 20 开放任务与微信直读
+
+GUI「任务与资料」支持任务文字、文件选择、目录首层及粘贴正文。点击发布即可后台执行，不要求启动语音；留空任务则把资料范围交给下一项语音开放任务，使用后清除。语音任务仍受转写质量、重叠、15秒时效、忙碌和会话代次保护；重连会取消未完成任务。取消任务按钮撤销后续读取和交付，已发生的界面导航不能撤回。
+
+资料格式：TXT、Markdown、CSV、TSV、JSON、日志、Python、DOCX、XLSX。单文件最多2 MiB，目录只取首层支持文件，最多40份；不追随符号链接，UTF-8/BOM/GB18030严格解码。分页读取的节选不会标成全量总结。XLSX由标准库生成文字单元格，不执行输入公式、宏或外链；公式来源只读缓存值并标注未经重算。PDF、旧版DOC/XLS及图片内容尚不支持。
+
+每项任务最多180秒、12次工具/模型调用。结果目录为 `output/m2/qwen/<task_id>/`，包含 `report.txt`、`evidence.json` 和实际新产物；用「打开最新报告」或「打开结果文件夹」查看。长回复只提示看文件；短答复可经既有MiniCPM原生链路播报。模型归纳仍可能出错，证据可检查不等于结论自动正确。
+
+微信直读只支持macOS。安装阶段使用已有Apple Command Line Tools构建并本地签名 `.cache/agent/native/JACWeChatReader.app`，不新增Python依赖或下载模型。已有机器执行以下完整命令更新Agent组件；不需重编译MiniCPM后端。
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/new_computer_download/setup_new_computer.py --only agent
+```
+
+首次使用需在「系统设置 → 隐私与安全性 → 辅助功能」（部分新版本名为「设备控制和数据访问」）添加并开启 `JACWeChatReader.app`。选择器可用Command+Shift+G输入完整路径 `/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/agent/native/JACWeChatReader.app`。系统授权须由用户完成；检查不会自动授予权限，也不会继承其他工具的授权。运行时经 LaunchServices 启动同一组件。若升级早期构建后仍显示无权限，可移除旧条目并重新添加同一路径；可能需要触控 ID。当前构建使用稳定本地签名标识，源码哈希和构建自检仍独立核对。
+
+仅检查组件、权限及微信是否运行，不读取消息：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_assistant.py --check-wechat
+```
+
+在任务中明确写出“微信”和完整会话名，例如“总结微信「完整群名」的已加载消息”。名称带“的”时仍须完整保留，多会话分别加引号；不明确的范围会请求补充。当前会话或当前侧栏中精确同名条目可直接读取，其他会话先在微信打开。程序前后核对标题，只读已加载消息列表；图片、表情、文件附件是占位，未显示的发送者不猜测。比较微信附件正文时先保存附件并通过资料选择器授权。没有发送消息、输入草稿、解密数据库、历史自动滚动和全量同步工具。
+
+纯本地文字/产物验证，无设备、无微信读取：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_assistant.py --task "总结资料并生成任务表格" --text "任务：检查设计；负责人：小王；截止：10月28日。"
+```
+
+需要云端的任务只生成 `handoff.json`，状态 `deferred`，明确未提交、手机未发送；无自动重试或后台补交。`src/brain/agent/cloud.py` 的 `OpenClawAdapter` 是J.A.C.适配协议，提供submit/status/cancel及独立交付回执。未来绑定实际OpenClaw部署版本、认证、幂等/取消、明确获准附件与手机接收方后再联调；不能把该接口当成已经接好的服务器，也不能假定官方提供同名HTTP端点。当前实现不自动上传私有资料，不把全历史或模型口头完成当成执行证据。

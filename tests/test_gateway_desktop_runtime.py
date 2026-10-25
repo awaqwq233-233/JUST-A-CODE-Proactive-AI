@@ -53,6 +53,29 @@ def test_desktop_failed_start_stops_client_and_resets_state(monkeypatch):
     assert states[-1] is False
 
 
+def test_slow_text_task_shutdown_still_closes_devices():
+    """文字任务未及时退出时也必须先关闭媒体，不能因后台任务超时遗留设备。"""
+    stopped = []
+    class Client:
+        """记录媒体关闭动作。"""
+        def stop(self):
+            """模拟关闭设备。"""
+            stopped.append('devices')
+    class SlowTask:
+        """模拟取消后仍在退出的任务。"""
+        def join(self, timeout):
+            """等待后台任务前设备必须已经关闭。"""
+            assert stopped == ['devices']
+        def is_alive(self):
+            """返回未退出状态，避免假报全部清理成功。"""
+            return True
+    runtime = desktop.DesktopRuntime()
+    runtime.omni_client, runtime._assistant_thread = Client(), SlowTask()
+    with pytest.raises(RuntimeError, match='音视频已关闭'):
+        runtime.stop()
+    assert runtime.omni_client is None and runtime._assistant_cancel.is_set()
+
+
 def test_config_gateway_defaults_and_environment(monkeypatch):
     """新路径默认连接本机且不同意设备，设备编号和轮换时间可配置。"""
     config = Config()

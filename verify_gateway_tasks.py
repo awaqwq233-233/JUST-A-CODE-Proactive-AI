@@ -13,7 +13,7 @@ import numpy as np
 from src.omni.gateway_client import GatewayClient, GatewayCallbacks, ROOT
 from src.omni.gateway_cli import ReplayDevices
 from src.omni.realtime_protocol import load_audio
-from src.omni.task_pipeline import route_instruction
+from src.omni.task_pipeline import route_task
 from src.omni.transcription_worker import DEFAULT_MODEL_DIR
 
 
@@ -27,11 +27,11 @@ class ProbeCallbacks(GatewayCallbacks):
     def on_user_transcript(self, text):
         """核对转写来自完整指令，不把原话写入日志。"""
         self.counts["user_transcripts"] += 1
-        fields = route_instruction(text)
+        fields = route_task(text)
         if fields:
             if fields[0] == "local":
                 self.fields.append(list(fields[:2]))
-            elif fields[0] == "web" or fields[0].startswith("website"):
+            elif fields[0] in {"web", "assistant"} or fields[0].startswith("website"):
                 self.fields.append([fields[0]])
             else:
                 self.fields.append(list(fields))

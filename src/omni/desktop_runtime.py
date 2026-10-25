@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+import threading
 
 from .gateway_client import GatewayClient, GatewayCallbacks, ROOT
 from src.utils.context import SharedContext
@@ -62,7 +63,7 @@ class DesktopCallbacks(GatewayCallbacks):
         """同步大脑进度和真实报告；错误不宣称任务已完成。"""
         if state == "running":
             self.runtime.context.is_thinking = True
-        elif state in ("completed", "submitted", "partial", "failed", "no_answer", "needs_input", "error", "cancelled"):
+        elif state in ("completed", "submitted", "partial", "failed", "no_answer", "needs_input", "deferred", "error", "cancelled"):
             self.runtime.context.is_thinking = False
         if self.runtime.task_callback:
             self.runtime.task_callback(state, detail)
@@ -83,6 +84,10 @@ class GatewayRuntime:
         self.transcript_callback = self.task_callback = None
         self.running = self.omni_mode = False
         self.omni_client = None
+        self.task_inputs = {}
+        self._assistant_thread = None
+        self._assistant_cancel = threading.Event()
+        self._assistant_lock = threading.RLock()
 
     def notify(self, running):
         """向 GUI 发布启动/停止结果。"""
@@ -120,6 +125,10 @@ class GatewayRuntime:
             if not self.omni_client.start(timeout=180):
                 self.stop()
                 return
+            pipeline = getattr(self.omni_client, '_pipeline', None)
+            if pipeline:
+                pipeline.set_task_inputs(self.task_inputs)
+                self.task_inputs = {}
             self.notify(True)
         except Exception:
             self.stop()
@@ -128,6 +137,7 @@ class GatewayRuntime:
     def stop(self):
         """关闭客户端和设备，保留外部 Gateway/Worker/Metal 后端。"""
         self.running = self.omni_mode = False
+        self.cancel_task()
         self.finish_reply()
         client = self.omni_client
         if client:
@@ -137,6 +147,11 @@ class GatewayRuntime:
         self.state = "stopped"
         self.context.is_listening = self.context.is_speaking = self.context.is_thinking = False
         self.notify(False)
+        task_thread = self._assistant_thread
+        if task_thread and task_thread is not threading.current_thread():
+            task_thread.join(timeout=7)
+            if task_thread.is_alive():
+                raise RuntimeError('音视频已关闭，本地任务仍在退出，请稍后重试停止')
 
     def finish_reply(self):
         """结束一段模型文本，GUI 回调负责排队到主线程。"""
@@ -152,6 +167,54 @@ class GatewayRuntime:
         """缓存清理由后台任务完成，不在 Qt 主线程读取缓存。"""
         pipeline = getattr(self.omni_client, '_pipeline', None)
         return bool(pipeline and pipeline.forget_websites())
+
+    def set_task_inputs(self, inputs):
+        """GUI选择的资料只用于下一项任务，不写入长期配置或云端。"""
+        pipeline = getattr(self.omni_client, '_pipeline', None)
+        if pipeline:
+            pipeline.set_task_inputs(inputs)
+        else:
+            self.task_inputs = inputs
+
+    def submit_task(self, text, inputs=None):
+        """有语音时走同一管线；无设备时后台运行本地任务，GUI线程不等模型。"""
+        pipeline = getattr(self.omni_client, '_pipeline', None)
+        if pipeline:
+            return pipeline.submit_text(text, inputs)
+        with self._assistant_lock:
+            if self._assistant_thread and self._assistant_thread.is_alive():
+                return False
+            self._assistant_cancel.clear()
+            selected = inputs if inputs is not None else self.task_inputs
+            self.task_inputs = {}
+            def execute():
+                """独立文本任务仍使用生产大脑接口和真实工具事件，关闭时撤销发布。"""
+                callbacks = DesktopCallbacks(self)
+                try:
+                    from src.brain.agent.production import JACBrainTaskRunner, check_installation
+                    check_installation()
+                    callbacks.on_task_event('running', {})
+                    result = JACBrainTaskRunner().run(text, assistant_task=True, inputs=selected,
+                        should_stop=self._assistant_cancel.is_set, publication_lock=self._assistant_lock,
+                        on_tool_result=lambda entry: callbacks.on_task_event('tool_failed' if entry.get('status') == 'failed' else 'tool_completed', entry),
+                        task_context={'kind': 'gui'})
+                    with self._assistant_lock:
+                        if not self._assistant_cancel.is_set():
+                            callbacks.on_task_event(result.status, {'answer': result.answer, 'path': str(result.path)})
+                except Exception as error:
+                    callbacks.on_task_event('cancelled' if self._assistant_cancel.is_set() else 'error', {'answer': str(error)})
+            self._assistant_thread = threading.Thread(target=execute, daemon=True, name='jac-text-task')
+            self._assistant_thread.start()
+            return True
+
+    def cancel_task(self):
+        """撤销文本任务和当前语音任务；语音侧失效代次会同时清除待播结果。"""
+        with self._assistant_lock:
+            self._assistant_cancel.set()
+        pipeline = getattr(self.omni_client, '_pipeline', None)
+        if pipeline and pipeline.busy:
+            pipeline.invalidate()
+            pipeline.begin_session()
 
 
 class DesktopRuntime(GatewayRuntime):
