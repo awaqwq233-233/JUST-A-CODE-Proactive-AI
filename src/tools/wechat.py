@@ -88,7 +88,7 @@ def check_wechat(should_stop=None):
     return {"supported": True, **native_request(['--check'], should_stop)}
 
 
-def read_wechat(chat, instruction, should_stop=None):
+def read_wechat(chat, instruction, should_stop=None, pages=1):
     """仅接受用户本句明确说出的完整会话名；取消/超时丢弃结果，不读取数据库。"""
     if (not isinstance(chat, str) or not 2 <= len(chat) <= 120 or chat not in instruction
             or "微信" not in instruction or any(ord(c) < 32 for c in chat)):
@@ -102,8 +102,14 @@ def read_wechat(chat, instruction, should_stop=None):
     status = check_wechat(should_stop)
     if not status.get("supported") or not status.get("accessibility") or not status.get("running"):
         raise AgentRefused(status.get("reason") or "请登录微信，并给 JACWeChatReader.app 授予辅助功能权限")
-    data = native_request(['--read', chat], should_stop)
+    if pages != 1:
+        raise AgentRefused('微信历史分页尚未完成实机验收，本阶段只读取当前已加载消息；可选择已保存资料继续')
+    if type(pages) is not int or not 1 <= pages <= 6:
+        raise AgentRefused('微信分页须为1–6页')
+    data = native_request(['--read', chat] if pages == 1 else ['--read-pages', chat, str(pages)], should_stop)
     if data.get("chat") != chat or data.get("complete_history") is not False:
         raise AgentRefused(data.get("error", "微信会话核验失败"))
     data["captured_at"] = time.time()
+    if pages > 1:
+        data["scope"] = "有限分页快照，实际读取" + str(data.get("pages_read", 1)) + "页；停止原因：" + data.get("stop_reason", "unknown") + "；未证明覆盖全部历史或指定时间范围，媒体与附件仅为占位"
     return data

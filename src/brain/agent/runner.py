@@ -113,7 +113,7 @@ def child_environment(boundary, server, context):
     """仅传必需系统变量和本机工具凭据，不继承云端密钥、代理或 Node 注入。"""
     env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR", "TMPDIR", "LANG") if key in os.environ}
     env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONPATH=str(ROOT),
-               JAC_LOCAL_KEY="local-no-secret", JAC_CONTEXT_LIMIT=str(min(context, 8192)),
+               JAC_OWNER_PID=str(os.getpid()), JAC_LOCAL_KEY="local-no-secret", JAC_CONTEXT_LIMIT=str(min(context, 8192)),
                JAC_TOOL_URL=f"http://127.0.0.1:{server.server_port}", JAC_TOOL_TOKEN=server.token,
                NO_PROXY="127.0.0.1,localhost", DO_NOT_TRACK="1", XDG_CACHE_HOME=str(CACHE / "native-cache"), PKG_NATIVE_CACHE_PATH=str(CACHE / "native-cache"))
     return env

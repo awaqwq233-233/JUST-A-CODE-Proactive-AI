@@ -238,6 +238,8 @@ class TaskPipeline:
         self._last_recognition_notice = float("-inf")
         self.website_pending = None
         self.task_inputs = {}
+        self.assistant_submitter = None
+        self.task_manager = None
 
     def start(self):
         """后台完成资源/模型就绪，启动三个有界处理线程。"""
@@ -246,6 +248,17 @@ class TaskPipeline:
         if self.runner_factory is None:
             from src.brain.agent.production import check_installation
             check_installation()
+        if self.assistant_submitter is None and self.runner_factory is None:
+            from src.brain.agent.task_manager import TaskManager
+            from src.brain.agent.durable import DurableTaskRunner
+            from src.brain.agent.assistant import AssistantTaskRunner
+            from src.brain.agent.production import HarnessBrain
+            from src.brain.agent.task_store import TaskStore
+            store = TaskStore()
+            self.task_manager = TaskManager(store, DurableTaskRunner(store, AssistantTaskRunner(HarnessBrain(self.brain_url))),
+                                            self.managed_event)
+            self.task_manager.start()
+            self.assistant_submitter = self.task_manager.submit
         self.segmenter = VadSegmenter(on_start=self._response_started, on_discard=self._response_discarded)
         try:
             self.decoder.start()
@@ -535,6 +548,18 @@ class TaskPipeline:
                     or (route_task(text) != tuple(fields) and not (input_source == 'gui' and tuple(fields) == ('assistant', text)))):
                 return False
             self.seen.append(utterance.identifier)
+            if fields[0] == 'assistant' and self.assistant_submitter is not None:
+                selected = copy.deepcopy(inputs if inputs is not None else self.task_inputs)
+                try:
+                    self.assistant_submitter(text, inputs=selected, source={
+                        'kind': input_source, 'utterance_id': utterance.identifier,
+                        'generation': utterance.generation, 'session': self.session})
+                except Exception as error:
+                    self._notify('rejected', {'answer': str(error), 'code': 'task_queue_rejected'})
+                    return False
+                self.task_inputs = {}
+                self.counters['tasks_submitted'] += 1
+                return True
             if self.busy:
                 self.counters["busy_rejected"] += 1
                 self._notify("rejected", {"code": "brain_busy"})
@@ -563,6 +588,23 @@ class TaskPipeline:
             self.tasks.put_nowait((utterance, text, fields, selection, selected))
             self.counters["tasks_submitted"] += 1
             return True
+
+    def managed_event(self, state, detail):
+        """任务状态跨会话显示，播报只绑定交付时仍有效的新会话代次。"""
+        self._notify(state, detail)
+        self.deliver_managed(state, detail)
+
+    def deliver_managed(self, state, detail):
+        """已发布结果可在当前会话短播报，取消和旧会话音频不恢复。"""
+        from pathlib import Path
+        from src.brain.task_runner import TaskResult
+        if state not in {'completed', 'partial', 'deferred', 'needs_input'}:
+            return
+        with self.lock:
+            if self.current(self.generation) and self.on_result_speech:
+                result = TaskResult(detail['task_id'], Path(detail['path']) if detail.get('path') else None,
+                                    detail.get('answer', ''), [], 0, state)
+                self.on_result_speech(detail['task_id'], self.generation, result, ('assistant', detail.get('request', '')))
 
     def set_task_inputs(self, inputs):
         """仅保存显式选择的资料范围，下一项开放任务消费后清除，不读文件正文。"""
@@ -710,6 +752,8 @@ class TaskPipeline:
         if any(t.is_alive() for t in self.threads):
             raise RuntimeError("转写或大脑线程未完整退出")
         self.decoder.close()
+        if self.task_manager is not None:
+            self.task_manager.close()
 
     def request_stop(self):
         """跨线程立即取消代次和启动等待，清理工作由后台 stop 完成。"""

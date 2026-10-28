@@ -16,6 +16,9 @@ class ShutdownAck(BaseModel):
 
 def main():
     """从私有配置启动固定 SDK；恢复模式只读取历史，不发送任务或重放工具。"""
+    import os
+    from .worker_watchdog import watch_owner
+    watch_owner(int(os.environ.get("JAC_OWNER_PID", "0")))
     from deepseek_harness import DeepSeekHarness
     if sys.version_info[:2] != (3, 11):
         raise RuntimeError("Agent 独立运行时要求 Python 3.11")

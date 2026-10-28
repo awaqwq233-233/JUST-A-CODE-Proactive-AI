@@ -54,15 +54,17 @@ Three live Qwen cases (changed text, identical text and an instruction embedded 
 
 The production text probe is `verify_brain_tasks.py --task "查一下电池电量"`, using `.cache/m0/venv/bin/python`; explicit local-action commands actually execute. Source/generation, candidate confirmation, cancellation and real SDK integration have automated regressions. Synthetic-file tests through the real Whisper, Qwen and MiniCPM backend check unique execution, reports and native result audio without opening devices. Short runs do not establish live listening quality or long-term performance; the measured whole-machine swap increase is recorded in CHANGELOG. A separately scoped multi-step domain was added on October 25, described below; file editing, code execution and unrestricted desktop capabilities remain future work.
 
-### Open-ended local tasks and WeChat sources (2026-10-25)
+### Recoverable local tasks and tools (2026-10-28)
 
-The new assistant domain lets the local Qwen/Harness combine bounded source reading, arithmetic, comparisons, system/public-web queries, text drafting and XLSX generation. Existing exact single-action permissions stay unchanged. Ordinary conversation remains with MiniCPM. Open-ended evaluations without supplied sources, explicit cloud/phone delivery, and longer WeChat-to-artifact workflows produce a **local OpenClaw handoff only**: the cloud adapter is not connected, nothing is submitted or sent to a phone.
+The GUI **任务与资料** submits local Qwen/Harness tasks; **任务中心** shows the queue, saved progress, pause/resume, cancellation, material supplements and budget extensions. Stopping voice or reconnecting leaves accepted long tasks running. Closing the app saves and stops execution; reopening resumes eligible read-only/private-output tasks after input and authorization checks. Exact single-action commands keep their original session and permission rules.
 
-Use **任务与资料** in the GUI to submit a task, select files/a directory's first-level documents, or paste text. Leaving the task blank supplies materials for the next voice task. Text tasks can run without opening microphone/camera devices. Supported source text includes TXT/Markdown/CSV/TSV/JSON/logs/Python/DOCX/XLSX, up to 2 MiB per file and 40 selected sources. Tools receive source IDs rather than arbitrary paths; symlinks are rejected. Tasks have 180-second/12-call budgets. Reports, source hashes, actual read ranges and new artifacts publish atomically under ignored `output/m2/qwen/<task_id>/`; long answers are saved and native speech directs the user to the files.
+Private checkpoints under ignored `data/tasks/` include source snapshots, tool receipts, drafts, input hashes and cumulative budgets. One job runs with up to five queued; each stage has 180 seconds/12 calls, and each task defaults to 30 active minutes/120 calls. Waiting for user input does not consume active time. Crashed stages conservatively charge the unaccounted stage allowance. Unknown external-action results require reconciliation; successful draft writes and published directories are not blindly replayed.
 
-The macOS WeChat adapter reads the exact named conversation's **loaded message list** using Accessibility. It can select an exact conversation already in the current sidebar; otherwise open the target conversation first. It never types in the message composer or sends messages. Images, emoji and attachment labels are not decoded content; select saved attachment files for content comparison. The installer builds `.cache/agent/native/JACWeChatReader.app` with Apple Command Line Tools. Grant this component Accessibility access in macOS settings; missing permissions produce a specific request. A real named-chat read and local Qwen summary have been verified; physical voice input and listening quality need separate acceptance. This is not complete-history access or unrestricted desktop automation.
+Supported inputs include text, CSV/TSV/JSON, DOCX/XLSX and text PDFs, up to 8 MiB each and 40 files. Tools support literal source search, structured Office tables, filtering, sorting, deduplication, type conversion, grouping and joins. XLSX keeps numeric types and basic formatting; Word reports remain editable. Output checks cover readability, requested columns/counts, citations, source hashes and program-derived table contents. They do not prove subjective correctness. New artifacts publish under `output/m2/qwen/<task_id>/`; long answers use a short native speech notice.
 
-`cloud.py` defines task submission/status/cancellation and delivery receipts for a future version-bound OpenClaw adapter. Current `deferred` handoffs contain no automatically attached private documents. Shell, in-place edits, phone sending, automatic resumption and all-purpose task completion are not implemented. See [setup guide section 20](new_computer_download/READMEfirst.md#20-开放任务与微信直读) and [CHANGELOG](CHANGELOG.md) for verification and limits.
+WeChat requires the separately authorized macOS reader and an exact conversation name. Current loaded-message reading remains supported; bounded paging code exists with title/overlap checks, but production keeps it disabled pending real history-paging acceptance. Timestamp-to-message association and automatic attachment download are not reliable enough to enable: provide saved attachments through the material picker. Media placeholders are not decoded content. No message sending or database decryption is provided.
+
+Supported WeChat-to-Excel work can run locally. Explicit cloud/phone requests still create only a local `handoff.json`: OpenClaw is **not connected**, tasks are not submitted and phone delivery does not occur. Private inputs disable public web tools. Arbitrary shell, original-file modification, scanned-PDF OCR and unrestricted desktop automation remain outside this release. See [setup guide](new_computer_download/READMEfirst.md#21-可恢复长任务与扩展工具) and [CHANGELOG](CHANGELOG.md) for evidence and limitations.
 
 ### Setup and verification
 
@@ -196,13 +198,15 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 
 生产文字探针为 `.cache/m0/venv/bin/python verify_brain_tasks.py --task "查一下电池电量"`；明确本地动作会实际执行。自动回归覆盖来源/代次、候选确认、取消及真实 SDK；真实 Whisper、Qwen、MiniCPM 的合成文件验证核对唯一执行、报告与原生结果音频，不打开设备。短测不能证明真人听感或长时稳定性，本机测得的整机 swap 增长在 CHANGELOG 如实记录。下一步在独立权限域扩展多步骤工具组合，再逐项开放文件编辑、代码执行与桌面能力，本次未开放这些能力。
 
-### 开放任务与微信资料（2026-10-25）
+### 可恢复长任务与工具扩展（2026-10-28）
 
-本机 Qwen/Harness 已增加独立多步骤执行域，可按目标组合读取、算术、比较、系统/公开搜索、文本与XLSX生成工具；原精确单步权限保持。GUI「任务与资料」支持直接发布文字任务、选文件/目录首层和粘贴文本；任务留空时，资料仅供下一项语音任务使用。无设备文字任务不启动摄像头或麦克风。单任务180秒/12次工具，支持格式、2 MiB文件和40份资料上限见安装指南。实际来源哈希、读取范围、工具结果与产物保存在忽略的 `output/m2/qwen/<task_id>/`，输入变动或取消时不发布成功报告；长回复只提示查看文件。
+GUI「任务与资料」发布任务，「任务中心」查看队列、进度、暂停/继续、取消、补充资料和延长预算。停止语音及语音重连不会取消已接受的开放任务；关闭程序保存并停止执行，重开后核对授权与输入版本再恢复。旧精确单步指令的时效和权限保持。
 
-微信使用macOS辅助功能直读完整名称对应的已加载消息。当前会话或侧栏精确条目可读取；其他会话须先在微信打开。图片/表情/附件标签不当作正文，附件比较须选择已保存文件。安装器构建 `JACWeChatReader.app`，需要用户授予辅助功能权限；缺权限或会话不符明确说明。指定会话直读与Qwen汇总已实测；新任务90秒合成语音原生闭环通过，真人听感另验。没有微信发送、数据库解密、完整历史或通用桌面操作能力。
+私有检查点保存在忽略的 `data/tasks/`，包含输入快照、工具回执、中间产物、读取范围和累计预算。单项执行、最多五项等待；每阶段180秒/12次调用，全任务默认30分钟有效执行时间/120次调用。等待补资料不计时，崩溃阶段未核销时间保守计入预算。文件变化须确认刷新相关结果，不盲目重复追加或重放不确定外部动作。
 
-无提供资料的开放评估、明确云端/手机交付以及微信汇总后再制作产物的长任务，生成本地OpenClaw交接单。接口包含提交、查询、取消及交付回执，但当前服务**尚未接入，任务未提交、手机未发送**；不自动上传私有资料、不自动补交。任意任务成功、原位文件编辑、shell、全历史同步及跨会话长任务仍不承诺。新能力的真实Qwen、自动测试、微信权限和真人语音验收分开记录，见[安装指南第20节](new_computer_download/READMEfirst.md#20-开放任务与微信直读)与CHANGELOG。
+支持文字PDF、DOCX/XLSX结构表及原文本格式，每份8 MiB、最多40份。新增资料查找、筛选/排序/去重、类型转换、分组统计、表间关联、带数字类型的Excel和可编辑Word报告。程序验收结构、字段、行数、引用、输入版本及导出数据一致性；主观内容仍须审阅。结果仍在 `output/m2/qwen/<task_id>/`，长回复只做原生查看提示。
+
+微信保持精确会话只读。有限分页实验已有实现和身份/连续重叠保护，实际历史翻页尚未验收，生产不开放多页工具；时间标签关联和附件自动下载未可靠验证，附件正文须选择已保存文件。不发送消息、不解密数据库，不将媒体占位当作正文。现有工具能完成的微信→表格任务可在本地执行；明确云端/手机交付仍只生成本地交接单，**OpenClaw尚未接入、未提交、手机未发送**。OCR、任意shell、原位文件修改和通用桌面控制仍后置。详见[安装指南第21节](new_computer_download/READMEfirst.md#21-可恢复长任务与扩展工具)。
 
 ### 当前实现状态
 

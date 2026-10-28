@@ -20,11 +20,7 @@ def assistant_instruction(text):
 
 
 def cloud_reason(task, has_sources=False):
-    """用户明确云端、手机交付或缺少资料的开放评估直接留给云端。"""
+    """仅明确云端或手机交付预先交接；其余由受控本地能力及实际反馈判断。"""
     if re.search(r"OpenClaw|云端|发到.{0,8}手机|发送到.{0,8}手机|手机上", task, re.I):
         return "需要云端执行或手机交付"
-    if re.search(r"微信|群.{0,20}(?:消息|聊天)|聊天记录", task) and re.search(r"Excel|表格|然后|再完成|并完成|并制作", task, re.I):
-        return "跨微信资料与后续产物的长任务"
-    if not has_sources and not re.search(r"微信|文件|聊天|资料|文本|这段|下面", task) and re.search(r"哪个好|哪个更好|哪个值得|如何选择|怎么选择|评测|调研", task):
-        return "缺少已提供资料的开放信息比较"
     return None

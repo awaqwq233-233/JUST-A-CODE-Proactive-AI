@@ -13,11 +13,11 @@ from xml.sax.saxutils import escape
 
 from .boundary import AgentRefused, open_directory
 
-MAX_FILE = 2 * 1024 * 1024
-EXTENSIONS = {".txt", ".md", ".csv", ".tsv", ".json", ".log", ".py", ".docx", ".xlsx"}
+MAX_FILE = 8 * 1024 * 1024
+EXTENSIONS = {".txt", ".md", ".csv", ".tsv", ".json", ".log", ".py", ".docx", ".xlsx", ".pdf"}
 
 
-def read_bytes(path):
+def read_bytes(path, limit=MAX_FILE):
     """逐级拒绝符号链接，只读取有界普通文件，不打开管道、设备或快捷链接。"""
     path = Path(path).absolute()
     parent = open_directory(path.parent)
@@ -27,19 +27,57 @@ def read_bytes(path):
         os.close(parent)
     with os.fdopen(fd, "rb") as handle:
         info = os.fstat(handle.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_FILE:
-            raise AgentRefused("资料必须为不超过 2 MiB 的普通文件")
-        data = handle.read(MAX_FILE + 1)
-    if len(data) > MAX_FILE:
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise AgentRefused("资料必须为不超过 8 MiB 的普通文件")
+        data = handle.read(limit + 1)
+    if len(data) > limit:
         raise AgentRefused("资料在读取时超过大小限制")
     return data
+
+
+def pdf_text(data):
+    """专用进程限时解析PDF，解析器不能占住音视频线程或无限增长内存。"""
+    import subprocess
+    import sys
+    from .profile import ROOT
+    process = subprocess.Popen([sys.executable, '-m', 'src.brain.agent.pdf_worker'], cwd=ROOT,
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    import time
+    deadline = time.monotonic() + 20
+    payload = data
+    try:
+        while True:
+            try:
+                output, _ = process.communicate(payload, timeout=.1)
+                break
+            except subprocess.TimeoutExpired:
+                payload = None
+                if time.monotonic() >= deadline:
+                    raise AgentRefused('PDF解析超过20秒，请拆分文件')
+                if sys.platform == 'darwin':
+                    usage = subprocess.run(['/bin/ps', '-o', 'rss=', '-p', str(process.pid)],
+                                           capture_output=True, text=True, timeout=1)
+                    if usage.returncode and process.poll() is None:
+                        raise AgentRefused('无法检查PDF解析进程内存，已停止')
+                    if usage.stdout.strip().isdigit() and int(usage.stdout.strip()) > 768 * 1024:
+                        raise AgentRefused('PDF解析内存超过768 MiB，已停止')
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    if process.returncode or len(output) > 8 * 1024 * 1024:
+        raise AgentRefused('PDF解析超出资源限制或运行失败')
+    result = json.loads(output)
+    if 'error' in result:
+        raise AgentRefused('PDF解析失败：' + result['error'])
+    return result['text']
 
 
 def office_text(data, extension):
     """只解压有界 OOXML 文本，不运行宏、外链、公式或嵌入对象。"""
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         infos = archive.infolist()
-        if len(infos) > 500 or sum(i.file_size for i in infos) > 8 * MAX_FILE:
+        if len(infos) > 500 or sum(i.file_size for i in infos) > 16 * 1024 * 1024:
             raise AgentRefused("Office 解压大小或条目超限")
         if any(i.flag_bits & 1 for i in infos):
             raise AgentRefused("不支持加密 Office 文件")
@@ -74,10 +112,12 @@ def office_text(data, extension):
 
 def decode_text(data, extension):
     """按 BOM、UTF-8 或中文 GB18030 严格解码；不吞掉错误字节。"""
+    if extension == ".pdf":
+        return pdf_text(data)
     if extension in {".docx", ".xlsx"}:
         return office_text(data, extension)
     if extension not in EXTENSIONS:
-        raise AgentRefused("当前资料支持 TXT/Markdown/CSV/TSV/JSON/日志/Python/DOCX/XLSX")
+        raise AgentRefused("当前资料支持 TXT/Markdown/CSV/TSV/JSON/日志/Python/DOCX/XLSX/PDF")
     encodings = ["utf-16"] if data.startswith((b"\xff\xfe", b"\xfe\xff")) else ["utf-8-sig", "gb18030"]
     for encoding in encodings:
         try:
@@ -121,6 +161,8 @@ class Materials:
 
     def add(self, title, text, provenance, identifier=None):
         """加入真实来源快照；资料原文仅留本地，摘要明确标注读取范围。"""
+        if len(text) + sum(v["length"] for k, v in self.sources.items() if k != identifier) > 12000000:
+            raise AgentRefused("资料文字总量超过1200万字，请拆分任务")
         identifier = identifier or "S" + str(len(self.sources) + 1)
         self.sources[identifier] = {"id": identifier, "title": title, "text": text,
                                     "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),

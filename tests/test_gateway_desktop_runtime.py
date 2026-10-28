@@ -53,27 +53,26 @@ def test_desktop_failed_start_stops_client_and_resets_state(monkeypatch):
     assert states[-1] is False
 
 
-def test_slow_text_task_shutdown_still_closes_devices():
-    """文字任务未及时退出时也必须先关闭媒体，不能因后台任务超时遗留设备。"""
+def test_stop_voice_keeps_tasks_and_close_saves_after_devices():
+    """停止语音不取消长任务；关闭程序先释放媒体，再等待任务保存。"""
     stopped = []
     class Client:
         """记录媒体关闭动作。"""
         def stop(self):
             """模拟关闭设备。"""
             stopped.append('devices')
-    class SlowTask:
-        """模拟取消后仍在退出的任务。"""
-        def join(self, timeout):
-            """等待后台任务前设备必须已经关闭。"""
+    class Tasks:
+        """模拟保存任务失败，设备必须已先释放。"""
+        def close(self):
+            """等待任务时媒体已经关闭，失败不冒充完整退出。"""
             assert stopped == ['devices']
-        def is_alive(self):
-            """返回未退出状态，避免假报全部清理成功。"""
-            return True
+            raise RuntimeError('任务尚在保存')
     runtime = desktop.DesktopRuntime()
-    runtime.omni_client, runtime._assistant_thread = Client(), SlowTask()
-    with pytest.raises(RuntimeError, match='音视频已关闭'):
-        runtime.stop()
-    assert runtime.omni_client is None and runtime._assistant_cancel.is_set()
+    runtime.omni_client, runtime.tasks = Client(), Tasks()
+    runtime.stop()
+    assert runtime.omni_client is None
+    with pytest.raises(RuntimeError, match='任务尚在保存'):
+        runtime.close()
 
 
 def test_config_gateway_defaults_and_environment(monkeypatch):

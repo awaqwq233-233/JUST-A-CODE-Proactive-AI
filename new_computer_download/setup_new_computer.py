@@ -556,6 +556,7 @@ def step_m0(args):
          "from src.brain.lm_studio import LMStudioClient; from src.brain.task_runner import BrainTaskRunner; "
          "from src.brain.agent.production import JACBrainTaskRunner; "
          "from src.brain.agent.assistant import AssistantTaskRunner; "
+         "from src.brain.agent.task_manager import TaskManager; import pypdf; "
          "from src.tools.wechat import check_wechat; "
          "from src.tools.web_search import WebSearchClient; import verify_web_search; "
          "from src.tools.search_query import web_instruction; "

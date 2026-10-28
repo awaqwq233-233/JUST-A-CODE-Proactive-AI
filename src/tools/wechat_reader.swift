@@ -54,7 +54,11 @@ func selectSession(_ element: AXUIElement, chat: String, app: NSRunningApplicati
     app.activate(options: [])
     Thread.sleep(forTimeInterval: 0.25)
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else { return false }
-    if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success { return true }
+    if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
+        Thread.sleep(forTimeInterval: 0.15)
+        let root = AXUIElementCreateApplication(app.processIdentifier)
+        if let title = find(root, id: "current_chat_name_label"), string(title, kAXValueAttribute) == chat { return true }
+    }
     guard let p = attribute(element, kAXPositionAttribute), let s = attribute(element, kAXSizeAttribute),
           CFGetTypeID(p) == AXValueGetTypeID(), CFGetTypeID(s) == AXValueGetTypeID() else { return false }
     var point = CGPoint.zero
@@ -97,6 +101,50 @@ func messages(_ list: AXUIElement) -> [[String: String]] {
     return result
 }
 
+/// 只向经两次身份核对的消息区域向上滚动，不点击输入框或发送按键。
+func olderPage(_ list: AXUIElement, root: AXUIElement, chat: String, app: NSRunningApplication) -> Bool {
+    guard let before = find(root, id: "current_chat_name_label"), string(before, kAXValueAttribute) == chat,
+          string(list, kAXIdentifierAttribute) == "chat_message_list" else { return false }
+    app.activate(options: [])
+    Thread.sleep(forTimeInterval: 0.15)
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier,
+          let p = attribute(list, kAXPositionAttribute), let s = attribute(list, kAXSizeAttribute),
+          CFGetTypeID(p) == AXValueGetTypeID(), CFGetTypeID(s) == AXValueGetTypeID() else { return false }
+    var point = CGPoint.zero
+    var size = CGSize.zero
+    guard AXValueGetValue(p as! AXValue, .cgPoint, &point), AXValueGetValue(s as! AXValue, .cgSize, &size),
+          size.width > 80, size.height > 80 else { return false }
+    point.x += size.width / 2
+    point.y += size.height / 2
+    guard let after = find(root, id: "current_chat_name_label"), string(after, kAXValueAttribute) == chat,
+          NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else { return false }
+    CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+    guard let check = find(root, id: "current_chat_name_label"), string(check, kAXValueAttribute) == chat,
+          NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier else { return false }
+    CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+            wheel1: Int32(min(size.height * 0.6, 500)), wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
+    Thread.sleep(forTimeInterval: 0.3)
+    return true
+}
+
+/// 只接受唯一连续重叠，重复消息不靠全局去重丢弃；无法关联时停止扩展范围。
+func mergePage(_ earlier: [[String: String]], _ current: [[String: String]]) -> [[String: String]]? {
+    if earlier == current { return current }
+    let maximum = min(earlier.count, current.count)
+    guard maximum >= 2 else { return nil }
+    for length in stride(from: maximum, through: 2, by: -1) {
+        if Array(earlier.suffix(length)) == Array(current.prefix(length)) {
+            let overlap = Array(current.prefix(length))
+            var occurrences = 0
+            for start in 0...(earlier.count - length) {
+                if Array(earlier[start..<(start + length)]) == overlap { occurrences += 1 }
+            }
+            if occurrences == 1 { return Array(earlier.dropLast(length)) + current }
+        }
+    }
+    return nil
+}
+
 /// 检查能力或读取一个明确授权会话；未匹配标题时零消息输出。
 func main() {
     var args = Array(CommandLine.arguments.dropFirst())
@@ -109,9 +157,11 @@ func main() {
     if args == ["--check"] {
         finish(["platform": "macos", "accessibility": AXIsProcessTrusted(), "running": !apps.isEmpty])
     }
-    guard args.count == 2, args[0] == "--read", args[1].count >= 2, args[1].count <= 120 else {
+    guard ((args.count == 2 && args[0] == "--read") || (args.count == 3 && args[0] == "--read-pages")), args[1].count >= 2, args[1].count <= 120 else {
         finish(["error": "须指定完整会话名"], code: 2)
     }
+    let pageLimit = args.count == 3 ? (Int(args[2]) ?? 0) : 1
+    guard (1...6).contains(pageLimit) else { finish(["error": "分页须为1至6页"], code: 2) }
     guard AXIsProcessTrusted() else {
         finish(["error": "需要给 JACWeChatReader.app 授予 macOS 辅助功能权限"], code: 2)
     }
@@ -134,12 +184,30 @@ func main() {
           let list = find(root, id: "chat_message_list") else {
         finish(["error": "微信会话标题或消息列表无法确认，本次未读取"], code: 2)
     }
-    let result = messages(list)
+    var result = messages(list)
+    var pagesRead = 1
+    var stopReason = "page_limit"
+    if pageLimit > 1 {
+        for _ in 1..<pageLimit {
+            guard olderPage(list, root: root, chat: chat, app: app),
+                  let checked = find(root, id: "current_chat_name_label"), string(checked, kAXValueAttribute) == chat,
+                  let updated = find(root, id: "chat_message_list") else {
+                finish(["error": "分页时会话或消息区域无法核验，结果已丢弃"], code: 2)
+            }
+            let page = messages(updated)
+            if page == result { stopReason = "no_change"; break }
+            guard let merged = mergePage(page, result) else { stopReason = "ambiguous_overlap"; break }
+            if merged == result { stopReason = "no_change"; break }
+            if merged.count > 1000 { stopReason = "message_limit"; break }
+            result = merged
+            pagesRead += 1
+        }
+    }
     guard let after = find(root, id: "current_chat_name_label"), string(after, kAXValueAttribute) == chat else {
         finish(["error": "读取时会话已切换，本次结果已丢弃"], code: 2)
     }
     guard !result.isEmpty else { finish(["error": "指定会话没有可读取的消息文字"], code: 2) }
-    finish(["chat": chat, "messages": result, "scope": "当前微信已加载消息，非完整历史；媒体和附件仅为占位，发送者可能不可见", "complete_history": false])
+    finish(["chat": chat, "messages": result, "scope": "当前微信已加载消息，非完整历史；媒体和附件仅为占位，发送者可能不可见", "complete_history": false, "pages_read": pagesRead, "stop_reason": stopReason])
 }
 
 main()

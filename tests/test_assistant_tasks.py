@@ -53,9 +53,9 @@ def test_route_preserves_old_exact_scope_and_general_domain():
     assert route_task('查一下电池电量') == ('battery',)
     assert route_instruction('比较两个文件的差异') is None
     assert route_task('比较两个文件的差异')[0] == 'assistant'
-    assert cloud_reason('对比甲乙哪个好')
-    assert cloud_reason('总结微信某群，再制作Excel表格')
-    assert cloud_reason('总结项目群里的消息，再制作Excel表格')
+    assert cloud_reason('对比甲乙哪个好') is None
+    assert cloud_reason('总结微信某群，再制作Excel表格') is None
+    assert cloud_reason('总结项目群里的消息，再制作Excel表格') is None
     assert cloud_reason('比较两份文件的差异', True) is None
 
 

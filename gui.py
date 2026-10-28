@@ -315,6 +315,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(TECH_QSS)
         self._build_ui()
         self._setup_timers()
+        QTimer.singleShot(0, self._restore_tasks)
         self._redirect_logging()
         self.backend = BackendController(self)
         self.backend.changed.connect(self._on_backend_change)
@@ -438,6 +439,10 @@ class MainWindow(QMainWindow):
         self.assistant_btn.setObjectName('quiet')
         self.assistant_btn.clicked.connect(self._assistant_dialog)
         task_controls.addWidget(self.assistant_btn)
+        self.task_center_btn = QPushButton('任务中心')
+        self.task_center_btn.setObjectName('quiet')
+        self.task_center_btn.clicked.connect(self._task_center)
+        task_controls.addWidget(self.task_center_btn)
         self.cancel_task_btn = QPushButton('取消任务')
         self.cancel_task_btn.setObjectName('quiet')
         self.cancel_task_btn.clicked.connect(self._cancel_assistant)
@@ -717,12 +722,14 @@ class MainWindow(QMainWindow):
             for button in self.website_choices:
                 button.hide()
             return
-        if self._stopping or self._stop_requested:
+        if (self._stopping or self._stop_requested) and not detail.get("managed"):
             return
         labels = {"running": "大脑正在处理任务", "completed": "报告已生成", "error": "任务暂停或失败", "rejected": "任务未执行", "cancelled": "任务已取消，已提交的系统动作不会撤回"}
         labels.update(speech_queued="结果等待播报", speech_sent="正在准备结果语音", speech_started="原生结果语音处理中",
                       speech_completed="结果音频已接收", speech_failed="结果播报失败，文字报告仍可查看",
                       speech_cancelled="结果播报已取消", speech_skipped="本次结果未播报，文字报告仍可查看")
+        labels.update(queued="任务已保存并排队", paused="任务已暂停，进度已保存", pausing="正在保存并暂停",
+                      cancelling="正在取消后续执行", task_restored="已恢复任务记录", manager_error="任务管理器不可用")
         labels["tool_completed"] = "工具已返回实际结果"
         labels["tool_failed"] = "工具未完成，正在调整或等待补充"
         labels.update(action_dispatched="启动请求已提交，正在核验结果", submitted="请求已提交，执行记录已保存",
@@ -765,7 +772,7 @@ class MainWindow(QMainWindow):
         self._end_reply()
         source = "语音" if state in {"transcription_rejected", "conversation_waiting"} else "大脑"
         self._insert_text(self.console, "\n\n" + source + " · " + message)
-        if state in {'error', 'cancelled'} and detail.get('answer'):
+        if state in {'error', 'cancelled', 'rejected', 'paused', 'manager_error'} and detail.get('answer'):
             self._insert_text(self.console, '\n' + detail['answer'])
         if state == "action_dispatched":
             self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]))
@@ -787,7 +794,7 @@ class MainWindow(QMainWindow):
                 if not data.get('candidates'):
                     output = data.get('reason', '未找到相关候选')
             self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]) +
-                              "\n结果时间：" + detail["queried_at"] + "\n" + output)
+                              "\n结果时间：" + str(detail["queried_at"]) + "\n" + output)
         if state == "needs_input":
             self._insert_text(self.console, "\n" + detail["answer"])
             website = detail.get('website')
@@ -815,10 +822,30 @@ class MainWindow(QMainWindow):
             if not self._stopping:
                 self._stop_requested = False
             if not self.runtime.submit_task(text, inputs):
-                self.console.appendPlainText('bo s s，当前有任务正在运行，请等待或取消后再发布。')
+                self.console.appendPlainText('bo s s，任务未接受，请查看上方原因或任务中心。')
         else:
             self.runtime.set_task_inputs(inputs)
             self.console.appendPlainText('bo s s，资料范围已设定，仅用于下一项开放任务。')
+
+    def _task_center(self):
+        """显示独立任务列表；实际控制和恢复由后台管理器拥有。"""
+        from src.omni.task_window import TaskCenter
+        try:
+            TaskCenter(self.runtime.start_tasks(), self).exec()
+        except Exception as error:
+            self.console.appendPlainText('bo s s，任务中心暂不可用：' + str(error))
+
+    def _restore_tasks(self):
+        """程序启动后后台恢复已接受任务，不因此开启音视频设备。"""
+        def restore():
+            """将恢复错误反馈给界面，Qt 主线程不等待存储或模型。"""
+            try:
+                self.runtime.start_tasks()
+            except Exception as error:
+                if self._close_after_stop:
+                    return
+                self._task_received.emit('manager_error', {'managed': True, 'answer': str(error)})
+        threading.Thread(target=restore, daemon=True, name='gui-task-restore').start()
 
     def _cancel_assistant(self):
         """显式取消当前任务，交由运行时撤销后续工具、文件及播报。"""
@@ -1075,7 +1102,10 @@ class MainWindow(QMainWindow):
                     starter.join(timeout=5)
                     if starter.is_alive():
                         raise RuntimeError("启动线程仍在退出，请稍后重试停止")
-                self.runtime.stop()
+                if self._close_after_stop:
+                    self.runtime.close()
+                else:
+                    self.runtime.stop()
             except Exception as error:
                 failure = f"{type(error).__name__}: {error}"
             self._shutdown_finished.emit(failure)
@@ -1164,9 +1194,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """退出先等待会话关闭，然后恢复日志流并释放 Qt 定时器。"""
+        if hasattr(self.runtime, "application_closing"):
+            self.runtime.application_closing.set()
         starter_alive = self._start_thread is not None and self._start_thread.is_alive()
         if (self._stopping or self._stop_error or self.runtime.running
-                or self.runtime.omni_client is not None or starter_alive):
+                or self.runtime.omni_client is not None or starter_alive
+                or (self.runtime.tasks and self.runtime.tasks.thread and self.runtime.tasks.thread.is_alive())):
             self._close_after_stop = True
             event.ignore()
             self._safe_stop_runtime()

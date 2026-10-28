@@ -546,11 +546,11 @@ Qwen 仅能按本句调用一次对应工具，不能扩大路径或改写目标
 
 ### 20 开放任务与微信直读
 
-GUI「任务与资料」支持任务文字、文件选择、目录首层及粘贴正文。点击发布即可后台执行，不要求启动语音；留空任务则把资料范围交给下一项语音开放任务，使用后清除。语音任务仍受转写质量、重叠、15秒时效、忙碌和会话代次保护；重连会取消未完成任务。取消任务按钮撤销后续读取和交付，已发生的界面导航不能撤回。
+GUI「任务与资料」支持任务文字、文件选择、目录首层及粘贴正文。点击发布即可后台执行，不要求启动语音；留空任务则把资料范围交给下一项语音开放任务，使用后清除。语音任务仍受转写质量、重叠、15秒时效、忙碌和会话代次保护；旧单步重连取消；开放长任务按第21节独立恢复。取消任务按钮撤销后续读取和交付，已发生的界面导航不能撤回。
 
-资料格式：TXT、Markdown、CSV、TSV、JSON、日志、Python、DOCX、XLSX。单文件最多2 MiB，目录只取首层支持文件，最多40份；不追随符号链接，UTF-8/BOM/GB18030严格解码。分页读取的节选不会标成全量总结。XLSX由标准库生成文字单元格，不执行输入公式、宏或外链；公式来源只读缓存值并标注未经重算。PDF、旧版DOC/XLS及图片内容尚不支持。
+资料格式：TXT、Markdown、CSV、TSV、JSON、日志、Python、DOCX、XLSX。单文件最多8 MiB，目录只取首层支持文件，最多40份；不追随符号链接，UTF-8/BOM/GB18030严格解码。分页读取的节选不会标成全量总结。基础探针XLSX生成文字单元格，长任务XLSX保留数字/布尔类型，不执行输入公式、宏或外链；公式来源只读缓存值并标注未经重算。文字PDF已支持，旧版DOC/XLS及扫描图片OCR尚不支持。
 
-每项任务最多180秒、12次工具/模型调用。结果目录为 `output/m2/qwen/<task_id>/`，包含 `report.txt`、`evidence.json` 和实际新产物；用「打开最新报告」或「打开结果文件夹」查看。长回复只提示看文件；短答复可经既有MiniCPM原生链路播报。模型归纳仍可能出错，证据可检查不等于结论自动正确。
+基础探针单次180秒/12次调用；生产长任务分阶段并保留累计预算，见第21节。结果目录为 `output/m2/qwen/<task_id>/`，包含 `report.txt`、`evidence.json` 和实际新产物；用「打开最新报告」或「打开结果文件夹」查看。长回复只提示看文件；短答复可经既有MiniCPM原生链路播报。模型归纳仍可能出错，证据可检查不等于结论自动正确。
 
 微信直读只支持macOS。安装阶段使用已有Apple Command Line Tools构建并本地签名 `.cache/agent/native/JACWeChatReader.app`，不新增Python依赖或下载模型。已有机器执行以下完整命令更新Agent组件；不需重编译MiniCPM后端。
 
@@ -566,7 +566,7 @@ GUI「任务与资料」支持任务文字、文件选择、目录首层及粘�
 /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_assistant.py --check-wechat
 ```
 
-在任务中明确写出“微信”和完整会话名，例如“总结微信「完整群名」的已加载消息”。名称带“的”时仍须完整保留，多会话分别加引号；不明确的范围会请求补充。当前会话或当前侧栏中精确同名条目可直接读取，其他会话先在微信打开。程序前后核对标题，只读已加载消息列表；图片、表情、文件附件是占位，未显示的发送者不猜测。比较微信附件正文时先保存附件并通过资料选择器授权。没有发送消息、输入草稿、解密数据库、历史自动滚动和全量同步工具。
+在任务中明确写出“微信”和完整会话名，例如“总结微信「完整群名」的已加载消息”。名称带“的”时仍须完整保留，多会话分别加引号；不明确的范围会请求补充。当前会话或当前侧栏中精确同名条目可直接读取，其他会话先在微信打开。程序前后核对标题，只读已加载消息列表；图片、表情、文件附件是占位，未显示的发送者不猜测。比较微信附件正文时先保存附件并通过资料选择器授权。没有发送消息、输入草稿、解密数据库、全量同步能力；有限分页尚待实际历史翻页验收。
 
 纯本地文字/产物验证，无设备、无微信读取：
 
@@ -575,3 +575,32 @@ GUI「任务与资料」支持任务文字、文件选择、目录首层及粘�
 ```
 
 需要云端的任务只生成 `handoff.json`，状态 `deferred`，明确未提交、手机未发送；无自动重试或后台补交。`src/brain/agent/cloud.py` 的 `OpenClawAdapter` 是J.A.C.适配协议，提供submit/status/cancel及独立交付回执。未来绑定实际OpenClaw部署版本、认证、幂等/取消、明确获准附件与手机接收方后再联调；不能把该接口当成已经接好的服务器，也不能假定官方提供同名HTTP端点。当前实现不自动上传私有资料，不把全历史或模型口头完成当成执行证据。
+
+
+### 21 可恢复长任务与扩展工具
+
+生产GUI启动后恢复 `data/tasks/` 的任务。任务中心可暂停、继续、取消、移到队首、补充文件/说明、确认刷新已变文件、延长预算和删除停止的恢复记录。删除记录不删除已交付文件；实际资料、聊天、运行时历史与产物均不可提交Git。停止语音继续任务，关闭窗口保存并停止，未安装系统后台服务。
+
+一项运行，最多五项等待。每阶段180秒/12次调用，全任务默认30分钟有效执行时间/120次调用，预算到达暂停；“增加30分钟/120次”明确延长。异常退出未核销阶段最多按180秒保守计费；不将等待用户计入执行时间。恢复复用已保存微信快照，输入文件变化须在补充资料中确认刷新，不自动覆盖原文件或重放结果不明的外部动作。
+
+本轮新增固定 `pypdf==6.21.2` 到Gateway依赖及安装自检；原Agent七包、模型和MiniCPM补丁未变。PDF解析为有界子进程，最多8 MiB、150页、100万字、20秒；macOS以父进程内存采样和CPU限额保护，不能声称瞬时内存硬隔离。扫描页明确标注未OCR。Office解压上限16 MiB，表格最多10000行/40列，数值转换失败不会当零；不执行公式或宏。安装器国内镜像失败按已有机制回退官方源。
+
+已有机器更新Gateway依赖和安装自检（也准备Agent组件）；无需重编译MiniCPM：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/new_computer_download/setup_new_computer.py --only gateway --skip-transcription-model
+```
+
+无设备的持久化任务验证：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_long_tasks.py --task "根据资料制作Excel任务表" --text "任务：检查设计；负责人：小王。"
+```
+
+只列出持久化任务，不启动模型：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_long_tasks.py --list
+```
+
+开发验证可指定 `--store` 和 `--output` 隔离目录；`--resume` 使用实际列表中的原任务号，`--refresh`确认重新读取变化输入，`--extend`延长一次预算。通常直接使用GUI任务中心，无须复制任务号。程序检查不证明主观内容完全正确；当前自动附件下载、可靠逐消息时间范围、完整微信历史及真实OpenClaw/手机交付均未开放。

@@ -27,7 +27,7 @@ PERSONA = (
     "微信仅有已加载消息；媒体占位不是媒体内容，文件名不是附件正文，不编造发送者。"
     "微信label时间标记与消息未建立对应关系，不可给消息补时间；保留观察顺序和未知项。"
     "需要附件正文但未提供文件时以needs_input结束并请用户选择文件；不把消息差异冒充附件差异。"
-    "纯解释/规划/文字创作可本地完成；缺少资料的外部综合比较、云端长任务或手机发送以deferred结束。"
+    "解释/规划/创作和现有工具能够处理的比较在本地完成；缺少资料先追问，明确云端或手机发送以deferred结束。"
     "不能用知识猜实时事实；不声称发送、安装、执行代码或其他未提供操作已完成。"
     "依次调用工具，最后必须调用finish；该工具只暂存结果，由程序核验交付。"
     "内容较长可分多次write_text追加；表格用write_table生成XLSX。预算12次工具、180秒。"
@@ -55,7 +55,7 @@ class AssistantTools:
         self.wechat_reader, self.search_client = wechat_reader, search_client
         self.trace, self.artifacts, self.read_ranges = [], {}, {}
         self.finished, self.web_calls = None, 0
-        self.allow_web = bool(re.search(r"联网|上网|网上|网络|搜索", task)) and "微信" not in task and not materials.inventory()
+        self.allow_web = bool(re.search(r"联网|上网|网上|网络|搜索|调研|评测|哪个好|哪个更好|如何选择|怎么选择", task)) and "微信" not in task and not materials.inventory()
         self.started = time.monotonic()
         self.task_id, self.call_identity = None, lambda: None
 
@@ -106,7 +106,7 @@ class AssistantTools:
         prior = self.artifacts.get(name, b"") if append else b""
         if len(self.artifacts) >= 6 and name not in self.artifacts:
             raise AgentRefused("产物数量超过6份")
-        if sum(map(len, self.artifacts.values())) + len(data) > 128000:
+        if sum(map(len, self.artifacts.values())) + len(data) > getattr(self, "max_artifact_bytes", 128000):
             raise AgentRefused("产物总字节数超过预算")
         self.artifacts[name] = prior + data
         return {"name": name, "bytes": len(self.artifacts[name]), "status": "staged", "published": False}
@@ -163,8 +163,8 @@ class AssistantTools:
             if left == right or left not in self.read_ranges or right not in self.read_ranges:
                 raise AgentRefused("须先分别读取两份不同资料")
             a, b = self.materials.sources[left], self.materials.sources[right]
-            if max(a["length"], b["length"]) > 30000:
-                raise AgentRefused("逐行比较最多每份30000字；请缩小范围或交给云端")
+            if max(a["length"], b["length"]) > (300000 if hasattr(self, "record") else 30000):
+                raise AgentRefused("逐行比较超过当前有界工具容量，请按章节拆分")
             difference = source_diff({"text": a["text"], "filename": left}, {"text": b["text"], "filename": right})
             self._stage(f"diff-{left}-{right}.txt", difference.encode("utf-8"), "txt")
             identifier = self.materials.add("程序逐行差异", difference or "两份文字完全相同。", {"kind": "diff", "inputs": [left, right]})
@@ -246,7 +246,7 @@ class AssistantTaskRunner:
         with publication_lock if publication_lock is not None else nullcontext():
             check_cancelled(should_stop)
             parent = open_directory(self.output_dir, create=True)
-            pending = "." + task_id + ".pending"
+            pending = "." + task_id + "." + uuid4().hex + ".pending"
             child, published = None, False
             try:
                 os.mkdir(pending, 0o700, dir_fd=parent)

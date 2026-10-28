@@ -67,7 +67,7 @@ class GatewayClient:
                  video_enabled=True, mic_gain=1.0, session_seconds=240,
                  context_provider=None, device_factory=LiveDevices, retry_limit=3, drain_seconds=8,
                  transcription_enabled=False, whisper_model_dir=None,
-                 brain_url="http://127.0.0.1:12345", pipeline_factory=None):
+                 brain_url="http://127.0.0.1:12345", pipeline_factory=None, task_submitter=None):
         """仅配置客户端，不打开设备；默认在视频会话上限前 60 秒主动重建。"""
         self.url = protocol.gateway_url(url, "video")
         if not 5 <= session_seconds <= 240 or retry_limit < 0:
@@ -82,6 +82,7 @@ class GatewayClient:
         self.transcription_enabled, self.whisper_model_dir = transcription_enabled, whisper_model_dir
         self.brain_url, self.pipeline_factory = brain_url, pipeline_factory
         self._pipeline = None
+        self.task_submitter = task_submitter
         self._speech = None
         self._listening = False
         self._last_assistant_output = 0.0
@@ -367,6 +368,8 @@ class GatewayClient:
                 from .task_pipeline import TaskPipeline, DEFAULT_MODEL_DIR
                 factory = self.pipeline_factory or TaskPipeline
                 self._pipeline = factory(self.callbacks, self.whisper_model_dir or DEFAULT_MODEL_DIR, self.brain_url)
+                if self.task_submitter is not None:
+                    self._pipeline.assistant_submitter = self.task_submitter
                 from .task_speech import TaskSpeechQueue
                 self._speech = TaskSpeechQueue(self._pipeline, self.callbacks)
                 self._pipeline.on_result_speech = self._speech.offer
