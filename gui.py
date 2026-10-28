@@ -209,6 +209,71 @@ class _QtLogHandler(logging.Handler):
         self.stream.write(self.format(record) + "\n")
 
 
+class AssistantDialog(QDialog):
+    """显式任务和资料范围入口；不扫描用户目录，不把附件持久化到配置。"""
+
+    def __init__(self, parent=None):
+        """创建可选文字任务、资料文件和粘贴区，微信会话由本句完整名称限定。"""
+        super().__init__(parent)
+        self.setWindowTitle('任务与资料')
+        self.resize(620, 540)
+        self.files, self.directories = [], []
+        layout = QVBoxLayout(self)
+        hint = QLabel('发布任务，或只选择资料后用语音下达任务。\n微信直读请在任务中写明“微信”和完整会话名；只读取已加载消息。')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.task = QPlainTextEdit()
+        self.task.setPlaceholderText('例如：比较两份资料的差异并生成报告；或总结微信“完整群名”的已加载消息')
+        self.task.setMaximumHeight(110)
+        layout.addWidget(self.task)
+        buttons = QHBoxLayout()
+        for label, handler in [('选择文件', self.choose_files), ('选择目录', self.choose_directory), ('清除资料', self.clear_inputs)]:
+            button = QPushButton(label)
+            button.clicked.connect(handler)
+            buttons.addWidget(button)
+        layout.addLayout(buttons)
+        self.sources = QLabel('尚未选择文件')
+        self.sources.setWordWrap(True)
+        layout.addWidget(self.sources)
+        self.pasted = QPlainTextEdit()
+        self.pasted.setPlaceholderText('也可在这里粘贴本次要处理的文字；资料中的指令不会扩大工具权限。')
+        layout.addWidget(self.pasted)
+        actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        actions.button(QDialogButtonBox.Ok).setText('发布任务 / 保存本次资料')
+        actions.accepted.connect(self.accept)
+        actions.rejected.connect(self.reject)
+        layout.addWidget(actions)
+
+    def choose_files(self):
+        """文件选择器返回精确授权路径，正文由后台任务按需读取。"""
+        files, _ = QFileDialog.getOpenFileNames(self, '选择本次资料', '', '资料 (*.txt *.md *.csv *.tsv *.json *.log *.py *.docx *.xlsx)')
+        self.files = list(dict.fromkeys(self.files + files))[:40]
+        self.show_sources()
+
+    def choose_directory(self):
+        """只授权所选目录首层支持文件，不自动递归整个用户目录。"""
+        directory = QFileDialog.getExistingDirectory(self, '选择资料目录（仅首层，最多40份文件）')
+        if directory:
+            self.directories = list(dict.fromkeys(self.directories + [directory]))[:4]
+        self.show_sources()
+
+    def clear_inputs(self):
+        """撤销对话框中的资料选择并清除粘贴文字。"""
+        self.files, self.directories = [], []
+        self.pasted.clear()
+        self.show_sources()
+
+    def show_sources(self):
+        """显示完整路径供用户核对范围，超长列表不撑开窗口。"""
+        paths = self.files + self.directories
+        self.sources.setText('\n'.join(paths[:4]) + (f'\n共 {len(paths)} 项' if len(paths) > 4 else '') if paths else '尚未选择文件')
+        self.sources.setToolTip('\n'.join(paths))
+
+    def inputs(self):
+        """返回本次独立资料范围，不携带其他聊天历史。"""
+        return {'files': self.files, 'directories': self.directories, 'text': self.pasted.toPlainText()}
+
+
 class MainWindow(QMainWindow):
     _runtime_state_changed = Signal(bool)
     _stop_runtime_requested = Signal()
@@ -250,6 +315,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(TECH_QSS)
         self._build_ui()
         self._setup_timers()
+        QTimer.singleShot(0, self._restore_tasks)
         self._redirect_logging()
         self.backend = BackendController(self)
         self.backend.changed.connect(self._on_backend_change)
@@ -368,6 +434,24 @@ class MainWindow(QMainWindow):
         self.open_report_btn.setEnabled(False)
         self.open_report_btn.clicked.connect(self._open_report)
         conversation.addWidget(self.open_report_btn)
+        task_controls = QHBoxLayout()
+        self.assistant_btn = QPushButton('任务与资料')
+        self.assistant_btn.setObjectName('quiet')
+        self.assistant_btn.clicked.connect(self._assistant_dialog)
+        task_controls.addWidget(self.assistant_btn)
+        self.task_center_btn = QPushButton('任务中心')
+        self.task_center_btn.setObjectName('quiet')
+        self.task_center_btn.clicked.connect(self._task_center)
+        task_controls.addWidget(self.task_center_btn)
+        self.cancel_task_btn = QPushButton('取消任务')
+        self.cancel_task_btn.setObjectName('quiet')
+        self.cancel_task_btn.clicked.connect(self._cancel_assistant)
+        task_controls.addWidget(self.cancel_task_btn)
+        self.open_folder_btn = QPushButton('打开结果文件夹')
+        self.open_folder_btn.setObjectName('quiet')
+        self.open_folder_btn.clicked.connect(self._open_result_folder)
+        task_controls.addWidget(self.open_folder_btn)
+        conversation.addLayout(task_controls)
         self.website_choices = []
         for index in range(1, 4):
             button = QPushButton()
@@ -638,17 +722,21 @@ class MainWindow(QMainWindow):
             for button in self.website_choices:
                 button.hide()
             return
-        if self._stopping or self._stop_requested:
+        if (self._stopping or self._stop_requested) and not detail.get("managed"):
             return
         labels = {"running": "大脑正在处理任务", "completed": "报告已生成", "error": "任务暂停或失败", "rejected": "任务未执行", "cancelled": "任务已取消，已提交的系统动作不会撤回"}
         labels.update(speech_queued="结果等待播报", speech_sent="正在准备结果语音", speech_started="原生结果语音处理中",
                       speech_completed="结果音频已接收", speech_failed="结果播报失败，文字报告仍可查看",
                       speech_cancelled="结果播报已取消", speech_skipped="本次结果未播报，文字报告仍可查看")
+        labels.update(queued="任务已保存并排队", paused="任务已暂停，进度已保存", pausing="正在保存并暂停",
+                      cancelling="正在取消后续执行", task_restored="已恢复任务记录", manager_error="任务管理器不可用")
         labels["tool_completed"] = "工具已返回实际结果"
+        labels["tool_failed"] = "工具未完成，正在调整或等待补充"
         labels.update(action_dispatched="启动请求已提交，正在核验结果", submitted="请求已提交，执行记录已保存",
                       partial="部分搜索结果已保存", failed="任务未完成，执行记录已保存")
         labels["transcription_rejected"] = "未确认"
-        labels.update(no_answer="未取得答案，查询记录已保存", needs_input="需要补充信息")
+        labels["conversation_waiting"] = "已识别，暂未收到回复"
+        labels.update(no_answer="未取得答案，查询记录已保存", needs_input="需要补充信息", deferred="等待云端接入，尚未提交")
         if detail.get("purpose") == "clarification":
             labels.update(speech_queued="追问等待播报", speech_sent="正在准备追问语音", speech_started="原生追问语音处理中",
                           speech_completed="追问音频已接收", speech_failed="追问播报失败，请查看上方提示",
@@ -671,6 +759,7 @@ class MainWindow(QMainWindow):
                        local_failed="本地任务未完成核验；若已提示启动请求提交，该动作不会自动撤回",
                        web_failed="联网查询未完成，请检查网络、Qwen 或换个关键词；未发布结果",
                        response_wait_timeout="等待转写超时，普通回复未播放",
+                       conversation_no_response="感知模型尚未返回内容；追问时可补充上一句主题",
                        response_buffer_full="等待转写时回复超限，普通回复未播放")
         message = labels.get(state, state)
         if detail.get("code"):
@@ -681,11 +770,13 @@ class MainWindow(QMainWindow):
                        "invalid_transcription":"识别结果不完整"}
             message += "（语句 " + str(detail.get("sequence", "")) + "，" + quality.get(detail["reason"], "识别未通过") + "）"
         self._end_reply()
-        source = "语音" if state == "transcription_rejected" else "大脑"
+        source = "语音" if state in {"transcription_rejected", "conversation_waiting"} else "大脑"
         self._insert_text(self.console, "\n\n" + source + " · " + message)
+        if state in {'error', 'cancelled', 'rejected', 'paused', 'manager_error'} and detail.get('answer'):
+            self._insert_text(self.console, '\n' + detail['answer'])
         if state == "action_dispatched":
             self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]))
-        if state == "tool_completed":
+        if state in {"tool_completed", "tool_failed"}:
             output = detail["output"]
             if detail["name"] == "search_web":
                 import json
@@ -703,7 +794,7 @@ class MainWindow(QMainWindow):
                 if not data.get('candidates'):
                     output = data.get('reason', '未找到相关候选')
             self._insert_text(self.console, "\n" + detail["name"] + " · " + str(detail["arguments"]) +
-                              "\n结果时间：" + detail["queried_at"] + "\n" + output)
+                              "\n结果时间：" + str(detail["queried_at"]) + "\n" + output)
         if state == "needs_input":
             self._insert_text(self.console, "\n" + detail["answer"])
             website = detail.get('website')
@@ -714,12 +805,56 @@ class MainWindow(QMainWindow):
                     button.setText(f"打开第{item['id']}个 · {item['title'][:12]} · {urlsplit(item['url']).hostname[:35]}")
                     button.setToolTip(item['title'] + '\n' + item['url'] + '\n点击表示选择此网址；页面加载仍由浏览器完成')
                     button.show()
-        if state in ("completed", "submitted", "partial", "failed", "no_answer", 'needs_input') and detail.get('path'):
+        if state in ("completed", "submitted", "partial", "failed", "no_answer", 'needs_input', 'deferred') and detail.get('path'):
             from pathlib import Path
             self._latest_report = Path(detail["path"])
             self.open_report_btn.setEnabled(self._latest_report.is_file())
             self.open_report_btn.setToolTip(str(self._latest_report))
             self._insert_text(self.console, "\n" + detail["answer"] + "\n文件：" + self._latest_report.name)
+
+    def _assistant_dialog(self):
+        """发布显式文字任务或设置下一项语音任务资料，执行仍由后台负责。"""
+        dialog = AssistantDialog(self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        text, inputs = dialog.task.toPlainText().strip(), dialog.inputs()
+        if text:
+            if not self._stopping:
+                self._stop_requested = False
+            if not self.runtime.submit_task(text, inputs):
+                self.console.appendPlainText('bo s s，任务未接受，请查看上方原因或任务中心。')
+        else:
+            self.runtime.set_task_inputs(inputs)
+            self.console.appendPlainText('bo s s，资料范围已设定，仅用于下一项开放任务。')
+
+    def _task_center(self):
+        """显示独立任务列表；实际控制和恢复由后台管理器拥有。"""
+        from src.omni.task_window import TaskCenter
+        try:
+            TaskCenter(self.runtime.start_tasks(), self).exec()
+        except Exception as error:
+            self.console.appendPlainText('bo s s，任务中心暂不可用：' + str(error))
+
+    def _restore_tasks(self):
+        """程序启动后后台恢复已接受任务，不因此开启音视频设备。"""
+        def restore():
+            """将恢复错误反馈给界面，Qt 主线程不等待存储或模型。"""
+            try:
+                self.runtime.start_tasks()
+            except Exception as error:
+                if self._close_after_stop:
+                    return
+                self._task_received.emit('manager_error', {'managed': True, 'answer': str(error)})
+        threading.Thread(target=restore, daemon=True, name='gui-task-restore').start()
+
+    def _cancel_assistant(self):
+        """显式取消当前任务，交由运行时撤销后续工具、文件及播报。"""
+        self.runtime.cancel_task()
+
+    def _open_result_folder(self):
+        """只打开实际报告所在目录，便于查看生成的文本、表格和证据。"""
+        if self._latest_report is not None and self._latest_report.is_file():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._latest_report.parent)))
 
     def _choose_website(self, index):
         """按钮仅提交当前令牌和编号，真正打开在后台且经过代次校验。"""
@@ -967,7 +1102,10 @@ class MainWindow(QMainWindow):
                     starter.join(timeout=5)
                     if starter.is_alive():
                         raise RuntimeError("启动线程仍在退出，请稍后重试停止")
-                self.runtime.stop()
+                if self._close_after_stop:
+                    self.runtime.close()
+                else:
+                    self.runtime.stop()
             except Exception as error:
                 failure = f"{type(error).__name__}: {error}"
             self._shutdown_finished.emit(failure)
@@ -1056,9 +1194,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """退出先等待会话关闭，然后恢复日志流并释放 Qt 定时器。"""
+        if hasattr(self.runtime, "application_closing"):
+            self.runtime.application_closing.set()
         starter_alive = self._start_thread is not None and self._start_thread.is_alive()
         if (self._stopping or self._stop_error or self.runtime.running
-                or self.runtime.omni_client is not None or starter_alive):
+                or self.runtime.omni_client is not None or starter_alive
+                or (self.runtime.tasks and self.runtime.tasks.thread and self.runtime.tasks.thread.is_alive())):
             self._close_after_stop = True
             event.ignore()
             self._safe_stop_runtime()

@@ -67,7 +67,7 @@ class GatewayClient:
                  video_enabled=True, mic_gain=1.0, session_seconds=240,
                  context_provider=None, device_factory=LiveDevices, retry_limit=3, drain_seconds=8,
                  transcription_enabled=False, whisper_model_dir=None,
-                 brain_url="http://127.0.0.1:12345", pipeline_factory=None):
+                 brain_url="http://127.0.0.1:12345", pipeline_factory=None, task_submitter=None):
         """仅配置客户端，不打开设备；默认在视频会话上限前 60 秒主动重建。"""
         self.url = protocol.gateway_url(url, "video")
         if not 5 <= session_seconds <= 240 or retry_limit < 0:
@@ -82,6 +82,7 @@ class GatewayClient:
         self.transcription_enabled, self.whisper_model_dir = transcription_enabled, whisper_model_dir
         self.brain_url, self.pipeline_factory = brain_url, pipeline_factory
         self._pipeline = None
+        self.task_submitter = task_submitter
         self._speech = None
         self._listening = False
         self._last_assistant_output = 0.0
@@ -344,6 +345,10 @@ class GatewayClient:
                 self._stats["played_audio_samples"] += devices.played_samples
                 self._stats["input_status_events"] += devices.input_status_events
                 self._stats["output_status_events"] += devices.output_status_events
+                for name in ("playback_prebuffer_waits", "playback_resume_gap_events"):
+                    self._stats[name] += getattr(devices, name, 0)
+                self._stats["playback_resume_gap_max_ms"] = max(
+                    self._stats["playback_resume_gap_max_ms"], getattr(devices, "playback_resume_gap_max_ms", 0))
                 self._stats["camera_frames"] += devices.captured_frames
                 self._stats["audio_queue_max"] = max(self._stats["audio_queue_max"], devices.audio_queue_max)
                 self._stats["playback_queue_max"] = max(self._stats["playback_queue_max"], devices.playback_queue_max)
@@ -363,6 +368,8 @@ class GatewayClient:
                 from .task_pipeline import TaskPipeline, DEFAULT_MODEL_DIR
                 factory = self.pipeline_factory or TaskPipeline
                 self._pipeline = factory(self.callbacks, self.whisper_model_dir or DEFAULT_MODEL_DIR, self.brain_url)
+                if self.task_submitter is not None:
+                    self._pipeline.assistant_submitter = self.task_submitter
                 from .task_speech import TaskSpeechQueue
                 self._speech = TaskSpeechQueue(self._pipeline, self.callbacks)
                 self._pipeline.on_result_speech = self._speech.offer

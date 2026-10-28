@@ -27,3 +27,5 @@ webrtcvad-wheels==2.0.14.post1
 av==18.1.0
 tokenizers==0.23.2
 huggingface-hub==1.33.0  # 运行期 offline；模型由锁定资源安装器下载
+
+pypdf==6.21.2  # 文字PDF只读提取；独立限时进程，不执行文档动作或OCR

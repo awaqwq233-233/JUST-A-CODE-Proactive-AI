@@ -13,6 +13,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL_DIR = Path.home() / ".cache/jac/models/whisper-small"
+TRANSCRIPTION_VOCABULARY = "查询 电池 电量 CPU 内存 Python GitHub Lightroom Classic Safari"
 
 
 class StableMelProduct:
@@ -50,6 +51,16 @@ def verify_resources(model_dir):
     return directory
 
 
+def decode_segments(model, samples):
+    """以有限中英词汇辅助声学解码，不注入指令示例或沿用上一句的文字。"""
+    segments, _ = model.transcribe(samples, language="zh", beam_size=5,
+        temperature=0, condition_on_previous_text=False, vad_filter=False,
+        hotwords=TRANSCRIPTION_VOCABULARY)
+    return [{"text": s.text, "avg_logprob": s.avg_logprob,
+             "no_speech_prob": s.no_speech_prob, "compression_ratio": s.compression_ratio}
+            for s in segments]
+
+
 def worker_main(directory):
     """独立解释器只加载 CPU Whisper；JSON 管道不引入 Qt/OpenCV 或共享信号量。"""
     os.environ["HF_HUB_OFFLINE"] = "1"
@@ -72,11 +83,7 @@ def worker_main(directory):
             samples = np.frombuffer(raw, dtype="<f4")
             if not 4800 <= len(samples) <= 192000 or not np.isfinite(samples).all():
                 raise ValueError("Whisper input")
-            segments, _ = model.transcribe(samples, language="zh", beam_size=5,
-                temperature=0, condition_on_previous_text=False, vad_filter=False)
-            result = [{"text": s.text, "avg_logprob": s.avg_logprob,
-                       "no_speech_prob": s.no_speech_prob, "compression_ratio": s.compression_ratio}
-                      for s in segments]
+            result = decode_segments(model, samples)
             print(json.dumps({"segments": result}, ensure_ascii=False), flush=True)
     except Exception as error:
         print(json.dumps({"error": type(error).__name__}), flush=True)

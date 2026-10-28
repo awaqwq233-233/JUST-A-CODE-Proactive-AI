@@ -367,6 +367,37 @@ class WebSearchClient:
                 pending.cancel()
             await asyncio.gather(pending, return_exceptions=True)
 
+    async def aread_page(self, url, should_stop=None):
+        """读取已核验搜索URL的静态正文，复用逐跳公网IP和大小边界。"""
+        check_search_cancelled(should_stop)
+        pending = asyncio.create_task(self._get(url, 8))
+        try:
+            while not pending.done():
+                check_search_cancelled(should_stop)
+                await asyncio.wait({pending}, timeout=.1)
+            final_url, body, kind = await pending
+            charset = re.search(r'charset\s*=\s*["\']?([\w-]+)', kind)
+            try:
+                text = body.decode(charset.group(1) if charset else 'utf-8', errors='strict')
+            except (UnicodeDecodeError, LookupError) as error:
+                raise SearchError('网页编码无法可靠读取') from error
+            page = PageText()
+            page.feed(text)
+            content = '\n'.join(page.parts)
+            if len(content) < 40 or re.search(r'验证码|captcha|Access Denied|Just a moment', ' '.join(page.title_parts), re.I):
+                raise SearchError('网页需验证或没有可读取正文')
+            return {'url': final_url, 'title': ' '.join(page.title_parts)[:200], 'text': content[:20000],
+                    'truncated': len(content) > 20000, 'date_metadata': page.metadata,
+                    'retrieved_at': datetime.now().astimezone().isoformat(timespec='seconds')}
+        finally:
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    def read_page(self, url, should_stop=None):
+        """后台同步桥接，不携带浏览器登录、私有文件或对话历史。"""
+        return asyncio.run(self.aread_page(url, should_stop))
+
     def search(self, query, should_stop=None):
         """同步桥接仅用于后台大脑或独立探针，Qt/音频回调禁止调用。"""
         return asyncio.run(self.asearch(query, should_stop))

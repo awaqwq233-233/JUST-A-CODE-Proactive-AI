@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,34 @@ def verify_plugin(lock):
             raise RuntimeError("Agent 插件与 agent.lock.json 不一致")
 
 
+def build_wechat_reader():
+    """使用苹果本机 SDK 构建只读微信适配器，摘要匹配时复用，不下载第三方代码。"""
+    source = ROOT / "src/tools/wechat_reader.swift"
+    bundle = CACHE / "native/JACWeChatReader.app"
+    target = bundle / "Contents/MacOS/wechat-reader"
+    marker = CACHE / "native/wechat-reader.sha256"
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    if target.is_file() and marker.is_file() and marker.read_text().strip() == digest:
+        verified = subprocess.run(["codesign", "--verify", "--deep", "--strict", str(bundle)], capture_output=True, timeout=10)
+        if verified.returncode == 0:
+            return
+    if not shutil.which("xcrun"):
+        raise RuntimeError("微信直读需要 Apple Command Line Tools，请先安装后重新运行 --only agent")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".building")
+    subprocess.run(["xcrun", "swiftc", "-O", "-module-cache-path", str(CACHE / "native/swift-cache"),
+                    str(source), "-o", str(temporary)], check=True, timeout=120)
+    os.replace(temporary, target)
+    target.with_suffix(".sha256").unlink(missing_ok=True)
+    (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({
+        "CFBundleIdentifier": "local.jac.wechat-reader", "CFBundleName": "JACWeChatReader",
+        "CFBundleDisplayName": "J.A.C. 微信只读", "CFBundleExecutable": "wechat-reader",
+        "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "LSUIElement": True}))
+    subprocess.run(["codesign", "--force", "--sign", "-", "--identifier", "local.jac.wechat-reader",
+                    "--requirements", '=designated => identifier "local.jac.wechat-reader"', str(bundle)], check=True, timeout=20)
+    marker.write_text(digest + "\n", encoding="utf-8")
+
+
 def self_test():
     """在隔离 home 检查版本及实际插件加载，不请求模型、不执行文件工具。"""
     sys.path.insert(0, str(ROOT))
@@ -35,6 +64,12 @@ def self_test():
     from src.brain.agent.worker import ShutdownAck
     lock = json.loads(LOCK.read_text(encoding="utf-8"))
     verify_plugin(lock)
+    native = CACHE / 'native/JACWeChatReader.app/Contents/MacOS/wechat-reader'
+    if not native.is_file():
+        raise RuntimeError('微信适配器尚未构建')
+    capabilities = json.loads(subprocess.check_output([str(native), '--check'], timeout=5))
+    if capabilities.get('platform') != 'macos':
+        raise RuntimeError('微信适配器平台检查失败')
     for package in lock["packages"]:
         if version(package["name"]) != package["version"]:
             raise RuntimeError("独立依赖版本不符：" + package["name"])
@@ -87,7 +122,7 @@ def install(*, mirror=MIRROR, dry_run=False):
     python = CACHE / "venv/bin/python"
     if dry_run:
         print(f"[dry-run] 创建/复用 {python}；校验下载 7 个锁定 wheel；镜像失败回退官方。")
-        print("[dry-run] 安装后执行插件/provider 离线初始化及 pip check；不装入 Gateway。")
+        print("[dry-run] 构建 macOS 微信只读适配器；安装后检查插件/provider及权限状态，不读取聊天。")
         return
     if not python.exists():
         subprocess.run([interpreter, "-m", "venv", str(CACHE / "venv")], check=True)
@@ -107,6 +142,7 @@ def install(*, mirror=MIRROR, dry_run=False):
                             "--require-hashes", "--force-reinstall", "-r", str(REQUIREMENTS)], check=True, timeout=180)
     env = {key: os.environ[key] for key in ("PATH", "TMPDIR", "LANG") if key in os.environ}
     env.update(PYTHONUTF8="1", PYTHONPATH=str(ROOT), PKG_NATIVE_CACHE_PATH=str(CACHE / "native-cache"))
+    build_wechat_reader()
     subprocess.run([str(python), str(Path(__file__).resolve()), "--self-test"], cwd=ROOT,
                    env=env, check=True, timeout=40)
     subprocess.run(base + ["check"], check=True, timeout=30)

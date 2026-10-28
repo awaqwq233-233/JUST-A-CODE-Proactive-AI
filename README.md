@@ -10,6 +10,10 @@ J.A.C. aims to perceive its surroundings, plan ahead, warn of hazards and perfor
 
 ### Architecture and current status
 
+**Reliability follow-up (2026-10-22):** the registered native patch now pairs forced-listen input with its queued prefill/decode step, preventing persistent input lag and queue blockage, and removes a duplicate TTS audio-BOS condition. One short two-turn file replay continued and expanded the prior answer; longer-interval follow-ups still produced silence, and other runs missed a first answer or misread visual details. A temporary 16384-context experiment did not reliably restore replies, so production remains at 4096. The user subsequently confirmed that the updated GUI answered the first question and continued the immediate follow-up. This accepts that live short exchange, not general or long-interval context reliability. `verify_native_reliability.py` checks 64 consecutive forced-listen steps, literal speech ownership/sample counts and session closure without devices; generated test audio is saved only with `--save-generated-audio`. Existing installations must rebuild the current combined patch. The user has accepted both fixed speech samples as complete, without obvious pauses, and close to the reference voice. Four 240-second synthetic production sessions completed eight real queries/reports/native speech receipts and closed normally, with no cleanup failures or simulated playback gaps. This is a 16-minute fixed-workload check, not all-day or live-device acceptance; details are in CHANGELOG.
+
+**Live-feedback fixes (2026-10-22):** CPU Whisper now uses a small Chinese/English vocabulary hint, including Python and Lightroom, without command examples, text substitutions or lower confidence thresholds. Neutral short follow-ups can receive two matching acoustic rechecks, and the UI reports an accepted utterance with no native reply after 12 seconds. Native two-turn replay still produced silence or an incomplete acknowledgment despite correct transcription; prompt experiments did not reliably help and were reverted. Contextual follow-up remains unresolved. Lightroom / Lightroom Classic now targets the fixed local Adobe Lightroom Classic application. Explicit local-app requests cannot fall through to website search; explicit websites remain supported. Native playback adds a bounded 0.8-second prebuffer and resume-gap statistics, preserving PCM and cancellation. This adds initial waiting and cannot compensate for sustained slow generation. Reference/cache checks passed, but generated-audio recognition still did not recover the complete task sentence; speech completeness, voice similarity and live smoothness remain unaccepted. Native task speech now preserves in-flight TTS state after literal text is consumed and during LLM context rollover. It requires rebuilding the registered backend patch on existing installations; package versions and model files are unchanged.
+
 Option B was approved on 2026-10-06. The three model tiers remain:
 
 | Tier | Runtime | Responsibility |
@@ -48,7 +52,19 @@ Three live Qwen cases (changed text, identical text and an instruction embedded 
 
 `--only gateway` now also installs the separate Agent environment; existing installations can run `--only agent`. Voice startup checks versions and both plugin hashes before capture, without downloading or falling back to the old model runner. Gateway Python dependencies, model hashes and upstream commits remain pinned. Native regression found a cross-input UTF-8 truncation bug; the registered combined patch now retains partial characters until task text ends. Existing backends must run the update/build step in the setup guide. Production reports stay in `output/m2/qwen/`; task/session/call evidence stays in ignored `.cache/agent/runs/`. The independent text-comparison prototype still uses `output/agent/`. Web context is reduced to bounded source passages with original IDs and provenance; answers can cite only passages actually shown to the model.
 
-The production text probe is `verify_brain_tasks.py --task "查一下电池电量"`, using `.cache/m0/venv/bin/python`; explicit local-action commands actually execute. Source/generation, candidate confirmation, cancellation and real SDK integration have automated regressions. Synthetic-file tests through the real Whisper, Qwen and MiniCPM backend check unique execution, reports and native result audio without opening devices. Short runs do not establish live listening quality or long-term performance; the measured whole-machine swap increase is recorded in CHANGELOG. The next expansion is a separately scoped multi-step tool domain, followed by file editing, code execution and desktop capabilities; none is enabled by this migration.
+The production text probe is `verify_brain_tasks.py --task "查一下电池电量"`, using `.cache/m0/venv/bin/python`; explicit local-action commands actually execute. Source/generation, candidate confirmation, cancellation and real SDK integration have automated regressions. Synthetic-file tests through the real Whisper, Qwen and MiniCPM backend check unique execution, reports and native result audio without opening devices. Short runs do not establish live listening quality or long-term performance; the measured whole-machine swap increase is recorded in CHANGELOG. A separately scoped multi-step domain was added on October 25, described below; file editing, code execution and unrestricted desktop capabilities remain future work.
+
+### Recoverable local tasks and tools (2026-10-28)
+
+The GUI **任务与资料** submits local Qwen/Harness tasks; **任务中心** shows the queue, saved progress, pause/resume, cancellation, material supplements and budget extensions. Stopping voice or reconnecting leaves accepted long tasks running. Closing the app saves and stops execution; reopening resumes eligible read-only/private-output tasks after input and authorization checks. Exact single-action commands keep their original session and permission rules.
+
+Private checkpoints under ignored `data/tasks/` include source snapshots, tool receipts, drafts, input hashes and cumulative budgets. One job runs with up to five queued; each stage has 180 seconds/12 calls, and each task defaults to 30 active minutes/120 calls. Waiting for user input does not consume active time. Crashed stages conservatively charge the unaccounted stage allowance. Unknown external-action results require reconciliation; successful draft writes and published directories are not blindly replayed.
+
+Supported inputs include text, CSV/TSV/JSON, DOCX/XLSX and text PDFs, up to 8 MiB each and 40 files. Tools support literal source search, structured Office tables, filtering, sorting, deduplication, type conversion, grouping and joins. XLSX keeps numeric types and basic formatting; Word reports remain editable. Output checks cover readability, requested columns/counts, citations, source hashes and program-derived table contents. They do not prove subjective correctness. New artifacts publish under `output/m2/qwen/<task_id>/`; long answers use a short native speech notice.
+
+WeChat requires the separately authorized macOS reader and an exact conversation name. Current loaded-message reading remains supported; bounded paging code exists with title/overlap checks, but production keeps it disabled pending real history-paging acceptance. Timestamp-to-message association and automatic attachment download are not reliable enough to enable: provide saved attachments through the material picker. Media placeholders are not decoded content. No message sending or database decryption is provided.
+
+Supported WeChat-to-Excel work can run locally. Explicit cloud/phone requests still create only a local `handoff.json`: OpenClaw is **not connected**, tasks are not submitted and phone delivery does not occur. Private inputs disable public web tools. Arbitrary shell, original-file modification, scanned-PDF OCR and unrestricted desktop automation remain outside this release. See [setup guide](new_computer_download/READMEfirst.md#21-可恢复长任务与扩展工具) and [CHANGELOG](CHANGELOG.md) for evidence and limitations.
 
 ### Setup and verification
 
@@ -124,7 +140,7 @@ Short visual questions are explicitly covered by the perception prompt. Rejected
 
 ### M2c: bounded local computer tasks (updated 2026-10-17)
 
-The production voice path now supports one explicit local action per utterance: opening a listed application, opening an explicit HTTP(S) URL, or searching filenames inside a specified directory. Examples: “打开计算器”, “打开Safari”, “打开Python官网”, and “在下载目录查找文件名包含报告的文件”. The macOS application list is Safari, Calendar, Notes, Calculator and TextEdit. Known website names are 百度, GitHub, Python, and B站 / 哔哩哔哩 / bilibili. They accept 网页 / 网站 / 官网 / 官方网站, including “打开B站” and “打开B站网页”, with traditional Chinese variants. Literal URLs retain their punctuation and path/query characters. Unlisted names now enter evidence-based website resolution; Qwen selects an observed candidate ID and never invents a URL. Explicit application requests never fall back to opening a website. File searches without a directory ask for the complete request. Paths and filename keywords retain the confirmed transcript; script conversion and homophone correction are not applied to these values.
+The production voice path now supports one explicit local action per utterance: opening a listed application, opening an explicit HTTP(S) URL, or searching filenames inside a specified directory. Examples: “打开计算器”, “打开Safari”, “打开Python官网”, and “在下载目录查找文件名包含报告的文件”. The macOS application list is Safari, Calendar, Notes, Calculator, TextEdit and Adobe Lightroom Classic; Lightroom aliases target Classic. Explicit local wording such as “打开电脑上的Lightroom软件” stays local. Known website names are 百度, GitHub, Python, and B站 / 哔哩哔哩 / bilibili. They accept 网页 / 网站 / 官网 / 官方网站, including “打开B站” and “打开B站网页”, with traditional Chinese variants. Literal URLs retain their punctuation and path/query characters. Unlisted names now enter evidence-based website resolution; Qwen selects an observed candidate ID and never invents a URL. Explicit application requests never fall back to opening a website. File searches without a directory ask for the complete request. Paths and filename keywords retain the confirmed transcript; script conversion and homophone correction are not applied to these values.
 
 Qwen receives only one authorized tool with exact argument enums. Changed parameters, multiple calls, negations, quoted requests and unsupported compound actions are rejected before execution. Results and native speech use actual tool evidence, without another model-generated success claim. The GUI distinguishes a submitted launch request, a detected running macOS process, partial search results and failure. Browser handoff does **not** verify page loading; a running process does **not** verify a foreground window.
 
@@ -182,7 +198,21 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 
 生产文字探针为 `.cache/m0/venv/bin/python verify_brain_tasks.py --task "查一下电池电量"`；明确本地动作会实际执行。自动回归覆盖来源/代次、候选确认、取消及真实 SDK；真实 Whisper、Qwen、MiniCPM 的合成文件验证核对唯一执行、报告与原生结果音频，不打开设备。短测不能证明真人听感或长时稳定性，本机测得的整机 swap 增长在 CHANGELOG 如实记录。下一步在独立权限域扩展多步骤工具组合，再逐项开放文件编辑、代码执行与桌面能力，本次未开放这些能力。
 
+### 可恢复长任务与工具扩展（2026-10-28）
+
+GUI「任务与资料」发布任务，「任务中心」查看队列、进度、暂停/继续、取消、补充资料和延长预算。停止语音及语音重连不会取消已接受的开放任务；关闭程序保存并停止执行，重开后核对授权与输入版本再恢复。旧精确单步指令的时效和权限保持。
+
+私有检查点保存在忽略的 `data/tasks/`，包含输入快照、工具回执、中间产物、读取范围和累计预算。单项执行、最多五项等待；每阶段180秒/12次调用，全任务默认30分钟有效执行时间/120次调用。等待补资料不计时，崩溃阶段未核销时间保守计入预算。文件变化须确认刷新相关结果，不盲目重复追加或重放不确定外部动作。
+
+支持文字PDF、DOCX/XLSX结构表及原文本格式，每份8 MiB、最多40份。新增资料查找、筛选/排序/去重、类型转换、分组统计、表间关联、带数字类型的Excel和可编辑Word报告。程序验收结构、字段、行数、引用、输入版本及导出数据一致性；主观内容仍须审阅。结果仍在 `output/m2/qwen/<task_id>/`，长回复只做原生查看提示。
+
+微信保持精确会话只读。有限分页实验已有实现和身份/连续重叠保护，实际历史翻页尚未验收，生产不开放多页工具；时间标签关联和附件自动下载未可靠验证，附件正文须选择已保存文件。不发送消息、不解密数据库，不将媒体占位当作正文。现有工具能完成的微信→表格任务可在本地执行；明确云端/手机交付仍只生成本地交接单，**OpenClaw尚未接入、未提交、手机未发送**。OCR、任意shell、原位文件修改和通用桌面控制仍后置。详见[安装指南第21节](new_computer_download/READMEfirst.md#21-可恢复长任务与扩展工具)。
+
 ### 当前实现状态
+
+**可靠性追加修复（2026-10-22）**：完整组合补丁修复强制聆听跳过异步配对处理造成的输入滞后/堵塞，并移除双工 TTS 重复的 audio BOS。一次短间隔两轮合成回放已承接前文展开回答；相隔约 35 秒仍沉默，其他回放也出现首问无输出及画面细节错误。临时 16384 上下文未稳定恢复回答，生产保持 4096。bo s s 随后在更新后的 GUI 确认第一问正常、短追问能接续展开；这接受该组真人短对话，不等于较长间隔或所有普通对话都稳定。新增 `verify_native_reliability.py` 在不开设备时验证连续 64 次强制聆听、字面播报归属/样本数及关闭，仅显式 `--save-generated-audio` 保存固定测试句。已有安装需更新并重新编译完整补丁；bo s s 已确认两条固定测试句内容完整、无明显停顿、音色接近参考。四次 240 秒合成生产会话完成 8 次真实查询/报告/原生播报接收确认，正常关闭且无清理失败、模拟续播空档；仅为 16 分钟固定负载验证，不等于全天或真机综合交互通过。详情见 CHANGELOG，以下真人反馈条目保留修复前证据。
+
+**真人反馈修复（2026-10-22）**：Whisper small 增加含 Python、Lightroom 的有限中英词汇提示，不含执行句示例、不做同音猜改、不降低质量门槛。无工具语义的短展开追问可经两次一致的声学复核恢复；识别放行后 12 秒没有普通回复时明确显示提示。原生两轮回放仍出现转写正确但沉默或只答简短应答，提示实验无稳定改善已撤回；上下文追问尚未修复。原生播放增加 0.8 秒预缓冲和续播空档统计，保留 PCM 与取消边界，首音增加等待；持续供音不足仍可能停顿。原参考及条件缓存校验通过，但生成音频离线复核仍未还原完整任务句，播报完整性、克隆相似度和真人流畅度仍未验收。原生任务播报另修复字面文本送完后提前重置 TTS 尾段及滑窗误清理的问题，已有安装须更新登记补丁并重新编译；包版本和模型文件不变。
 
 **M0 已通过且 30 分钟长测免测；M1 听看说、GUI 预览与手动启停已于 2026-10-07 获用户真机验收。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。M2a 独立 Qwen 只读工具调用与中文文件输出已实测通过；M2b 已接入 Gateway CLI/GUI 的并行转写和明确系统指令路由，并于 2026-10-08 获用户确认真机文字结果正常；原生结果播报已接入，ChromaDB 与云端任务尚未接入。旧 MiniCPM 客户端、:9060 启动器、轮询 judge 与传统运行入口已移除，所有入口统一使用 Gateway。当前验收不等于无限会话或长期稳定性验证。
 
@@ -242,7 +272,7 @@ GUI 独立显示用户原话、任务进度，完成后可点“打开最新报�
 
 ### M2c：受限本地电脑任务（2026-10-17 更新）
 
-生产语音已接入三类单动作：“打开计算器”“打开Safari”“打开Python官网”“在下载目录查找文件名包含报告的文件”。应用白名单为 macOS Safari、日历、备忘录、计算器、文本编辑；支持明确的标准 HTTP(S) 网址及百度、GitHub、Python、B站／哔哩哔哩／bilibili 名称，可带“网页／网站／官网／官方网站”及繁体写法，例如“打开B站”“打开B站网页”。未预设的站名会自动搜索并核对候选，Qwen 只选查到的编号，不自行猜写域名或纠正同音；明确要求打开应用时不会改为打开网站。网址中的路径、参数和标点原样保留；语音识别不保留完整网址时不执行，可使用已支持的网站名称。搜索必须说明目录和文件名关键词，缺目录只追问，须重新说完整指令。文件路径和关键词保留确认转写的字符，不自动繁简改写或猜同音；若与真实文件名不符，请按 GUI 转写纠正。
+生产语音已接入三类单动作：“打开计算器”“打开Safari”“打开Python官网”“在下载目录查找文件名包含报告的文件”。应用白名单为 macOS Safari、日历、备忘录、计算器、文本编辑、Adobe Lightroom Classic（Lightroom 别名指向 Classic）；“打开电脑上的Lightroom软件”等明确本机说法保持本地执行，未知本机应用拒绝而不搜索网站；支持明确的标准 HTTP(S) 网址及百度、GitHub、Python、B站／哔哩哔哩／bilibili 名称，可带“网页／网站／官网／官方网站”及繁体写法，例如“打开B站”“打开B站网页”。未预设的站名会自动搜索并核对候选，Qwen 只选查到的编号，不自行猜写域名或纠正同音；明确要求打开应用时不会改为打开网站。网址中的路径、参数和标点原样保留；语音识别不保留完整网址时不执行，可使用已支持的网站名称。搜索必须说明目录和文件名关键词，缺目录只追问，须重新说完整指令。文件路径和关键词保留确认转写的字符，不自动繁简改写或猜同音；若与真实文件名不符，请按 GUI 转写纠正。
 
 Qwen 每句仅获一个工具及精确参数枚举，改参数、重复或多项调用、否定、转述、引用与未支持复合句均不能执行。GUI 分别显示启动请求提交、检测到应用运行、部分搜索与失败；浏览器接收请求不等于页面加载成功，进程运行不等于窗口在前台。结果文件与原生播报从工具证据生成，不让模型重新编造执行状态。
 

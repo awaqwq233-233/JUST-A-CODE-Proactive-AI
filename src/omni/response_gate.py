@@ -14,6 +14,8 @@ class ResponseGate:
         self.buffer, self.size, self.started = [], Counter(), 0
         self.blocked = False
         self.counters = Counter()
+        self.waited = self.responded = self.notified = False
+        self.allowed_since = None
 
     def _state(self):
         """新句子丢弃旧暂存；超时或超限后该句不再恢复普通回复。"""
@@ -22,8 +24,14 @@ class ResponseGate:
             self.counters["discarded"] += len(self.buffer)
             self.buffer, self.size, self.blocked = [], Counter(), False
             self.sequence = sequence
+            self.waited = self.responded = self.notified = False
+            self.allowed_since = None
         if self.buffer and self.clock() - self.started >= 15 and not self.blocked:
             self._reject("response_wait_timeout")
+        if policy == "pending":
+            self.waited = True
+        elif policy == "allow" and self.waited and self.allowed_since is None:
+            self.allowed_since = self.clock()
         return ("block" if self.blocked else policy), guard
 
     def _reject(self, code):
@@ -41,6 +49,13 @@ class ResponseGate:
         if policy == "block":
             self.counters["discarded"] += len(buffered)
             return []
+        if buffered:
+            self.responded = True
+        elif (self.allowed_since is not None and not self.responded and not self.notified
+              and self.clock() - self.allowed_since >= 12):
+            self.notified = True
+            self.counters["no_reply_notices"] += 1
+            self.callbacks.on_task_event("conversation_waiting", {"code": "conversation_no_response"})
         self.counters["released"] += len(buffered)
         return [(kind, value, guard) for kind, value in buffered]
 
@@ -52,6 +67,7 @@ class ResponseGate:
             self.counters["discarded"] += 1
             return released
         if policy == "allow":
+            self.responded = True
             return released + [(kind, value, guard)]
         size = value.nbytes if kind == "audio" else len(value.encode("utf-8"))
         limit = 8 * 24000 * 4 if kind == "audio" else 8192

@@ -169,6 +169,12 @@ def is_system_request(text):
     return bool(topic and (state_intent or not educational))
 
 
+def route_task(text):
+    """保留原精确单步路由，其他明确任务进入独立 Agent 权限域。"""
+    from src.brain.agent.routing import assistant_instruction
+    return route_instruction(text) or assistant_instruction(text)
+
+
 def transcription_quality(segments):
     """保留原质量门槛并返回具体拒绝原因；不保存未确认文字或原始媒体。"""
     if not isinstance(segments, list) or not segments:
@@ -199,6 +205,15 @@ def visual_question_key(text):
     return key if re.fullmatch(r"(?:请|请你)?(?:描述一下)?(?:你现在|现在你|你|现在)?(?:看到了|看见了|看到|看见)(?:什么)", key) else None
 
 
+def conversation_retry_key(text):
+    """只复核无工具语义的视觉问句和展开追问，不补写主题、动作或目标。"""
+    visual = visual_question_key(text)
+    if visual is not None:
+        return visual
+    key = normalize_transcript(text).translate(str.maketrans("詳細點體繼續說", "详细点体继续说"))
+    return key if re.fullmatch(r"(?:请|请你)?(?:再)?(?:说|讲|描述)?(?:详细|具体)(?:一)?点(?:儿)?|(?:请|请你)?继续(?:说|讲)", key) else None
+
+
 class TaskPipeline:
     """三个后台线程分别负责 VAD、Whisper 和 Qwen；不占用 Qt/WS 回调。"""
 
@@ -222,6 +237,9 @@ class TaskPipeline:
         self.response_guard = threading.Event()
         self._last_recognition_notice = float("-inf")
         self.website_pending = None
+        self.task_inputs = {}
+        self.assistant_submitter = None
+        self.task_manager = None
 
     def start(self):
         """后台完成资源/模型就绪，启动三个有界处理线程。"""
@@ -230,6 +248,17 @@ class TaskPipeline:
         if self.runner_factory is None:
             from src.brain.agent.production import check_installation
             check_installation()
+        if self.assistant_submitter is None and self.runner_factory is None:
+            from src.brain.agent.task_manager import TaskManager
+            from src.brain.agent.durable import DurableTaskRunner
+            from src.brain.agent.assistant import AssistantTaskRunner
+            from src.brain.agent.production import HarnessBrain
+            from src.brain.agent.task_store import TaskStore
+            store = TaskStore()
+            self.task_manager = TaskManager(store, DurableTaskRunner(store, AssistantTaskRunner(HarnessBrain(self.brain_url))),
+                                            self.managed_event)
+            self.task_manager.start()
+            self.assistant_submitter = self.task_manager.submit
         self.segmenter = VadSegmenter(on_start=self._response_started, on_discard=self._response_discarded)
         try:
             self.decoder.start()
@@ -342,14 +371,15 @@ class TaskPipeline:
             return True
 
     def _retry_visual_question(self, utterance, segments, reason):
-        """短视觉候选保留全 PCM 仅加不同前导静音；两次原阈值合格且逐字一致才恢复。"""
+        """短视觉/展开追问仅加前导静音；两次原阈值合格且同类逐字一致才恢复。"""
         if reason not in {"low_confidence", "no_speech"} or len(utterance.samples) > 4 * 16000:
             return None
         if any(not isinstance(s, dict) or not isinstance(s.get("text"), str) for s in segments):
             return None
         candidate = "".join(s.get("text", "") for s in segments)
         key = normalize_transcript(candidate).translate(str.maketrans({"麼": "么", "麽": "么", "見": "见"}))
-        if (len(key) > 20 or not re.search(r"(?:看到|看见).*什么", key)
+        followup = conversation_retry_key(candidate)
+        if (len(key) > 20 or not (re.search(r"(?:看到|看见).*什么", key) or followup)
                 or is_system_request(candidate) or is_online_request(candidate) or is_local_request(candidate)):
             return None
         accepted, keys = [], []
@@ -360,8 +390,8 @@ class TaskPipeline:
                 self.counters["visual_retry_attempts"] += 1
             pcm = np.concatenate((np.zeros(length, dtype="float32"), utterance.samples))
             text = confirmed_text(self.decoder.transcribe(pcm))
-            current_key = visual_question_key(text) if text is not None else None
-            if current_key is None:
+            current_key = conversation_retry_key(text) if text is not None else None
+            if current_key is None or (followup is not None and current_key != followup):
                 with self.lock:
                     self.counters["visual_retry_rejected"] += 1
                 return None
@@ -496,7 +526,7 @@ class TaskPipeline:
                     self.counters["transcriptions"] += 1
                     self._last_recognition_notice = float("-inf")
                     self.callbacks.on_user_transcript(text)
-                    fields = route_instruction(text)
+                    fields = route_task(text)
                     self._response_decided(utterance, "block" if fields or is_system_request(text) or is_online_request(text) or is_local_request(text) else "allow")
                     if fields:
                         self.submit(utterance, text, fields)
@@ -510,14 +540,26 @@ class TaskPipeline:
                 if not self.stopped.is_set():
                     self._fail("whisper_error")
 
-    def submit(self, utterance, text, fields, input_source='voice'):
+    def submit(self, utterance, text, fields, input_source='voice', inputs=None):
         """同一句只派发一次；忙碌时拒绝积压，语音状态不阻塞。"""
         with self.lock:
             if (not self.current(utterance.generation) or utterance.identifier in self.seen
                     or utterance.overlap or time.monotonic() - utterance.ended_at > 15
-                    or route_instruction(text) != tuple(fields)):
+                    or (route_task(text) != tuple(fields) and not (input_source == 'gui' and tuple(fields) == ('assistant', text)))):
                 return False
             self.seen.append(utterance.identifier)
+            if fields[0] == 'assistant' and self.assistant_submitter is not None:
+                selected = copy.deepcopy(inputs if inputs is not None else self.task_inputs)
+                try:
+                    self.assistant_submitter(text, inputs=selected, source={
+                        'kind': input_source, 'utterance_id': utterance.identifier,
+                        'generation': utterance.generation, 'session': self.session})
+                except Exception as error:
+                    self._notify('rejected', {'answer': str(error), 'code': 'task_queue_rejected'})
+                    return False
+                self.task_inputs = {}
+                self.counters['tasks_submitted'] += 1
+                return True
             if self.busy:
                 self.counters["busy_rejected"] += 1
                 self._notify("rejected", {"code": "brain_busy"})
@@ -540,9 +582,44 @@ class TaskPipeline:
                 self._notify("cancelled", {"code": "website_choice_cancelled"})
                 return True
             self.busy = True
-            self.tasks.put_nowait((utterance, text, fields, selection))
+            selected = copy.deepcopy(inputs if inputs is not None else self.task_inputs) if fields[0] == 'assistant' else {}
+            if fields[0] == 'assistant':
+                self.task_inputs = {}
+            self.tasks.put_nowait((utterance, text, fields, selection, selected))
             self.counters["tasks_submitted"] += 1
             return True
+
+    def managed_event(self, state, detail):
+        """任务状态跨会话显示，播报只绑定交付时仍有效的新会话代次。"""
+        self._notify(state, detail)
+        self.deliver_managed(state, detail)
+
+    def deliver_managed(self, state, detail):
+        """已发布结果可在当前会话短播报，取消和旧会话音频不恢复。"""
+        from pathlib import Path
+        from src.brain.task_runner import TaskResult
+        if state not in {'completed', 'partial', 'deferred', 'needs_input'}:
+            return
+        with self.lock:
+            if self.current(self.generation) and self.on_result_speech:
+                result = TaskResult(detail['task_id'], Path(detail['path']) if detail.get('path') else None,
+                                    detail.get('answer', ''), [], 0, state)
+                self.on_result_speech(detail['task_id'], self.generation, result, ('assistant', detail.get('request', '')))
+
+    def set_task_inputs(self, inputs):
+        """仅保存显式选择的资料范围，下一项开放任务消费后清除，不读文件正文。"""
+        with self.lock:
+            self.task_inputs = copy.deepcopy(inputs)
+
+    def submit_text(self, text, inputs=None):
+        """GUI显式发布任务，仍复用单任务、代次、取消和原生播报路径。"""
+        with self.lock:
+            if not self.current(self.generation):
+                return False
+            utterance = Utterance('ui-' + uuid4().hex, self.generation, time.monotonic(), np.zeros(0), False)
+            self._response_started()
+            self.response_policy = 'block'
+            return self.submit(utterance, text, ('assistant', text), input_source='gui', inputs=inputs)
 
     def _clear_website_choice(self):
         """持锁撤销当前候选和追问音频，旧按钮仅显示不再授予执行权限。"""
@@ -584,6 +661,7 @@ class TaskPipeline:
                 queued = self.tasks.get(timeout=.1)
                 utterance, text, fields = queued[:3]
                 selection = queued[3] if len(queued) > 3 else None
+                inputs = queued[4] if len(queued) > 4 else {}
             except queue.Empty:
                 with self.lock:
                     if self.website_pending and time.monotonic() >= self.website_pending['expires_at']:
@@ -609,14 +687,17 @@ class TaskPipeline:
                     with self.lock:
                         if self.current(utterance.generation):
                             self.counters["tool_calls"] += 1
-                            self._notify("tool_completed", {"id": utterance.identifier, **entry})
+                            self._notify("tool_failed" if entry.get('status') == 'failed' else "tool_completed",
+                                         {"id": utterance.identifier, **entry})
                 def action_dispatched(entry):
                     """显示启动请求已经发出，后续取消不会撤回该系统动作。"""
                     with self.lock:
                         if self.current(utterance.generation):
                             self._notify("action_dispatched", {"id": utterance.identifier, **entry})
                 if not clarification:
-                    if fields[0] == "local":
+                    if fields[0] == "assistant":
+                        scope = {"assistant_task": True, "inputs": inputs}
+                    elif fields[0] == "local":
                         scope = {"local_action": fields, "on_action_dispatched": action_dispatched}
                     elif fields[0] in {"website", "website_choice", "website_forget"}:
                         scope = {"website_request": fields, "website_selection": selection,
@@ -649,11 +730,12 @@ class TaskPipeline:
                             except Exception:
                                 self.counters["speech_callback_error"] += 1
                                 self._notify("speech_failed", {"id": utterance.identifier, "code": "speech_failed"})
-            except Exception:
+            except Exception as error:
                 if self.current(utterance.generation):
                     with self.lock:
                         self.counters["tasks_failed"] += 1
-                        self._notify("error", {"code": "website_failed" if fields[0].startswith('website') else "local_failed" if fields[0] == "local" else "web_failed" if fields[0] == "web" else "brain_failed"})
+                        self._notify("error", {"code": "website_failed" if fields[0].startswith('website') else "local_failed" if fields[0] == "local" else "web_failed" if fields[0] == "web" else "brain_failed",
+                                               "answer": str(error)[:300] if fields[0] == 'assistant' else ''})
                     runner = None
             finally:
                 with self.lock:
@@ -670,6 +752,8 @@ class TaskPipeline:
         if any(t.is_alive() for t in self.threads):
             raise RuntimeError("转写或大脑线程未完整退出")
         self.decoder.close()
+        if self.task_manager is not None:
+            self.task_manager.close()
 
     def request_stop(self):
         """跨线程立即取消代次和启动等待，清理工作由后台 stop 完成。"""

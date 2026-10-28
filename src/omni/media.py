@@ -31,7 +31,8 @@ class LiveDevices:
     """隔离音视频采集与播放，所有缓冲有界且不写原始媒体文件。"""
 
     def __init__(self, input_device: int | None, output_device: int | None, camera: int,
-                 *, fps: int = 5, mic_gain: float = 1.0, video_enabled: bool = True):
+                 *, fps: int = 5, mic_gain: float = 1.0, video_enabled: bool = True,
+                 playback_prebuffer_seconds: float = .8, clock=time.monotonic):
         """创建缓冲与统计项，不在构造时打开设备。"""
         self.input_device, self.output_device, self.camera = input_device, output_device, camera
         if not 5 <= fps <= 10 or not np.isfinite(mic_gain) or mic_gain <= 0:
@@ -56,6 +57,14 @@ class LiveDevices:
         self.audio_tap = None
         self.playback_active_until = 0.0
         self.pending_output_cancel = None
+        if not np.isfinite(playback_prebuffer_seconds) or not 0 <= playback_prebuffer_seconds <= 2:
+            raise ValueError("播放预缓冲须为 0–2 秒")
+        self.playback_prebuffer_seconds, self._clock = playback_prebuffer_seconds, clock
+        self._playback_running = self._playback_gap_pending = False
+        self._playback_ready_at = self._playback_last_sample_at = 0.0
+        self._playback_last_guard = None
+        self.playback_prebuffer_waits = self.playback_resume_gap_events = 0
+        self.playback_resume_gap_max_ms = 0.0
 
     def microphone_callback(self, data, frames, timing, status) -> None:
         """实时回调只复制入队；溢出显式失败，绝不悄悄丢弃用户语音。"""
@@ -68,7 +77,7 @@ class LiveDevices:
             self.error = "麦克风原始音频队列溢出"
 
     def speaker_callback(self, output, frames, timing, status) -> None:
-        """顺序播放原生 24k 音频；没有待播数据时填零，不阻塞设备回调。"""
+        """原生 PCM 先有界预缓冲再顺序播放；不等待、不改速、不裁掉有效样本。"""
         if status:
             self.output_status_events += 1
         output.fill(0)
@@ -77,21 +86,38 @@ class LiveDevices:
             if self.pending_output_cancel is not None and self.pending_output_cancel.is_set():
                 self.pending_output = np.zeros(0, dtype="float32")
                 self.pending_output_cancel = None
+                self._playback_running = False
             if not len(self.pending_output):
                 try:
-                    self.pending_output = self.playback.get_nowait()
-                    self.pending_output_cancel = None
-                    if isinstance(self.pending_output, tuple):
-                        self.pending_output, self.pending_output_cancel = self.pending_output
-                        if self.pending_output_cancel.is_set():
-                            continue
+                    self.pending_output, self.pending_output_cancel, arrived = self.playback.get_nowait()
                 except queue.Empty:
+                    self._playback_running = False
                     return
+                if self.pending_output_cancel is not None and self.pending_output_cancel.is_set():
+                    self.pending_output = np.zeros(0, dtype="float32")
+                    self._playback_running = False
+                    continue
+                if not self._playback_running:
+                    self._playback_running = True
+                    self._playback_ready_at = arrived + self.playback_prebuffer_seconds
+                    self.playback_prebuffer_waits += self._clock() < self._playback_ready_at
+                    self._playback_gap_pending = (self.pending_output_cancel is not None
+                        and self.pending_output_cancel is self._playback_last_guard)
+            now = self._clock()
+            if now < self._playback_ready_at:
+                return
+            if self._playback_gap_pending:
+                self._playback_gap_pending = False
+                self.playback_resume_gap_events += 1
+                self.playback_resume_gap_max_ms = max(self.playback_resume_gap_max_ms,
+                    max(0, now - self._playback_last_sample_at) * 1000)
             count = min(frames - offset, len(self.pending_output))
             output[offset:offset + count, 0] = self.pending_output[:count]
             self.pending_output = self.pending_output[count:]
             offset += count
             self.played_samples += count
+            self._playback_last_sample_at = now + offset / 24000
+            self._playback_last_guard = self.pending_output_cancel
             self.playback_active_until = time.monotonic() + .3
 
     def audio_worker(self) -> None:
@@ -173,7 +199,8 @@ class LiveDevices:
     def enqueue_output(self, samples: np.ndarray) -> None:
         """把原生输出交给播放回调，播放积压超界时显式失败。"""
         try:
-            self.playback.put_nowait(samples)
+            pcm, cancellation = samples if isinstance(samples, tuple) else (samples, None)
+            self.playback.put_nowait((pcm, cancellation, self._clock()))
         except queue.Full as error:
             raise RuntimeError("原生音频播放队列溢出") from error
         self.playback_queue_max = max(self.playback_queue_max, self.playback.qsize())

@@ -12,6 +12,8 @@ APP_ALIASES = {
     "备忘录": "Notes", "notes": "Notes", "计算器": "Calculator",
     "calculator": "Calculator", "文本编辑": "TextEdit", "textedit": "TextEdit",
     "日曆": "Calendar", "備忘錄": "Notes", "計算器": "Calculator", "文本編輯": "TextEdit",
+    "lightroom": "Adobe Lightroom Classic", "lightroomclassic": "Adobe Lightroom Classic",
+    "lightroom classic": "Adobe Lightroom Classic", "adobe lightroom classic": "Adobe Lightroom Classic",
 }
 SITE_ALIASES = {
     "百度": "https://www.baidu.com/", "github": "https://github.com/",
@@ -86,10 +88,24 @@ def website_name(target):
     if (not 1 <= len(target) <= 80 or not any(c.isalnum() for c in target)
             or not re.fullmatch(r"[\w\u3400-\u9fff .+&()\-]+", target)
             or target in {"网站", "網頁", "网页", "官网", "網址", "网址", "網站", "官網", "终端", "終端"}
-            or re.search(r"(?:应用|應用|程序)$|文件|目录|目錄|登录|登錄|登[陆陸]|然后|然後|[并並和及再](?:打开|打開|删除|刪除)|、|第[一二三123]个", target)
-            or re.fullmatch(r"(?:" + '|'.join(map(re.escape, SITE_ALIASES)) + r")(?:和|与|與|及).+", target, re.I)):
+            or re.search(r"(?:应用|應用|程序)$|(?:电脑|電腦|计算机|計算機)(?:上|里|裡)|(?:本机|本機|本地)(?:上|的)|^(?:软件|軟件)|文件|目录|目錄|登录|登錄|登[陆陸]|然后|然後|[并並和及再](?:打开|打開|删除|刪除)|、|第[一二三123]个", target)
+            or re.fullmatch(r"(?:" + '|'.join(map(re.escape, SITE_ALIASES.keys() | APP_ALIASES.keys())) + r")(?:和|与|與|及).+", target, re.I)):
         raise ValueError("请提供单个网站名称")
     return target
+
+
+def application_target(target):
+    """识别明确的本机应用修饰，未知应用不降级为网站；裸站名保留原解析。"""
+    name, local_count = re.subn(
+        r"^(?:(?:我的|这台|這台)?(?:电脑|電腦|计算机|計算機)(?:上|里|裡)(?:的)?|(?:本机|本機|本地)(?:上)?(?:的)?)\s*",
+        "", target)
+    if re.search(r"(?:官[网網]|官方[网網]站|[网網][页頁]|[网網]站)$", name):
+        return None, bool(local_count)
+    name, prefix_count = re.subn(r"^(?:[应應]用(?:程序)?|程序|软件|軟件)\s*", "", name)
+    stripped = re.sub(r"\s*(?:的)?(?:[应應]用(?:程序)?|程序|软件|軟件)$", "", name)
+    app = APP_ALIASES.get(re.sub(r"\s+", " ", stripped.strip()).lower())
+    explicit = bool(local_count or prefix_count or re.search(r"(?:[应應]用(?:程序)?|程序|的软件|的軟件)$", name))
+    return app, explicit
 
 
 def local_instruction(text):
@@ -119,11 +135,9 @@ def local_instruction(text):
     match = re.fullmatch(r"(?:打[开開]|[启啟][动動])\s*(.+)", text)
     if match:
         target = match[1].strip()
-        application = re.fullmatch(r'(?:[应應]用|程序)\s*(.+)', target)
-        if application and not re.search(r'(?:[网網]站|[网網][页頁]|官[网網])$', target):
-            app = APP_ALIASES.get(application[1].lower())
-            return pack_action('open_app', {'app_name': app}) if app else None
-        app = APP_ALIASES.get(target.lower())
+        app, explicit_application = application_target(target)
+        if explicit_application:
+            return pack_action("open_app", {"app_name": app}) if app else None
         if app:
             return pack_action("open_app", {"app_name": app})
         try:

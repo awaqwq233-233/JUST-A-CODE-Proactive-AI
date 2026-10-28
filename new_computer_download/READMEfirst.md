@@ -403,7 +403,7 @@ GUI 启动后启用“本地转写与电脑任务”，戴耳机，等助手播�
 
 使用原 Python 3.11、Whisper 与已加载精确 Qwen；没有新增依赖、模型下载或后端重编译步骤。安装器增加本地任务导入/解析自检。关闭并重新打开 GUI，开启“本地转写与电脑任务”；戴耳机，在助手播放结束后说完整指令。
 
-- “打开计算器”“打开Safari”：首版应用白名单仅 macOS Safari、日历、备忘录、计算器、文本编辑。GUI 区分启动请求提交与已检测到进程运行，后者不代表窗口在前台。
+- “打开计算器”“打开Safari”：应用白名单为 macOS Safari、日历、备忘录、计算器、文本编辑、Adobe Lightroom Classic（Lightroom 别名指向 Classic）。支持“打开电脑上的Lightroom软件”；明确未知本机应用不会降级搜索网站。GUI 区分启动请求提交与已检测到进程运行，后者不代表窗口在前台。
 - “打开B站”“打开B站网页”“打开Python官网”：支持百度/GitHub/Python/B站（哔哩哔哩/bilibili）固定名称及网页/网站/官网/官方网站修饰，兼容繁体，或保留完整路径、参数和标点的 HTTP(S) 网址。未预设站名通过第 16 节的自动解析流程，不由模型猜域名；明确应用请求不改成网站。只确认交给默认浏览器，不核验页面是否加载；使用浏览器现有网络/登录设置，不能套用 `search_web` 抓取器的隔离保证。
 - “在下载目录查找文件名包含报告的文件”：可指定桌面、下载、文档或主目录内具体非隐藏子目录完整路径。只查名称、不读正文、不修改文件，路径和关键词按确认转写原样匹配；繁简字或同音与实际文件名不一致时请按 GUI 原话纠正。缺目录只追问，须重新说完整指令；部分扫描有明确标注。
 
@@ -501,3 +501,106 @@ Qwen 仅能按本句调用一次对应工具，不能扩大路径或改写目标
 ```
 
 生产报告保存到 `output/m2/qwen/`，统一任务来源、授权和调用证据在 `.cache/agent/runs/<task_id>/`。探针的应用/网址指令会实际执行；网站候选确认只能回到原语音/GUI 会话。只读查询有界多回合，单动作提议登记后由官方 pre-step 钩子暂停，运行时 blocked 为预期提议状态；工具实际执行结果才决定 completed/submitted 等业务状态。停止/重连取消旧任务与播报，不支持跨轮换续跑。实际输入、会话、报告、模型与规划 DOCX 均不提交 Git。三层架构、长期记忆与末期提醒顺序保持。
+
+
+### 18 真人反馈修复复验（2026-10-22）
+
+**本轮可靠性追加**：当前完整补丁还修复了强制聆听跳过异步配对处理的输入滞后/队列堵塞，并移除双工 TTS 重复 audio BOS。已有安装仍使用本节的更新构建命令，无新增依赖、模型下载或端口。短间隔合成追问已能承接并展开；35 秒间隔仍沉默，视觉标签细节有误。bo s s 已确认两条固定测试播报内容完整、无明显停顿、音色接近参考；这是对应样本的试听验收，下文先前反馈保留为历史证据。安装后的离线自检已增加原生回归探针导入，但不会自动运行模型或打开设备。
+
+本轮客户端修复无新依赖或模型下载；原生任务播报另修复字面文本送完后提前重置 TTS 尾段及视频滑窗误清理任务 TTS 缓存的问题。已有安装先停止语音和后端，按下方命令更新完整登记补丁并编译；新机器继续应用当前组合补丁构建。原有 Agent 安装与 10 月 20 日 UTF-8 修复保持。关闭并重开 GUI，保持“本地转写与电脑任务”开启，戴耳机，每句等播放结束再说。
+
+依次复验“你看到了什么”→“再详细一点”、“查一下电池电量”、“上网查询 Python 官方文档”、“打开电脑上的Lightroom软件”。界面转写、工具参数、报告和播报须一致；Lightroom 绑定本机 Adobe Lightroom Classic，不打开网站。若仍出现拆/拍摄等错词，不会用文本替换猜测授权；请根据可见转写重新说完整指令。有限词汇提示不能保证所有英文专名或口音识别准确。
+
+原生播放默认增加 0.8 秒预缓冲，并保留取消/停止；短句也会增加首音等待。统计中 playback_prebuffer_waits 记录缓冲开始次数，playback_resume_gap_events / playback_resume_gap_max_ms 记录同取消标志下续播空档，需结合听感判断，不能等同所有句中卡顿。超过缓冲余量的供音不足仍可停顿。参考音与缓存校验通过仅确认技术条件；原生补丁已修复两处误清理及重复 audio BOS，固定合成播报可收到完整技术回执，但离线识别仍有错词，播报完整性和克隆相似度须人工试听；不替换模板或新增 TTS。
+
+普通识别已经放行却 12 秒没有收到模型输出时显示“已识别，暂未收到回复”；转写质量拒绝和与助手播放重叠继续显示各自原因。强制聆听配对修复后的短间隔两轮合成回放已接续并展开，约 35 秒间隔仍未收到追问回复，重复完整问题的对照也出现首问无输出；临时 16384 上下文未稳定恢复而未采用，生产保持 4096。提示实验无稳定改善已撤回，不能将一次短追问成功写成通用上下文验收。未录制当次真实音频时不能仅凭无反应认定上下文丢失。
+
+当前开发机使用以下完整命令更新；默认使用 GUI 保存的引擎目录，不覆盖未登记源码改动。
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/new_computer_download/update_native_backend.py --build
+```
+
+2026-10-23 bo s s 已确认两条固定播报完整、无明显停顿、音色接近参考，并在更新后的 GUI 确认第一问正常、短追问能接续展开。本轮按该组真人反馈与四次会话同跑验证交付；下面是新机器复验和剩余边界的检查顺序，不要求已完成该项的用户重复验收：
+
+1. 先复验 Lightroom、混合语言指令、停止/取消，以及“你看到了什么”后的短追问；转写通过和真正接续回答分别记结果。
+2. 原生播报先核对文字中的数值、状态是否完整读出，再评估停顿和音色相似度。当前漏读疑点和上下文追问未解决前，不据“音频已接收”扩大验收结论。
+3. 同跑固定设备、输入句、参考音、模型和参数，分别记录首次任务与后续重复任务；用同一生产入口做空闲、持续听说、工具查询三种阶段，记录任务耗时、处理 P95、上行迟到、缓冲/空档、内存与 swap。已完成四次 240 秒合成生产会话、8 次真实查询/报告/原生接收确认，处理 P95 556.34ms、最大上行迟到 22.55ms、四次正常关闭、清理失败零。播放回调模拟无续播空档，但未打开物理设备；本项不等于真实设备或全天稳定通过，65 秒旧样本也不作长时证据。
+
+### 19 无设备原生可靠性探针
+
+先按前文启动固定后端并保持生产语音停止。探针使用内存生成的 640×480 图像和静音块，默认重建两次会话；每次连续 64 个强制聆听步骤超过后端队列总容量，可检测“只排队、不处理”的退化，再核对两条固定测试句的文字、非静音 PCM、样本数和关闭确认。不调用 Qwen 或实际工具，不读取摄像头/麦克风，不播放音频；技术通过不代表发音、完整听感或音色通过。
+
+当前开发机可直接执行：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_native_reliability.py
+```
+
+需要人工试听固定测试句时显式保存生成音频，文件与报告默认留在忽略的 `output/reliability/`，不得将实际测试媒体混入模板目录。此选项不保存任何真实采集媒体。
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_native_reliability.py --save-generated-audio
+```
+
+
+### 20 开放任务与微信直读
+
+GUI「任务与资料」支持任务文字、文件选择、目录首层及粘贴正文。点击发布即可后台执行，不要求启动语音；留空任务则把资料范围交给下一项语音开放任务，使用后清除。语音任务仍受转写质量、重叠、15秒时效、忙碌和会话代次保护；旧单步重连取消；开放长任务按第21节独立恢复。取消任务按钮撤销后续读取和交付，已发生的界面导航不能撤回。
+
+资料格式：TXT、Markdown、CSV、TSV、JSON、日志、Python、DOCX、XLSX。单文件最多8 MiB，目录只取首层支持文件，最多40份；不追随符号链接，UTF-8/BOM/GB18030严格解码。分页读取的节选不会标成全量总结。基础探针XLSX生成文字单元格，长任务XLSX保留数字/布尔类型，不执行输入公式、宏或外链；公式来源只读缓存值并标注未经重算。文字PDF已支持，旧版DOC/XLS及扫描图片OCR尚不支持。
+
+基础探针单次180秒/12次调用；生产长任务分阶段并保留累计预算，见第21节。结果目录为 `output/m2/qwen/<task_id>/`，包含 `report.txt`、`evidence.json` 和实际新产物；用「打开最新报告」或「打开结果文件夹」查看。长回复只提示看文件；短答复可经既有MiniCPM原生链路播报。模型归纳仍可能出错，证据可检查不等于结论自动正确。
+
+微信直读只支持macOS。安装阶段使用已有Apple Command Line Tools构建并本地签名 `.cache/agent/native/JACWeChatReader.app`，不新增Python依赖或下载模型。已有机器执行以下完整命令更新Agent组件；不需重编译MiniCPM后端。
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/new_computer_download/setup_new_computer.py --only agent
+```
+
+首次使用需在「系统设置 → 隐私与安全性 → 辅助功能」（部分新版本名为「设备控制和数据访问」）添加并开启 `JACWeChatReader.app`。选择器可用Command+Shift+G输入完整路径 `/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/agent/native/JACWeChatReader.app`。系统授权须由用户完成；检查不会自动授予权限，也不会继承其他工具的授权。运行时经 LaunchServices 启动同一组件。若升级早期构建后仍显示无权限，可移除旧条目并重新添加同一路径；可能需要触控 ID。当前构建使用稳定本地签名标识，源码哈希和构建自检仍独立核对。
+
+仅检查组件、权限及微信是否运行，不读取消息：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_assistant.py --check-wechat
+```
+
+在任务中明确写出“微信”和完整会话名，例如“总结微信「完整群名」的已加载消息”。名称带“的”时仍须完整保留，多会话分别加引号；不明确的范围会请求补充。当前会话或当前侧栏中精确同名条目可直接读取，其他会话先在微信打开。程序前后核对标题，只读已加载消息列表；图片、表情、文件附件是占位，未显示的发送者不猜测。比较微信附件正文时先保存附件并通过资料选择器授权。没有发送消息、输入草稿、解密数据库、全量同步能力；有限分页尚待实际历史翻页验收。
+
+纯本地文字/产物验证，无设备、无微信读取：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_assistant.py --task "总结资料并生成任务表格" --text "任务：检查设计；负责人：小王；截止：10月28日。"
+```
+
+需要云端的任务只生成 `handoff.json`，状态 `deferred`，明确未提交、手机未发送；无自动重试或后台补交。`src/brain/agent/cloud.py` 的 `OpenClawAdapter` 是J.A.C.适配协议，提供submit/status/cancel及独立交付回执。未来绑定实际OpenClaw部署版本、认证、幂等/取消、明确获准附件与手机接收方后再联调；不能把该接口当成已经接好的服务器，也不能假定官方提供同名HTTP端点。当前实现不自动上传私有资料，不把全历史或模型口头完成当成执行证据。
+
+
+### 21 可恢复长任务与扩展工具
+
+生产GUI启动后恢复 `data/tasks/` 的任务。任务中心可暂停、继续、取消、移到队首、补充文件/说明、确认刷新已变文件、延长预算和删除停止的恢复记录。删除记录不删除已交付文件；实际资料、聊天、运行时历史与产物均不可提交Git。停止语音继续任务，关闭窗口保存并停止，未安装系统后台服务。
+
+一项运行，最多五项等待。每阶段180秒/12次调用，全任务默认30分钟有效执行时间/120次调用，预算到达暂停；“增加30分钟/120次”明确延长。异常退出未核销阶段最多按180秒保守计费；不将等待用户计入执行时间。恢复复用已保存微信快照，输入文件变化须在补充资料中确认刷新，不自动覆盖原文件或重放结果不明的外部动作。
+
+本轮新增固定 `pypdf==6.21.2` 到Gateway依赖及安装自检；原Agent七包、模型和MiniCPM补丁未变。PDF解析为有界子进程，最多8 MiB、150页、100万字、20秒；macOS以父进程内存采样和CPU限额保护，不能声称瞬时内存硬隔离。扫描页明确标注未OCR。Office解压上限16 MiB，表格最多10000行/40列，数值转换失败不会当零；不执行公式或宏。安装器国内镜像失败按已有机制回退官方源。
+
+已有机器更新Gateway依赖和安装自检（也准备Agent组件）；无需重编译MiniCPM：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/new_computer_download/setup_new_computer.py --only gateway --skip-transcription-model
+```
+
+无设备的持久化任务验证：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_long_tasks.py --task "根据资料制作Excel任务表" --text "任务：检查设计；负责人：小王。"
+```
+
+只列出持久化任务，不启动模型：
+
+```bash
+/Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/.cache/m0/venv/bin/python /Users/awaqwq233/Desktop/work/coding/JUST-A-CODE-Proactive-AI/verify_long_tasks.py --list
+```
+
+开发验证可指定 `--store` 和 `--output` 隔离目录；`--resume` 使用实际列表中的原任务号，`--refresh`确认重新读取变化输入，`--extend`延长一次预算。通常直接使用GUI任务中心，无须复制任务号。程序检查不证明主观内容完全正确；当前自动附件下载、可靠逐消息时间范围、完整微信历史及真实OpenClaw/手机交付均未开放。

@@ -53,6 +53,28 @@ def test_desktop_failed_start_stops_client_and_resets_state(monkeypatch):
     assert states[-1] is False
 
 
+def test_stop_voice_keeps_tasks_and_close_saves_after_devices():
+    """停止语音不取消长任务；关闭程序先释放媒体，再等待任务保存。"""
+    stopped = []
+    class Client:
+        """记录媒体关闭动作。"""
+        def stop(self):
+            """模拟关闭设备。"""
+            stopped.append('devices')
+    class Tasks:
+        """模拟保存任务失败，设备必须已先释放。"""
+        def close(self):
+            """等待任务时媒体已经关闭，失败不冒充完整退出。"""
+            assert stopped == ['devices']
+            raise RuntimeError('任务尚在保存')
+    runtime = desktop.DesktopRuntime()
+    runtime.omni_client, runtime.tasks = Client(), Tasks()
+    runtime.stop()
+    assert runtime.omni_client is None
+    with pytest.raises(RuntimeError, match='任务尚在保存'):
+        runtime.close()
+
+
 def test_config_gateway_defaults_and_environment(monkeypatch):
     """新路径默认连接本机且不同意设备，设备编号和轮换时间可配置。"""
     config = Config()
@@ -122,7 +144,7 @@ def test_recognition_and_tool_progress_do_not_reset_running_brain():
     runtime.task_callback = lambda state, detail: events.append(state)
     callbacks = desktop.DesktopCallbacks(runtime)
     callbacks.on_task_event("running", {})
-    for state in ("transcription_rejected", "rejected", "tool_completed"):
+    for state in ("transcription_rejected", "conversation_waiting", "rejected", "tool_completed"):
         callbacks.on_task_event(state, {})
         assert runtime.context.is_thinking
     callbacks.on_task_event("completed", {"path": "report.md"})

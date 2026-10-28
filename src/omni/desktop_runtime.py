@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+import threading
 
 from .gateway_client import GatewayClient, GatewayCallbacks, ROOT
 from src.utils.context import SharedContext
@@ -62,7 +63,7 @@ class DesktopCallbacks(GatewayCallbacks):
         """同步大脑进度和真实报告；错误不宣称任务已完成。"""
         if state == "running":
             self.runtime.context.is_thinking = True
-        elif state in ("completed", "submitted", "partial", "failed", "no_answer", "needs_input", "error", "cancelled"):
+        elif state in ("completed", "submitted", "partial", "failed", "no_answer", "needs_input", "deferred", "error", "cancelled"):
             self.runtime.context.is_thinking = False
         if self.runtime.task_callback:
             self.runtime.task_callback(state, detail)
@@ -83,6 +84,13 @@ class GatewayRuntime:
         self.transcript_callback = self.task_callback = None
         self.running = self.omni_mode = False
         self.omni_client = None
+        self.task_inputs = {}
+        self.application_closing = threading.Event()
+        self.tasks = None
+        self.brain_url = "http://127.0.0.1:12345"
+        self._assistant_thread = None
+        self._assistant_cancel = threading.Event()
+        self._assistant_lock = threading.RLock()
 
     def notify(self, running):
         """向 GUI 发布启动/停止结果。"""
@@ -102,6 +110,7 @@ class GatewayRuntime:
             print("[Gateway] 请先授权使用设备并戴好耳机。")
             self.notify(False)
             return
+        self.brain_url = config.gateway_brain_url
         ref = Path(config.omni_ref_audio)
         if not ref.is_absolute():
             ref = ROOT / ref
@@ -115,11 +124,16 @@ class GatewayRuntime:
                 context_provider=lambda: self.context.get_recent_transcriptions(window=300),
                 transcription_enabled=config.gateway_transcription_enabled,
                 whisper_model_dir=config.whisper_model_dir, brain_url=config.gateway_brain_url,
+                task_submitter=self.accept_voice_task,
             )
             self.running = self.omni_mode = True
             if not self.omni_client.start(timeout=180):
                 self.stop()
                 return
+            pipeline = getattr(self.omni_client, '_pipeline', None)
+            if pipeline:
+                pipeline.set_task_inputs(self.task_inputs)
+                self.task_inputs = {}
             self.notify(True)
         except Exception:
             self.stop()
@@ -137,7 +151,6 @@ class GatewayRuntime:
         self.state = "stopped"
         self.context.is_listening = self.context.is_speaking = self.context.is_thinking = False
         self.notify(False)
-
     def finish_reply(self):
         """结束一段模型文本，GUI 回调负责排队到主线程。"""
         if self.reply_finished_callback:
@@ -152,6 +165,72 @@ class GatewayRuntime:
         """缓存清理由后台任务完成，不在 Qt 主线程读取缓存。"""
         pipeline = getattr(self.omni_client, '_pipeline', None)
         return bool(pipeline and pipeline.forget_websites())
+
+    def set_task_inputs(self, inputs):
+        """GUI选择的资料只用于下一项任务，不写入长期配置或云端。"""
+        pipeline = getattr(self.omni_client, '_pipeline', None)
+        if pipeline:
+            pipeline.set_task_inputs(inputs)
+        else:
+            self.task_inputs = inputs
+
+    def start_tasks(self):
+        """建立与语音独立的任务管理器，允许不打开设备时恢复和执行任务。"""
+        with self._assistant_lock:
+            if self.application_closing.is_set():
+                raise RuntimeError("程序正在关闭")
+            if self.tasks is None:
+                from src.brain.agent.task_manager import TaskManager
+                from src.brain.agent.task_store import TaskStore
+                from src.brain.agent.durable import DurableTaskRunner
+                from src.brain.agent.assistant import AssistantTaskRunner
+                from src.brain.agent.production import HarnessBrain
+                store = TaskStore()
+                self.tasks = TaskManager(store, DurableTaskRunner(store,
+                    AssistantTaskRunner(HarnessBrain(self.brain_url))), self._managed_event)
+            self.tasks.start()
+        return self.tasks
+
+    def _managed_event(self, state, detail):
+        """完成通知始终到GUI；原生播报只交给当前仍有效的语音管线。"""
+        DesktopCallbacks(self).on_task_event(state, detail)
+        pipeline = getattr(self.omni_client, '_pipeline', None)
+        if pipeline:
+            pipeline.deliver_managed(state, detail)
+
+    def accept_voice_task(self, text, inputs=None, source=None):
+        """仅接受语音管线已核验的完整任务，不重新解析或扩大原句授权。"""
+        return self.start_tasks().submit(text, inputs, source)
+
+    def submit_task(self, text, inputs=None):
+        """GUI文字任务进入持久化队列，停止语音不影响执行。"""
+        selected = inputs if inputs is not None else self.task_inputs
+        try:
+            self.start_tasks().submit(text, selected, {'kind': 'gui'})
+            self.task_inputs = {}
+            return True
+        except Exception as error:
+            DesktopCallbacks(self).on_task_event('rejected', {'answer': str(error)})
+            return False
+
+    def cancel_task(self):
+        """显式取消当前长任务，并撤销当前语音单步动作及待播报音频。"""
+        if self.tasks and self.tasks.active:
+            self.tasks.control(self.tasks.active, 'cancel')
+        pipeline = getattr(self.omni_client, '_pipeline', None)
+        if pipeline:
+            if pipeline.on_invalidate:
+                pipeline.on_invalidate()
+            if pipeline.busy:
+                pipeline.invalidate()
+                pipeline.begin_session()
+
+    def close(self):
+        """关闭应用先释放媒体，再保存并停止任务调度；重开时自动恢复安全任务。"""
+        self.application_closing.set()
+        self.stop()
+        if self.tasks:
+            self.tasks.close()
 
 
 class DesktopRuntime(GatewayRuntime):

@@ -51,6 +51,7 @@ class FakeRuntime:
         self.running = self.omni_mode = False
         self.omni_client = None
         self.starts = 0
+        self.tasks = None
 
     def start(self, config=None):
         """模拟新会话创建并通知 GUI。"""
@@ -64,6 +65,14 @@ class FakeRuntime:
         self.running = self.omni_mode = False
         self.omni_client = None
         self.callback(False)
+
+    def start_tasks(self):
+        """旧GUI生命周期测试不启动真实模型或持久化任务。"""
+        return None
+
+    def close(self):
+        """模拟完整退出；任务管理器由新专项测试单独验证。"""
+        self.stop()
 
 
 @pytest.fixture
