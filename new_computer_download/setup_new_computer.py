@@ -623,7 +623,7 @@ def parse_args():
         description="J.A.C. 新电脑一键依赖补全工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "external", "embed", "verify", "m0", "gateway", "agent"],
+    p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "external", "embed", "verify", "m0", "gateway", "agent", "actions"],
                    default="gateway", help="只运行指定阶段（默认 gateway）")
     p.add_argument("--skip-embed", action="store_true", help="跳过记忆 embedding 模型预下载（首次运行 main.py 时自动联网下）")
     p.add_argument("--torch", choices=["auto", "cpu", "cuda"], default="auto",
@@ -642,6 +642,16 @@ def parse_args():
 def main():
     """主"""
     args = parse_args()
+    if args.only == "actions":
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("jac_prepare_actions", os.path.join(SCRIPT_DIR, "prepare_actions.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        arguments = ["--mirror", OFFICIAL_PIP_INDEX if args.no_mirror else (args.mirror or DEFAULT_PIP_INDEX)]
+        if args.dry_run:
+            arguments.append("--dry-run")
+        module.main(arguments)
+        return
     if args.only == "agent":
         install_agent(mirror=OFFICIAL_PIP_INDEX if args.no_mirror else (args.mirror or DEFAULT_PIP_INDEX),
                       dry_run=args.dry_run)

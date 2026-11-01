@@ -76,5 +76,9 @@ def validate_artifacts(tools):
                 checks.append({'file': name, 'characters': len(text), 'readable': True})
         except (ValueError, KeyError, OSError, ET.ParseError, zipfile.BadZipFile) as error:
             errors.append(name + '不可读取：' + str(error)[:160])
+    from .action_tools import verify_actions
+    action_errors, action_checks = verify_actions(tools)
+    errors.extend(action_errors)
+    checks.extend(action_checks)
     return {'passed': not errors, 'errors': errors, 'checks': checks,
             'scope': '程序核验结构、字段、计数和来源；主观内容仍须对照任务审阅'}

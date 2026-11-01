@@ -17,6 +17,8 @@ from .profile import MODEL
 from .routing import cloud_reason
 from .runner import CACHE, serial_task
 from .task_store import digest
+from .action_tools import NAMES, VOLATILE, RECOVERY, ApprovalRequired, ActionUncertain, action_schemas, execute_action
+from .action_policy import VERSION, LEGACY, scope
 from src.tools.web_search import SearchError
 
 
@@ -57,6 +59,18 @@ def changed_inputs(record):
     return changed
 
 
+def progress_fingerprint(tools):
+    """只计算实际读取、内容和操作状态，重复同一工具回执不虚增进度。"""
+    record = tools.record
+    return digest({'reads': tools.read_ranges, 'workspace_reads': record.get('workspace_reads', {}),
+                   'artifacts': {p: hashlib.sha256(v).hexdigest() for p, v in tools.artifacts.items()},
+                   'sources': list(tools.materials.sources),
+                   'edits': {p: {k: v[k] for k in ('status', 'after_hash')} for p, v in record.get('edits', {}).items()},
+                   'execution': record.get('executions', [None])[-1],
+                   'ui': {kind: {k: v for k, v in record.get(kind, {}).items() if k in {'app', 'title', 'url', 'text', 'elements'}}
+                          for kind in ('desktop_observation', 'browser_observation')}})
+
+
 class DurableTools(AssistantTools):
     """每次工具调用前后提交检查点，恢复时只重用确认过的成功结果。"""
 
@@ -92,11 +106,24 @@ class DurableTools(AssistantTools):
         """加入计划与草稿读取，阶段之间只携带有界摘要而不重灌全部历史。"""
         from .capabilities import extension_schemas
         specs = super().schemas() + extension_schemas(self)
+        if scope(self.record) and not self.materials.inventory():
+            specs = [s for s in specs if s['function']['name'] in {'finish', 'write_text', 'validate_result'}]
+            for spec in specs:
+                if spec['function']['name'] == 'finish':
+                    spec['function']['description'] = '交付操作任务的结果；真实操作证据由程序自动关联。'
+                    spec['function']['parameters']['properties'].pop('citations')
+                    spec['function']['parameters']['required'].remove('citations')
+        specs += action_schemas(self.record)
         specs += [schema('plan_task', '保存计划。steps_json示例：["读取资料","汇总","交付"]。criteria_json只支持required_columns字段数组、required_files文件名数组、expected_rows精确数据行数、min_rows最小行数；不确定项省略，用{}也可。',
                          {'steps_json': text_spec(), 'criteria_json': text_spec()}),
                   schema('read_artifact', '分页查看已保存文本草稿；只接受产物名称。',
                          {'name': text_spec(), 'offset': {'type': 'integer'}})]
         return specs
+
+    def has_action_evidence(self):
+        """只有授权工具的成功回执才可作为操作证据，最终文件与界面另作后置核验。"""
+        return bool(scope(self.record)) and any(
+            entry['name'] in NAMES and entry['status'] == 'completed' for entry in self.trace)
 
     def check(self):
         """取消、暂停及全任务预算在每个工具边界生效；不随语音代次失效。"""
@@ -130,7 +157,7 @@ class DurableTools(AssistantTools):
         self.record['budget']['used_calls'] += 1
         signature = digest({'name': name, 'arguments': args})
         cached = self.reuse.get(signature)
-        if cached and name not in {'finish', 'plan_task', 'validate_result', 'read_wechat_history'} and all(
+        if cached and name not in VOLATILE and name not in {'finish', 'plan_task', 'validate_result', 'read_wechat_history'} and all(
                 key in self.artifacts and hashlib.sha256(self.artifacts[key]).hexdigest() == value
                 for key, value in cached.get('artifacts', {}).items()):
             self.save()
@@ -140,11 +167,16 @@ class DurableTools(AssistantTools):
                  'queried_at': time.time(), 'status': 'started'}
         prior_artifacts = {name: hashlib.sha256(data).hexdigest() for name, data in self.artifacts.items()}
         self.trace.append(entry)
-        self.record['pending'] = {'name': name, 'arguments': args, 'recovery': 'read-or-private-draft'}
+        recovery = RECOVERY.get(name, 'read-or-private-draft')
+        if name in {'browser', 'desktop'} and args.get('operation') == 'observe':
+            recovery = 'read-or-private-draft'
+        self.record['pending'] = {'name': name, 'arguments': args, 'recovery': recovery}
         self.save()
         try:
             from .capabilities import REGISTRY, execute_extension
-            if name in REGISTRY:
+            if name in NAMES:
+                result = execute_action(self, name, args)
+            elif name in REGISTRY:
                 result = execute_extension(self, name, args)
             elif name == 'plan_task':
                 result = self.plan(args)
@@ -157,11 +189,19 @@ class DurableTools(AssistantTools):
             else:
                 result = self._execute(name, args)
             entry['status'] = 'completed'
+        except ApprovalRequired:
+            entry['status'] = 'awaiting_approval'
+            self.save()
+            raise
         except BrainCancelled:
             self.save()
             raise
         except (AgentRefused, SearchError, OSError, ValueError, KeyError, ArithmeticError, SyntaxError) as error:
             from .verification import classify_failure
+            if self.record.get('effect_started', False):
+                entry.update(status='uncertain', output=json.dumps({'error': str(error)}, ensure_ascii=False))
+                self.save()
+                raise ActionUncertain('操作已派发但回执不完整，请核对实际状态') from error
             result = {'error': str(error), 'status': 'needs_input', 'retry': classify_failure(error, name)}
             entry['status'] = 'failed'
         entry['output'] = json.dumps(result, ensure_ascii=False)
@@ -178,6 +218,7 @@ class DurableTools(AssistantTools):
                 if prior_artifacts.get(artifact) != hashlib.sha256(data).hexdigest():
                     self.dependencies[artifact] = dependencies
                     self.reuse[signature].setdefault('artifacts', {})[artifact] = hashlib.sha256(data).hexdigest()
+        self.record.pop('effect_started', None)
         self.record['pending'] = None
         self.save()
         if self.on_tool_result:
@@ -216,6 +257,8 @@ class DurableTools(AssistantTools):
 
     def _execute(self, name, args):
         """结束前核验业务产物；新表格保留数值类型，错误反馈后允许有限修订。"""
+        if name == 'finish' and scope(self.record) and not self.materials.inventory():
+            args = {**args, 'citations': ''}
         if name == 'write_table':
             from .office_output import xlsx_bytes
             self.record.setdefault('artifact_sources', {}).pop(args['name'], None)
@@ -233,10 +276,13 @@ class DurableTools(AssistantTools):
         recent = [{'name': entry['name'], 'status': entry['status'],
                    'output': entry.get('output', '')[:600]} for entry in self.trace[-3:]]
         return json.dumps({'task': self.task, 'supplement': self.record.get('notes', [])[-3:],
+                           'action_scope': scope(self.record),
+                           'edits': {p: {k: v[k] for k in ('status', 'before_hash', 'after_hash')} for p, v in self.record.get('edits', {}).items()},
                            'sources': self.materials.inventory(), 'plan': self.record['plan'],
                            'criteria': self.record['acceptance'],
                            'read_ranges': self.read_ranges, 'artifacts': list(self.artifacts),
                            'recent_results': recent, 'stage': self.record['stage'],
+                           'recent_errors': self.record.get('stage_errors', [])[-2:],
                            'remaining_calls': self.record['budget']['calls'] - self.record['budget']['used_calls']},
                           ensure_ascii=False)
 
@@ -250,13 +296,14 @@ class DurableTaskRunner:
 
     def run_stage(self, record, should_stop=None, on_tool_result=None, publication_lock=None):
         """从已保存检查点续跑；异常与已完成工具证据分开处理。"""
-        if record.get('authorization') != 'local-read-and-new-artifacts-v1':
+        if record.get('authorization') not in {LEGACY, VERSION}:
             record.update(status='needs_input', message='授权版本不兼容，请重新发布任务')
             self.store.save(record)
             return None
-        pending = record.get('pending')
-        if pending and pending.get('recovery') != 'read-or-private-draft':
-            record.update(status='needs_input', message='存在结果不明的外部动作，须先核对实际结果，未自动重放')
+        from .action_recovery import reconcile
+        unresolved = reconcile(record, self.store)
+        if unresolved:
+            record.update(status='needs_input', message=unresolved)
             self.store.save(record)
             return None
         changed = changed_inputs(record)
@@ -274,8 +321,7 @@ class DurableTaskRunner:
                 record.update(status='needs_input', message=str(error))
                 tools.save()
                 return None
-        old_progress = digest({'reads': tools.read_ranges, 'artifacts': tools.artifacts.keys().__str__(),
-                               'sources': list(tools.materials.sources), 'bytes': [len(v) for v in tools.artifacts.values()]})
+        old_progress = progress_fingerprint(tools)
         record.update(status='running', stage=record['stage'] + 1)
         tools.save()
         reason = cloud_reason(record['request'], bool(tools.materials.inventory()))
@@ -283,6 +329,10 @@ class DurableTaskRunner:
             with serial_task():
                 if reason:
                     return self.handoff(record, tools, reason, should_stop, publication_lock)
+                approved = record.get('approved_action')
+                if approved and approved.get('action'):
+                    action = approved['action']
+                    tools.execute(action['tool'], {'operation': action['operation'], 'parameters_json': json.dumps(action['parameters'], ensure_ascii=False)})
                 if tools.finished is None:
                     brain = self.runner.brain
                     from .production import HarnessBrain, check_installation
@@ -300,20 +350,30 @@ class DurableTaskRunner:
                                    min(180, max(1, record['budget']['seconds'] - tools.base_seconds)), 12,
                                    domain='assistant', stop_tool='finish')
                     except Exception as error:
+                        if isinstance(error, ActionUncertain) or record.get('effect_started'):
+                            raise ActionUncertain(str(error)) from error
+                        if record.get('action_request'):
+                            raise ApprovalRequired(record['action_request']['detail']) from error
                         if should_stop and should_stop():
                             raise TaskPause('已保存进度') from error
                         if tools.finished is None:
                             record['message'] = str(error)[:500]
+                            record.setdefault('stage_errors', []).append({'stage': record['stage'], 'error': str(error)[:500]})
+                            record['stage_errors'] = record['stage_errors'][-10:]
                             record['failures'] += 1
                 tools.check()
                 if tools.finished is not None:
                     return self.publish(record, tools, should_stop, publication_lock)
-                progress = digest({'reads': tools.read_ranges, 'artifacts': tools.artifacts.keys().__str__(),
-                                   'sources': list(tools.materials.sources), 'bytes': [len(v) for v in tools.artifacts.values()]})
+                progress = progress_fingerprint(tools)
                 record['stalls'] = record['stalls'] + 1 if progress == old_progress else 0
                 record['status'] = 'paused' if record['stalls'] >= 2 else 'queued'
                 if record['status'] == 'paused':
-                    record['message'] = '连续两阶段没有新证据或产物，已暂停；可补充要求后继续'
+                    record['message'] = '连续两阶段没有新证据或产物，已暂停；可补充要求后继续' + (
+                        '。最近错误：' + record['stage_errors'][-1]['error'] if record.get('stage_errors') else '')
+        except ActionUncertain as error:
+            record.update(status='needs_input', message=str(error))
+        except ApprovalRequired as error:
+            record.update(status='needs_input', message='需要确认具体操作：' + str(error))
         except TaskPause as error:
             record.update(status='paused' if (should_stop and should_stop()) else 'queued', message=str(error))
         except BrainCancelled:

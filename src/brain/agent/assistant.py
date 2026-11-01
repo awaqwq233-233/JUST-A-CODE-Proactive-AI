@@ -201,7 +201,7 @@ class AssistantTools:
                 material_request = re.search(r'(?:读取|提取|总结|汇总|整理|比较|对比).*(?:文件|附件|聊天|群.*消息|资料|这段|这份)', self.task)
                 needs_evidence = bool(self.materials.inventory()) or bool(material_request) or any(
                     spec["function"]["name"] in {"read_wechat", "system_state", "web_search"} for spec in self.schemas())
-                if needs_evidence and not citations:
+                if needs_evidence and not citations and (self.materials.inventory() or not self.has_action_evidence()):
                     raise AgentRefused("当前任务需要实际资料证据，不能直接宣称完成")
                 latest = {(item['name'], json.dumps(item['arguments'], sort_keys=True)): item.get('status')
                           for item in self.trace if item['name'] != 'finish'}
@@ -210,6 +210,10 @@ class AssistantTools:
             self.finished = {"status": args["status"], "answer": answer, "citations": citations}
             return {"status": "staged", "published": False}
         raise AgentRefused("未实现的工具")
+
+    def has_action_evidence(self):
+        """旧资料任务没有操作证据；执行层可凭已完成的实际调用扩展此检查。"""
+        return False
 
     def coverage_partial(self):
         """逐页核对引用覆盖；微信始终保留已加载范围限制。"""

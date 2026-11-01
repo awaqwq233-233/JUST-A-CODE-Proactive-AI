@@ -69,7 +69,7 @@ class TaskManager:
         """返回内存中的轻量任务列表，Qt 刷新不重复读取资料正文。"""
         with self.lock:
             keys = ('task_id', 'request', 'status', 'message', 'report', 'stage', 'plan', 'budget',
-                    'created_at', 'updated_at', 'changed_inputs', 'notification', 'order')
+                    'created_at', 'updated_at', 'changed_inputs', 'notification', 'order', 'action_request', 'action_scope')
             return [copy.deepcopy({k: r[k] for k in keys if k in r})
                     for r in sorted(self.records.values(), key=lambda value: value.get('order', 0))]
 
@@ -91,7 +91,7 @@ class TaskManager:
         self.wake.set()
         return True
 
-    def resume(self, task_id, *, extra_seconds=0, extra_calls=0, inputs=None, note='', refresh=False):
+    def resume(self, task_id, *, extra_seconds=0, extra_calls=0, inputs=None, note='', refresh=False, reviewed=False):
         """用户补充同一任务；预算仅明确延长，刷新只使依赖已变资料的结果失效。"""
         if type(extra_seconds) is not int or not 0 <= extra_seconds <= 1800 or type(extra_calls) is not int or not 0 <= extra_calls <= 120:
             raise AgentRefused('每次最多增加30分钟/120次调用')
@@ -105,6 +105,22 @@ class TaskManager:
                 raise AgentRefused('等待队列已满')
             if record.get('publication'):
                 raise AgentRefused('该任务已有交付清单，不能修改恢复目标；请新建后续任务')
+            if inputs and 'actions' in inputs:
+                raise AgentRefused('继续任务不能扩大操作权限，请以明确范围新建任务')
+            if record.get('action_request') and time.time() - record['action_request']['created_at'] > 300:
+                record.pop('action_request', None)
+                record.pop('approved_action', None)
+                record.pop('browser_observation', None)
+                record.pop('desktop_observation', None)
+                record.pop('screen_candidate', None)
+            if reviewed:
+                if not note.strip() or not record.get('pending'):
+                    raise AgentRefused('请写明实际核对结果；当前须存在未确认动作')
+                record.setdefault('reviewed_actions', []).append({'pending': record.pop('pending'), 'note': note, 'at': time.time()})
+                record.pop('effect_started', None)
+                record.pop('browser_observation', None)
+                record.pop('desktop_observation', None)
+                record['pending'] = None
             record.setdefault('supplements', []).append({'inputs': copy.deepcopy(inputs or {}), 'note': note, 'refresh': refresh})
             record['budget']['seconds'] += extra_seconds
             record['budget']['calls'] += extra_calls
@@ -112,6 +128,29 @@ class TaskManager:
             self.store.save(record)
         self.emit('queued', record)
         self.wake.set()
+
+    def approve_action(self, task_id):
+        """仅GUI/CLI可确认已显示的精确操作，确认不扩张任务原授权范围。"""
+        with self.lock:
+            record = self.records[task_id]
+            request = record.get('action_request')
+            if self.active == task_id or record['status'] != 'needs_input' or not request:
+                raise AgentRefused('没有待确认操作')
+            if time.time() - request['created_at'] > 300:
+                raise AgentRefused('操作确认已过期，请继续任务重新观察')
+            record['approved_action'] = {'digest': request['digest'], 'expires_at': time.time() + 300, 'action': request['action']}
+            record.update(status='queued', control=None, message='', stalls=0)
+            record.pop('action_request', None)
+            self.store.save(record)
+        self.wake.set()
+
+    def stop_computer_actions(self):
+        """立即请求暂停所有拥有桌面或网站权限的任务，正常只读任务不受影响。"""
+        from .action_policy import scope
+        for record in list(self.records.values()):
+            selected = scope(record)
+            if selected:
+                self.control(record['task_id'], 'pause')
 
     def prioritize(self, task_id):
         """将等待任务移到队首，不抢占当前执行的工具调用。"""
@@ -147,6 +186,9 @@ class TaskManager:
             thread.join(timeout)
             if thread.is_alive():
                 raise AgentRefused('任务正在保存或等待工具退出，请稍后重试关闭')
+
+        from .browser_tools import close_browser
+        close_browser()
 
     def _apply_supplements(self, record):
         """在工作线程读取补充资料，保持既有编号并传播失效依赖。"""
@@ -220,6 +262,10 @@ class TaskManager:
                             control = record.get('control')
                             record['status'] = 'cancelled' if control == 'cancel' else 'paused' if control == 'pause' else 'queued'
                             self.store.save(record)
+                        selected = record.get('action_scope', {})
+                        if record['status'] == 'queued' and (selected.get('apps') or selected.get('origins')):
+                            record.update(status='paused', message='电脑操作任务恢复前请确认继续；执行器将重新观察窗口')
+                            self.store.save(record)
                         self.records[record['task_id']] = record
                 self.ready.set()
                 for record in self.records.values():
@@ -273,4 +319,7 @@ class TaskManager:
                 record['lease_seconds'] = 0
                 self.store.save(record)
                 self.active = None
+            if record['status'] in TERMINAL or record['status'] == 'paused':
+                from .browser_tools import close_browser
+                close_browser(record['task_id'])
             self.emit(record['status'], record)

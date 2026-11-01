@@ -604,3 +604,42 @@ GUI「任务与资料」支持任务文字、文件选择、目录首层及粘�
 ```
 
 开发验证可指定 `--store` 和 `--output` 隔离目录；`--resume` 使用实际列表中的原任务号，`--refresh`确认重新读取变化输入，`--extend`延长一次预算。通常直接使用GUI任务中心，无须复制任务号。程序检查不证明主观内容完全正确；当前自动附件下载、可靠逐消息时间范围、完整微信历史及真实OpenClaw/手机交付均未开放。
+
+
+### 22 电脑操作、文件编辑与隔离执行
+
+已安装 Gateway 与 Agent 后，在 macOS arm64 安装独立操作环境（Python 3.11、Apple Command Line Tools）。本阶段不修改MiniCPM、SDK或Qwen模型。以下命令从项目根目录执行，每条单独运行。
+
+安装锁定Python依赖并编译签名桌面组件；国内镜像失败回退官方源。优先复用已安装Chrome的独立任务配置，否则下载Chromium。
+
+```bash
+python3 new_computer_download/setup_new_computer.py --only actions
+```
+
+仅代码执行需要Colima、Lima和Docker CLI。本机验收版本分别为0.10.3、2.2.1、29.8.2，其他版本未验收；Homebrew可能安装更新版本，`actions.lock.json`的runtime字段记录验收版本，不表示Homebrew永久固定。新机缺少运行时时安装：
+
+```bash
+brew install colima docker
+```
+
+启动专用jac虚拟机并准备固定官方Python/Node镜像；镜像逐层SHA256校验，国内VM访问Registry受限时由宿主HTTPS下载后导入。不使用第三方未知镜像。下载失败保留明确错误，正常任务不临时下载。
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/prepare_actions.py --start-sandbox
+```
+
+退出GUI不会自动关闭该VM；不需要执行代码时可停止它。
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/prepare_actions.py --stop-sandbox
+```
+
+首次桌面操作须在macOS系统设置给项目 `.cache/actions/native/JACDesktopController.app` 开启「辅助功能」；截图定位另外需要「屏幕与系统音频录制」。本机boss已授予两项权限，新机器需重新授予。权限缺失不会默默改用其他组件。
+
+GUI使用：打开「任务与资料」，点击「设置本次电脑操作范围」，选择具体目录并勾选编辑/运行权限，或填写网站完整网址、选择应用；输入任务再发布。只授权文件资料不会自动取得编辑权限。示例任务：“修复工作目录check.py中的加法错误，保留函数注释，提交后运行验证并交付报告。”目录应是小型专用工作区，不能直接授权整个磁盘/主目录。原文件同时作为资料附件时，自身编辑也会触发附件版本变化，按任务中心提示刷新资料再继续。
+
+任务中心显示待确认具体动作；截图确认同时显示标记预览。普通控件操作后必须核验实际结果。密码由用户手动输入；不确定结果先检查应用实际状态，在「补充资料」填写结果并勾选已核对。暂停/取消只能阻止后续动作，已发出的事件不能撤回。重启后UI任务需手动继续；“停止电脑操作”暂停所有具备操作权限的任务。
+
+边界：编辑UTF-8文本/代码（256 KiB/文件），保留BOM与CRLF；单事务20文件/2 MiB；代码副本200文件/8 MiB、60秒、禁网，未预装业务第三方依赖，容器产物不回写原目录。浏览器观察最多80个控件/3500字，桌面最多100个控件；模型每次接收12控件和1200字页面文字，可按next_offset分页，复杂任务仍受上下文预算约束；固定导航键不等于任意快捷键。暂不提供网页上传/下载、任意宿主shell、密码代填、OCR产物或所有应用兼容保证。状态、截图、浏览器资料及备份均不进Git。
+
+`verify_computer_actions.py` 的 `--browser --desktop --sandbox --model --vision` 分别验证合成网页、独立验收窗口、真实容器、Qwen编辑执行交付和截图候选点击；desktop/vision需要先编译并打开 `tests/fixtures/desktop_fixture.swift` 对应测试应用，默认安装不启动测试窗口。它们不启动摄像头、麦克风或MiniCPM，不能代替真人听感和长时同跑验收。验证日志见CHANGELOG。

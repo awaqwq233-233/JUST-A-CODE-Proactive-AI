@@ -1,0 +1,4 @@
+playwright==1.64.1 --hash=sha256:59f7b041284ce8d1b72098ae50ca48a2d83692eec25154ab5ba79d4b6b4fe8a9
+greenlet==3.5.6 --hash=sha256:a6a4b98a9132e0f45c9fc245a63894cfd8c45fb7a0d6bffc5eab3ec327cf7324
+pyee==13.0.1 --hash=sha256:af2f8fede4171ef667dfded53f96e2ed0d6e6bd7ee3bb46437f77e3b57689228
+typing-extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8

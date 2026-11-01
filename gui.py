@@ -218,6 +218,7 @@ class AssistantDialog(QDialog):
         self.setWindowTitle('任务与资料')
         self.resize(620, 540)
         self.files, self.directories = [], []
+        self.action_scope = None
         layout = QVBoxLayout(self)
         hint = QLabel('发布任务，或只选择资料后用语音下达任务。\n微信直读请在任务中写明“微信”和完整会话名；只读取已加载消息。')
         hint.setWordWrap(True)
@@ -226,6 +227,9 @@ class AssistantDialog(QDialog):
         self.task.setPlaceholderText('例如：比较两份资料的差异并生成报告；或总结微信“完整群名”的已加载消息')
         self.task.setMaximumHeight(110)
         layout.addWidget(self.task)
+        self.action_button = QPushButton('设置本次电脑操作范围（可选）')
+        self.action_button.clicked.connect(self.choose_actions)
+        layout.addWidget(self.action_button)
         buttons = QHBoxLayout()
         for label, handler in [('选择文件', self.choose_files), ('选择目录', self.choose_directory), ('清除资料', self.clear_inputs)]:
             button = QPushButton(label)
@@ -244,6 +248,14 @@ class AssistantDialog(QDialog):
         actions.rejected.connect(self.reject)
         layout.addWidget(actions)
 
+    def choose_actions(self):
+        """独立选择本次任务的工作目录、网站和应用权限。"""
+        from src.omni.action_window import ActionScopeDialog
+        dialog = ActionScopeDialog(self.action_scope, self)
+        if dialog.exec() == QDialog.Accepted:
+            self.action_scope = dialog.value()
+            self.action_button.setText('已设置电脑操作范围 · 点击查看或调整')
+
     def choose_files(self):
         """文件选择器返回精确授权路径，正文由后台任务按需读取。"""
         files, _ = QFileDialog.getOpenFileNames(self, '选择本次资料', '', '资料 (*.txt *.md *.csv *.tsv *.json *.log *.py *.docx *.xlsx)')
@@ -261,6 +273,8 @@ class AssistantDialog(QDialog):
         """撤销对话框中的资料选择并清除粘贴文字。"""
         self.files, self.directories = [], []
         self.pasted.clear()
+        self.action_scope = None
+        self.action_button.setText('设置本次电脑操作范围（可选）')
         self.show_sources()
 
     def show_sources(self):
@@ -271,7 +285,10 @@ class AssistantDialog(QDialog):
 
     def inputs(self):
         """返回本次独立资料范围，不携带其他聊天历史。"""
-        return {'files': self.files, 'directories': self.directories, 'text': self.pasted.toPlainText()}
+        value = {'files': self.files, 'directories': self.directories, 'text': self.pasted.toPlainText()}
+        if self.action_scope:
+            value['actions'] = self.action_scope
+        return value
 
 
 class MainWindow(QMainWindow):

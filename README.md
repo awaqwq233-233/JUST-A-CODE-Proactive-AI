@@ -64,7 +64,13 @@ Supported inputs include text, CSV/TSV/JSON, DOCX/XLSX and text PDFs, up to 8 Mi
 
 WeChat requires the separately authorized macOS reader and an exact conversation name. Current loaded-message reading remains supported; bounded paging code exists with title/overlap checks, but production keeps it disabled pending real history-paging acceptance. Timestamp-to-message association and automatic attachment download are not reliable enough to enable: provide saved attachments through the material picker. Media placeholders are not decoded content. No message sending or database decryption is provided.
 
-Supported WeChat-to-Excel work can run locally. Explicit cloud/phone requests still create only a local `handoff.json`: OpenClaw is **not connected**, tasks are not submitted and phone delivery does not occur. Private inputs disable public web tools. Arbitrary shell, original-file modification, scanned-PDF OCR and unrestricted desktop automation remain outside this release. See [setup guide](new_computer_download/READMEfirst.md#21-可恢复长任务与扩展工具) and [CHANGELOG](CHANGELOG.md) for evidence and limitations.
+Supported WeChat-to-Excel work can run locally. Explicit cloud/phone requests still create only a local `handoff.json`: OpenClaw is **not connected**, tasks are not submitted and phone delivery does not occur. Private inputs disable public web tools. Scanned-PDF OCR and arbitrary host shell remain unavailable. Task-scoped editing and desktop actions are described below. See [setup guide](new_computer_download/READMEfirst.md#21-可恢复长任务与扩展工具) and [CHANGELOG](CHANGELOG.md) for evidence and limitations.
+
+### Scoped computer actions (2026-10-31)
+
+In **任务与资料 → 设置本次电脑操作范围**, select a workspace, editing/runtime permissions, website origins or application bundles for this task. File editing uses versioned staging, exact patches, atomic per-file commits and conditional rollback. Python/Node scripts run in a disposable, network-disabled container with copied inputs and no host mounts. Browser tools use a separate task profile; macOS desktop tools observe accessibility controls before clicking, typing, scrolling or dragging. Screenshot fallback uses the same local Qwen to propose a marked target, followed by explicit confirmation and a fresh image check.
+
+Results require real file hashes, exit codes or UI text verification. Task Center provides concrete-action confirmation and **停止电脑操作**. UI tasks pause after app restart; uncertain dispatched actions are never automatically replayed. This is scoped automation, with bounded pages/files and fixed navigation keys. Password entry, arbitrary host shell, browser upload/download and opaque UI success detection are not provided. Current acceptance is macOS arm64 with synthetic windows/pages; general application compatibility and voice/MiniCPM co-running remain separate acceptance work. See [setup guide section 22](new_computer_download/READMEfirst.md#22-电脑操作文件编辑与隔离执行).
 
 ### Setup and verification
 
@@ -206,7 +212,13 @@ GUI「任务与资料」发布任务，「任务中心」查看队列、进度�
 
 支持文字PDF、DOCX/XLSX结构表及原文本格式，每份8 MiB、最多40份。新增资料查找、筛选/排序/去重、类型转换、分组统计、表间关联、带数字类型的Excel和可编辑Word报告。程序验收结构、字段、行数、引用、输入版本及导出数据一致性；主观内容仍须审阅。结果仍在 `output/m2/qwen/<task_id>/`，长回复只做原生查看提示。
 
-微信保持精确会话只读。有限分页实验已有实现和身份/连续重叠保护，实际历史翻页尚未验收，生产不开放多页工具；时间标签关联和附件自动下载未可靠验证，附件正文须选择已保存文件。不发送消息、不解密数据库，不将媒体占位当作正文。现有工具能完成的微信→表格任务可在本地执行；明确云端/手机交付仍只生成本地交接单，**OpenClaw尚未接入、未提交、手机未发送**。OCR、任意shell、原位文件修改和通用桌面控制仍后置。详见[安装指南第21节](new_computer_download/READMEfirst.md#21-可恢复长任务与扩展工具)。
+微信保持精确会话只读。有限分页实验已有实现和身份/连续重叠保护，实际历史翻页尚未验收，生产不开放多页工具；时间标签关联和附件自动下载未可靠验证，附件正文须选择已保存文件。不发送消息、不解密数据库，不将媒体占位当作正文。现有工具能完成的微信→表格任务可在本地执行；明确云端/手机交付仍只生成本地交接单，**OpenClaw尚未接入、未提交、手机未发送**。OCR和任意宿主shell仍未开放；独立授权的文件编辑与桌面操作见下节。详见[安装指南第21节](new_computer_download/READMEfirst.md#21-可恢复长任务与扩展工具)。
+
+### 电脑操作、文件编辑与代码执行（2026-10-31）
+
+在「任务与资料 → 设置本次电脑操作范围」选择工作目录、编辑/执行权限、网站和应用，再发布任务。支持文本/代码读取、精确片段修改、暂存差异、逐文件原子提交与条件回滚；Python/Node 在禁网、无宿主挂载的临时容器中运行输入副本。网站使用独立浏览器资料，桌面通过 macOS 辅助功能观察后点击、输入、滚动和拖动；截图后备由同一本机 Qwen 产生带预览的定位候选，具体确认并重新核对画面后点击。
+
+文件哈希、真实退出码和界面结果核验决定完成状态。任务中心可「确认操作」「停止电脑操作」；重开软件后界面任务先暂停，结果不明的动作先核对再继续。首版有文件/页面预算与固定导航键，不提供任意宿主 shell、密码代填、网页上传下载或所有应用通用兼容承诺。实际验收为 macOS arm64 上合成页面/窗口；真人语音及 MiniCPM 长时同跑另行验收。安装、使用和限制见[第22节](new_computer_download/READMEfirst.md#22-电脑操作文件编辑与隔离执行)。
 
 ### 当前实现状态
 
@@ -278,7 +290,7 @@ Qwen 每句仅获一个工具及精确参数枚举，改参数、重复或多项
 
 文件搜索只读名称，限定主目录内明确的非隐藏子目录（可说桌面/下载/文档，或完整路径），跳过隐藏项与符号链接；最多 20 条结果、60000 个条目、20 层子目录、4 秒扫描，独立进程 7 秒硬等待上限。POSIX 逐级使用 `O_NOFOLLOW`；达到上限或权限不足标明部分扫描，不能据此声称整个目录没有匹配。停止/重连取消等待、后续派发和旧报告发布，派发与取消使用同一代次锁；已提交给系统的打开动作不能撤回。
 
-生产记录仍在忽略的 `output/m2/qwen/`，独立验收为 `verify_local_tasks.py`。该项本地动作功能没有新增依赖或模型；当前生产入口还须完成前文 Agent 环境安装及原生 UTF-8 后端更新，随后重开 GUI 并开启“本地转写与电脑任务”。Windows/Linux 保留文件搜索和网址交接代码，但本阶段应用白名单仅支持 macOS，未做其他平台实测。任意命令、鼠标键盘控制、文件修改、长期记忆与云端升级仍待后续阶段。验收与命令见安装指南第 15 节。
+生产记录仍在忽略的 `output/m2/qwen/`，独立验收为 `verify_local_tasks.py`。该项本地动作功能没有新增依赖或模型；当前生产入口还须完成前文 Agent 环境安装及原生 UTF-8 后端更新，随后重开 GUI 并开启“本地转写与电脑任务”。Windows/Linux 保留文件搜索和网址交接代码，但本阶段应用白名单仅支持 macOS，未做其他平台实测。本节旧单步授权不扩大；新增文件编辑与桌面操作见上文独立任务授权。长期记忆与云端升级仍待后续阶段。验收与命令见安装指南第 15 节。
 
 站名自动解析（2026-10-17）：现在可直接说“打开小众软件”等未预设的名称，不必先登记域名。已知应用、明确网址和常用站名快捷入口保留。独立解析器通过国内优先必应 RSS 搜索（请求失败或结果失配再试全球入口），按主机去重，最多读取三个首页；核对名称、标题、正文、页面声明的规范地址及主站/论坛/下载分站差异。Qwen 只能选择真实候选编号。自动打开须唯一 HTTPS 候选满足证据门槛且 Qwen 同意；搜索排名、模型自报概率、页面自称官网都不足以单独放行。这些线索不是域名所有权证明，不承诺任意站名都能无歧义识别。
 
