@@ -240,6 +240,9 @@ class TaskPipeline:
         self.task_inputs = {}
         self.assistant_submitter = None
         self.task_manager = None
+        self.memory = None
+        self.memory_refs = {}
+        self.memory_invalidated = False
 
     def start(self):
         """后台完成资源/模型就绪，启动三个有界处理线程。"""
@@ -255,7 +258,8 @@ class TaskPipeline:
             from src.brain.agent.production import HarnessBrain
             from src.brain.agent.task_store import TaskStore
             store = TaskStore()
-            self.task_manager = TaskManager(store, DurableTaskRunner(store, AssistantTaskRunner(HarnessBrain(self.brain_url))),
+            self.task_manager = TaskManager(store, DurableTaskRunner(store, AssistantTaskRunner(HarnessBrain(self.brain_url)),
+                                            memory_provider=(lambda: self.memory) if self.memory else None),
                                             self.managed_event)
             self.task_manager.start()
             self.assistant_submitter = self.task_manager.submit
@@ -287,6 +291,7 @@ class TaskPipeline:
     def begin_session(self):
         """分配新代次；重新连接不能继承待执行指令或半句话。"""
         with self.lock:
+            self.memory_invalidated = False
             self.generation += 1
             self.session, self.sequence, self.active = uuid4().hex, 0, True
             self.response_sequence += 1
@@ -526,19 +531,49 @@ class TaskPipeline:
                     self.counters["transcriptions"] += 1
                     self._last_recognition_notice = float("-inf")
                     self.callbacks.on_user_transcript(text)
-                    fields = route_task(text)
-                    self._response_decided(utterance, "block" if fields or is_system_request(text) or is_online_request(text) or is_local_request(text) else "allow")
-                    if fields:
-                        self.submit(utterance, text, fields)
-                    elif is_local_request(text):
-                        self._notify("rejected", {"code": "unsupported_local_request"})
-                    elif is_system_request(text):
-                        self._notify("rejected", {"code": "unsupported_system_request"})
-                    elif is_online_request(text):
-                        self._notify("rejected", {"code": "unsupported_web_request"})
+                if self.memory is not None:
+                    self.memory.offer(text, {'kind': 'voice', 'utterance_id': utterance.identifier,
+                        'task': bool(route_task(text)), 'session': self.session},
+                        lambda result, utterance=utterance, text=text: self._route_confirmed(utterance, text, result))
+                else:
+                    self._route_confirmed(utterance, text)
             except Exception:
                 if not self.stopped.is_set():
                     self._fail("whisper_error")
+
+    def _route_confirmed(self, utterance, text, memory_result=None):
+        """记忆检索在后台完成后再判定回复归属；迟到结果不能放行旧语音或动作。"""
+        with self.lock:
+            if not self._current_utterance(utterance) or time.monotonic() - utterance.ended_at > 15:
+                return
+            if memory_result and memory_result.get('handled'):
+                self._response_decided(utterance, 'block')
+                if self.memory and not self.memory.valid(memory_result.get('revision', self.memory.last_revision)):
+                    self._notify('memory_changed', {'answer': '记忆已更新，旧回复已取消。'})
+                    return
+                from src.brain.task_runner import TaskResult
+                answer = memory_result.get('answer', '')
+                result = TaskResult(utterance.identifier, None, answer, [], 0, memory_result.get('status', 'completed'))
+                result.memory_revision = memory_result.get('revision')
+                self._notify('memory_answer', {'id': utterance.identifier, 'answer': answer})
+                if self.on_result_speech and answer:
+                    self.on_result_speech(utterance.identifier, utterance.generation, result, ('memory', text))
+                return
+            fields = route_task(text)
+            if fields and fields[0] == 'assistant' and memory_result:
+                self.memory_refs = {utterance.identifier: [{'id': fact['id'], 'revision': fact['revision']}
+                                    for fact in memory_result.get('facts', [])]}
+            self._response_decided(utterance, 'block' if fields or is_system_request(text) or is_online_request(text) or is_local_request(text) else 'allow')
+            if self.memory_invalidated:
+                self._response_decided(utterance, 'block')
+            if fields:
+                self.submit(utterance, text, fields)
+            elif is_local_request(text):
+                self._notify('rejected', {'code': 'unsupported_local_request'})
+            elif is_system_request(text):
+                self._notify('rejected', {'code': 'unsupported_system_request'})
+            elif is_online_request(text):
+                self._notify('rejected', {'code': 'unsupported_web_request'})
 
     def submit(self, utterance, text, fields, input_source='voice', inputs=None):
         """同一句只派发一次；忙碌时拒绝积压，语音状态不阻塞。"""
@@ -553,7 +588,8 @@ class TaskPipeline:
                 try:
                     self.assistant_submitter(text, inputs=selected, source={
                         'kind': input_source, 'utterance_id': utterance.identifier,
-                        'generation': utterance.generation, 'session': self.session})
+                        'generation': utterance.generation, 'session': self.session,
+                        'memory_refs': self.memory_refs.pop(utterance.identifier, [])})
                 except Exception as error:
                     self._notify('rejected', {'answer': str(error), 'code': 'task_queue_rejected'})
                     return False
@@ -604,6 +640,10 @@ class TaskPipeline:
             if self.current(self.generation) and self.on_result_speech:
                 result = TaskResult(detail['task_id'], Path(detail['path']) if detail.get('path') else None,
                                     detail.get('answer', ''), [], 0, state)
+                result.memory_refs = detail.get('memory_refs', [])
+                if result.memory_refs and (not self.memory or not self.memory.valid_refs(result.memory_refs)):
+                    self._notify('memory_changed', {'answer': '该任务依赖的记忆已变化，旧结果未播报。'})
+                    return
                 self.on_result_speech(detail['task_id'], self.generation, result, ('assistant', detail.get('request', '')))
 
     def set_task_inputs(self, inputs):

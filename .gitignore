@@ -105,3 +105,10 @@ qwentts3/
 
 # 私有长任务状态、资料快照及恢复产物
 data/tasks/
+
+# 长期记忆仅保存在本机；包括自定义到项目内的真源、索引、待处理与迁移备份
+data/memory/
+.jac/
+memory-data/
+memory-private/
+**/memory-v2/

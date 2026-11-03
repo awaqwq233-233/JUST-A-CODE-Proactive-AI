@@ -199,6 +199,8 @@ def test_installer_mirror_failure_falls_back_without_disabling_tls(tmp_path, mon
     calls = []
     agent = []
     monkeypatch.setattr(installer, "install_agent", lambda **kwargs: agent.append(kwargs))
+    memory = []
+    monkeypatch.setattr(installer, 'install_memory', lambda **kwargs: memory.append(kwargs))
 
     def command(arguments, **kwargs):
         """依次模拟正确版本、镜像失败和官方安装成功。"""
@@ -213,6 +215,7 @@ def test_installer_mirror_failure_falls_back_without_disabling_tls(tmp_path, mon
     assert all("--trusted-host" not in call for call in calls)
     assert all(str(tmp_path / ".venv") not in argument for call in calls for argument in call)
     assert agent == [{"mirror": installer.DEFAULT_PIP_INDEX}]
+    assert memory == [{"mirror": installer.DEFAULT_PIP_INDEX}]
 
 
 def test_installer_rejects_dependency_import_failure(tmp_path, monkeypatch):

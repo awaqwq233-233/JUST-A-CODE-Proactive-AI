@@ -46,20 +46,43 @@ def loaded_context(base_url="http://127.0.0.1:12345"):
 
 
 @contextmanager
-def serial_task(cache=CACHE):
-    """首版跨进程单任务串行，第二个调用明确忙碌而不排队。"""
+def serial_task(cache=CACHE, background=False):
+    """跨进程串行；前台只可要求后台记忆让出，绝不抢占已派发的任务动作。"""
     import fcntl
     cache.mkdir(parents=True, exist_ok=True)
     directory = open_directory(cache)
     fd = os.open("active.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600, dir_fd=directory)
     os.close(directory)
+    marker = cache / 'memory-active'
+    requested = cache / 'memory-yield'
+    acquired = False
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            raise AgentRefused("Agent 正忙，本次任务未排队") from error
+            if background or not marker.exists():
+                raise AgentRefused("Agent 正忙，本次任务未排队") from error
+            requested.touch(mode=0o600)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(.05)
+            else:
+                raise AgentRefused('后台记忆尚未释放模型，请稍后重试') from error
+        acquired = True
+        if background:
+            requested.unlink(missing_ok=True)
+            marker.touch(mode=0o600)
+        else:
+            marker.unlink(missing_ok=True)
+            requested.unlink(missing_ok=True)
         yield
     finally:
+        if acquired and background:
+            marker.unlink(missing_ok=True)
         os.close(fd)
 
 

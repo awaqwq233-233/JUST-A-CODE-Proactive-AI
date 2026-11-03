@@ -4,6 +4,8 @@
 
 ## English
 
+Long-term memory v2 is available through the production GUI/voice path. Gateway setup includes a separate CPU Chroma/BGE environment; existing machines can run `setup_new_computer.py --only memory`. Models and dependencies are pinned, runtime is offline, and private memory stays local. See section 23 for management and isolated validation.
+
 **Independent Agent prototype verified on 2026-10-18:** optional `--only agent` installs the pinned official Harness SDK/runtime and J.A.C. plugin into `.cache/agent/venv` on macOS 14+ arm64 / Python 3.11. Hash-checked wheels, mirror fallback and offline startup checks are included. Production voice now uses the unified JACBrain/Harness interface, and `--only gateway` also installs this separate environment. Existing machines can run `--only agent`; startup checks it before capture. See section 17.
 
 Option B was approved on 2026-10-06. M0 has been accepted by the user with the 30-minute soak explicitly waived. This guide provisions the isolated M0/M1 backend, probes and production Gateway CLI/GUI. `setup_new_computer.py --only gateway` (compatible alias: `--only m0`) installs Python 3.11 dependencies including PySide6 and verifies client/GUI imports without opening devices. The installer defaults to Gateway; all/pip/verify also use this current dependency set. Old MiniCPM runtime modes are removed.
@@ -643,3 +645,30 @@ GUI使用：打开「任务与资料」，点击「设置本次电脑操作范�
 边界：编辑UTF-8文本/代码（256 KiB/文件），保留BOM与CRLF；单事务20文件/2 MiB；代码副本200文件/8 MiB、60秒、禁网，未预装业务第三方依赖，容器产物不回写原目录。浏览器观察最多80个控件/3500字，桌面最多100个控件；模型每次接收12控件和1200字页面文字，可按next_offset分页，复杂任务仍受上下文预算约束；固定导航键不等于任意快捷键。暂不提供网页上传/下载、任意宿主shell、密码代填、OCR产物或所有应用兼容保证。状态、截图、浏览器资料及备份均不进Git。
 
 `verify_computer_actions.py` 的 `--browser --desktop --sandbox --model --vision` 分别验证合成网页、独立验收窗口、真实容器、Qwen编辑执行交付和截图候选点击；desktop/vision需要先编译并打开 `tests/fixtures/desktop_fixture.swift` 对应测试应用，默认安装不启动测试窗口。它们不启动摄像头、麦克风或MiniCPM，不能代替真人听感和长时同跑验收。验证日志见CHANGELOG。
+
+
+### 23 长期记忆生产接线
+
+Python 3.11，macOS Apple Silicon为当前验证平台。Gateway安装默认准备独立记忆环境；已有机器在项目根执行下面的完整命令。使用国内pip镜像，失败回退官方；下载模型使用固定revision和SHA256，TLS验证保持开启。
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/setup_new_computer.py --only memory
+```
+
+离线向量自检（不接Qwen、不打开设备、不写实际记忆）：
+
+```bash
+.cache/m0/venv/bin/python new_computer_download/prepare_memory.py --self-test-only
+```
+
+先在LM Studio加载精确的`qwen/qwen3.6-35b-a3b`、启动本机12345服务，再执行隔离文字验收：
+
+```bash
+.cache/m0/venv/bin/python verify_memory.py --model
+```
+
+GUI现有启动命令保持不变，“长期记忆”窗口提供查看来源、更正、删除、清空、自动记忆开关、本次暂停和索引重建。真实语音需要原有转写开启；关闭转写不能自动记住麦克风内容。CLI `--no-memory`只关闭该次CLI；文件回放默认不写实际记忆，显式`--memory-dir`才接隔离存储。
+
+默认真源`~/.jac/memory/memory-v2/state.json`，Windows默认`%APPDATA%/jac/memory/memory-v2/state.json`。`JAC_MEMORY_DIR`指定父目录。不要将实际记忆放到公开目录；项目内`data/memory/`、`memory-private/`、`memory-data/`、`.jac/`和所有`memory-v2/`均已忽略。模型在`.cache/memory/models/`，独立依赖在`.cache/memory/venv/`。`MEMORY.md`与`daily/*.md`只是视图，应通过GUI更正事实。
+
+索引故障时保留JSON与关键词检索，GUI可重建索引。JSON损坏时停止召回，不自动回退旧索引或旧备份；保存错误不会显示记住成功。自动提炼使用本地Qwen，前台任务优先；失败三次的候选留在待处理区，七天候选过期。实际记忆与任务授权不同，未接入云端或未来待办提醒。真人声音归属、识别准确率、听感及整日稳定性仍需分别验收。

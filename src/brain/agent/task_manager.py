@@ -45,6 +45,7 @@ class TaskManager:
         if self.on_event:
             detail = {'id': record['task_id'], 'task_id': record['task_id'], 'managed': True,
                       'answer': record.get('answer') or record.get('message', ''),
+                      'memory_refs': record.get('source', {}).get('memory_refs', []),
                       'path': record.get('report'), 'request': record.get('request', ''), **extra}
             try:
                 self.on_event(state, detail)

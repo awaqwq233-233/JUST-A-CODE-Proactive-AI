@@ -533,6 +533,8 @@ def step_m0(args):
         if not args.skip_transcription_model:
             log(f"[dry-run] 准备仓库外锁定 Whisper 资源及 CPU 自检：{args.whisper_model_dir}")
         install_agent(mirror=index, dry_run=True)
+        if not getattr(args, 'skip_embed', False):
+            install_memory(mirror=index, dry_run=True)
         return True
     if not os.path.exists(m0_python):
         run_cmd([interpreter, "-m", "venv", m0_root])
@@ -614,7 +616,21 @@ def step_m0(args):
     else:
         log("[跳过] Whisper 资源；GUI 启动前须关闭本地转写或自行完成资源安装。")
     install_agent(mirror=index)
+    if not getattr(args, 'skip_embed', False):
+        install_memory(mirror=index)
     return True
+
+
+def install_memory(mirror=None, dry_run=False):
+    """准备独立记忆环境和锁定模型，运行期不下载。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('jac_prepare_memory', os.path.join(SCRIPT_DIR, 'prepare_memory.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    arguments = ['--mirror', mirror or DEFAULT_PIP_INDEX]
+    if dry_run:
+        arguments.append('--dry-run')
+    module.main(arguments)
 
 
 def parse_args():
@@ -623,9 +639,9 @@ def parse_args():
         description="J.A.C. 新电脑一键依赖补全工具",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "external", "embed", "verify", "m0", "gateway", "agent", "actions"],
+    p.add_argument("--only", choices=["all", "pip", "system", "ffmpeg", "external", "embed", "verify", "m0", "gateway", "agent", "actions", "memory"],
                    default="gateway", help="只运行指定阶段（默认 gateway）")
-    p.add_argument("--skip-embed", action="store_true", help="跳过记忆 embedding 模型预下载（首次运行 main.py 时自动联网下）")
+    p.add_argument("--skip-embed", action="store_true", help="跳过独立记忆向量环境；运行期仅结构化/关键词检索，不自动下载")
     p.add_argument("--torch", choices=["auto", "cpu", "cuda"], default="auto",
                    help="torch 安装变体（auto: macOS=MPS, 其他=CPU）")
     p.add_argument("--no-venv", action="store_true", help="不建虚拟环境，装到当前 Python")
@@ -642,6 +658,9 @@ def parse_args():
 def main():
     """主"""
     args = parse_args()
+    if args.only == 'memory':
+        install_memory(mirror=OFFICIAL_PIP_INDEX if args.no_mirror else (args.mirror or DEFAULT_PIP_INDEX), dry_run=args.dry_run)
+        return
     if args.only == "actions":
         import importlib.util
         spec = importlib.util.spec_from_file_location("jac_prepare_actions", os.path.join(SCRIPT_DIR, "prepare_actions.py"))

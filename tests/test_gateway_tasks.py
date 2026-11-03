@@ -9,6 +9,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def isolated_task_store(tmp_path, monkeypatch):
+    """旁路回归使用独立任务库，不能接管生产任务或与原生回放争锁。"""
+    from src.brain.agent import task_store
+    actual_store = task_store.TaskStore
+    monkeypatch.setattr(task_store, 'TaskStore', lambda root=None: actual_store(root or tmp_path / 'tasks'))
+
 from src.brain.lm_studio import BrainCancelled
 from src.omni.gateway_client import GatewayCallbacks, GatewayClient
 from src.omni.task_pipeline import TaskPipeline, Utterance, VadSegmenter, confirmed_text, route_instruction

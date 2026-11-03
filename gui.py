@@ -468,6 +468,10 @@ class MainWindow(QMainWindow):
         self.open_folder_btn.setObjectName('quiet')
         self.open_folder_btn.clicked.connect(self._open_result_folder)
         task_controls.addWidget(self.open_folder_btn)
+        self.memory_btn = QPushButton('长期记忆')
+        self.memory_btn.setObjectName('quiet')
+        self.memory_btn.clicked.connect(self._memory_dialog)
+        task_controls.addWidget(self.memory_btn)
         conversation.addLayout(task_controls)
         self.website_choices = []
         for index in range(1, 4):
@@ -734,6 +738,11 @@ class MainWindow(QMainWindow):
     @Slot(str, object)
     def _append_task(self, state, detail):
         """主线程显示任务状态，完成后才开放真实报告文件入口。"""
+        if state.startswith('memory_'):
+            if state in {'memory_answer', 'memory_error', 'memory_expired'} and detail.get('answer'):
+                self._insert_text(self.console, '\n记忆 · ' + detail['answer'] + '\n')
+            self.memory_btn.setToolTip(detail.get('answer') or ('已保存记忆' if state == 'memory_saved' else '记忆正在后台整理'))
+            return
         if state == 'website_choices_cleared':
             self._website_token = None
             for button in self.website_choices:
@@ -843,6 +852,11 @@ class MainWindow(QMainWindow):
         else:
             self.runtime.set_task_inputs(inputs)
             self.console.appendPlainText('bo s s，资料范围已设定，仅用于下一项开放任务。')
+
+    def _memory_dialog(self):
+        """打开本机记忆管理入口，创建服务不会阻塞主线程加载模型。"""
+        from src.omni.memory_window import MemoryWindow
+        MemoryWindow(self.runtime.start_memory(), self).exec()
 
     def _task_center(self):
         """显示独立任务列表；实际控制和恢复由后台管理器拥有。"""

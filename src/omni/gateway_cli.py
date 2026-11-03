@@ -123,6 +123,8 @@ def main(argv=None) -> int:
     import os
     parser.add_argument("--whisper-model-dir", type=Path, default=Path(os.environ.get("JAC_WHISPER_MODEL_DIR", str(DEFAULT_MODEL_DIR))))
     parser.add_argument("--brain-url", default=os.environ.get("JAC_BRAIN_URL", "http://127.0.0.1:12345"))
+    parser.add_argument('--no-memory', action='store_true', help='关闭本次CLI长期记忆；文件回放默认不写记忆')
+    parser.add_argument('--memory-dir', type=Path, help='显式隔离记忆目录；文件回放仅指定此项才接入记忆')
     args = parser.parse_args(argv)
     if sys.version_info[:2] != (3, 11):
         parser.error("方案 B Gateway 入口必须使用 Python 3.11")
@@ -187,6 +189,17 @@ def main(argv=None) -> int:
                                args.input_file is None and os.environ.get("JAC_TRANSCRIPTION_ENABLED", "1").lower() not in {"0", "false", "no", "off"}),
                            whisper_model_dir=args.whisper_model_dir, brain_url=args.brain_url, **kwargs)
     outcome, error_type = "completed", None
+    owned_memory = []
+    if not args.no_memory and (args.input_file is None or args.memory_dir is not None):
+        def memory_provider():
+            """CLI拥有独立记忆服务，测试回放必须显式给出隔离目录。"""
+            if not owned_memory:
+                from src.memory.longterm.service import MemoryService
+                owned_memory.append(MemoryService(args.memory_dir, base_url=args.brain_url,
+                    on_event=client.callbacks.on_task_event, on_change=client.memory_changed))
+            return owned_memory[0]
+        client.memory_provider = memory_provider
+        client.context_provider = lambda: owned_memory[0].bootstrap() if owned_memory else ''
     try:
         asyncio.run(client.run(max_sessions=args.sessions))
     except KeyboardInterrupt:
@@ -194,6 +207,9 @@ def main(argv=None) -> int:
     except Exception as error:
         outcome, error_type = "failed", type(error).__name__
         print(f"\n[Gateway] 运行失败：{error_type}", flush=True)
+    finally:
+        for memory in owned_memory:
+            memory.close()
     report = {"outcome": outcome, "error_type": error_type, "stats": client.stats(),
               "live_devices": args.input_file is None, "media_recorded": False,
               "m0_acceptance": "user_approved_30min_waived"}
