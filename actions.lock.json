@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "platform": "macos-arm64",
+  "python": "3.11",
+  "packages": [
+    {
+      "name": "playwright",
+      "version": "1.64.1",
+      "filename": "playwright-1.64.1-py3-none-macosx_11_0_arm64.whl",
+      "sha256": "59f7b041284ce8d1b72098ae50ca48a2d83692eec25154ab5ba79d4b6b4fe8a9",
+      "url": "https://files.pythonhosted.org/packages/72/4f/572bbbe60a5787ca61a84bad934c3ce19c08c2bc9c0e9781bf0d99cad1a6/playwright-1.64.1-py3-none-macosx_11_0_arm64.whl"
+    },
+    {
+      "name": "greenlet",
+      "version": "3.5.6",
+      "filename": "greenlet-3.5.6-cp311-cp311-macosx_11_0_universal2.whl",
+      "sha256": "a6a4b98a9132e0f45c9fc245a63894cfd8c45fb7a0d6bffc5eab3ec327cf7324",
+      "url": "https://files.pythonhosted.org/packages/f1/d7/41511ee2696f14be4200b524d9553dc4295e2bdeb20aa8962c3cb25e71c6/greenlet-3.5.6-cp311-cp311-macosx_11_0_universal2.whl"
+    },
+    {
+      "name": "pyee",
+      "version": "13.0.1",
+      "filename": "pyee-13.0.1-py3-none-any.whl",
+      "sha256": "af2f8fede4171ef667dfded53f96e2ed0d6e6bd7ee3bb46437f77e3b57689228",
+      "url": "https://files.pythonhosted.org/packages/a0/c4/b4d4827c93ef43c01f599ef31453ccc1c132b353284fc6c87d535c233129/pyee-13.0.1-py3-none-any.whl"
+    },
+    {
+      "name": "typing-extensions",
+      "version": "4.16.0",
+      "filename": "typing_extensions-4.16.0-py3-none-any.whl",
+      "sha256": "481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8",
+      "url": "https://files.pythonhosted.org/packages/49/d3/b8441a820a491ddfc024b0b0cf0393375b75ea13866d9c66727e54c2fc80/typing_extensions-4.16.0-py3-none-any.whl"
+    }
+  ],
+  "runtime": {
+    "colima": "0.10.3",
+    "lima": "2.2.1",
+    "docker": "29.8.2"
+  },
+  "images": {
+    "python": "sha256:24e378b1df92f9f56efe1dfc06a36759d49ed061b8c8070ee95ee7b260692af0",
+    "node": "sha256:96f890e327be84f7f8b39072a40cb0a388d9f95a346b0ab0eca3ad047336ff10"
+  },
+  "image_sources": {
+    "python": {
+      "repository": "library/python",
+      "tag": "3.11-slim-bookworm",
+      "manifest": "sha256:87315badf0e37929a5c665b26b5242a874dfe9b0c912e5565f07bf6c5eb0aa19",
+      "config": "sha256:5bc33246ad7c3481addfaf44161555fb8858612cc08e7e92a55668b7e17d74ff"
+    },
+    "node": {
+      "repository": "library/node",
+      "tag": "22-bookworm-slim",
+      "manifest": "sha256:9a422d62743ffb1e6eb282549f4eae7ab89f7b926db1f136f4cba8be60e4ecbc",
+      "config": "sha256:69f266c3ec9d93ce85b5643431560e9eedefb54f252730c84453239c2e68f071"
+    }
+  }
+}

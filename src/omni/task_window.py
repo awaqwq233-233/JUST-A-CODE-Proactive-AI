@@ -2,10 +2,10 @@
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QDesktopServices, QPixmap, QPainter, QPen, QColor
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
                                QTreeWidget, QTreeWidgetItem, QPlainTextEdit, QCheckBox,
-                               QDialogButtonBox, QFileDialog)
+                               QDialogButtonBox, QFileDialog, QMessageBox)
 
 LABELS = {'queued': '排队', 'running': '执行中', 'pausing': '正在暂停', 'cancelling': '正在取消',
           'paused': '已暂停', 'needs_input': '等待补充', 'completed': '完成', 'partial': '部分完成',
@@ -34,13 +34,19 @@ class TaskCenter(QDialog):
         self.detail.setMaximumHeight(180)
         layout.addWidget(self.detail)
         row = QHBoxLayout()
-        for title, action in [('暂停', 'pause'), ('继续', 'resume'), ('取消', 'cancel'),
+        for index, (title, action) in enumerate([('暂停', 'pause'), ('继续', 'resume'), ('取消', 'cancel'),
                               ('移到队首', 'prioritize'), ('补充资料', 'supplement'),
-                              ('增加30分钟/120次', 'extend'), ('打开结果', 'open'), ('删除记录', 'delete')]:
+                              ('增加30分钟/120次', 'extend'), ('打开结果', 'open'), ('确认操作', 'approve'), ('删除记录', 'delete')]):
+            if index == 5:
+                layout.addLayout(row)
+                row = QHBoxLayout()
             button = QPushButton(title)
             button.clicked.connect(lambda checked=False, value=action: self.act(value))
             row.addWidget(button)
         layout.addLayout(row)
+        emergency = QPushButton('停止电脑操作')
+        emergency.clicked.connect(self.manager.stop_computer_actions)
+        layout.addWidget(emergency)
         self.message = QLabel('删除记录会移除本地恢复资料，已交付文件保留在结果目录。')
         self.message.setWordWrap(True)
         layout.addWidget(self.message)
@@ -78,6 +84,8 @@ class TaskCenter(QDialog):
             lines = [record['request'], record['task_id'], record.get('message', ''),
                      '阶段：' + str(record.get('stage', 0))]
             lines += [f'{i}. {step}' for i, step in enumerate(record.get('plan', []), 1)]
+            if record.get('action_request'):
+                lines.append('待确认：' + record['action_request']['detail'])
             if record.get('report'):
                 lines.append('结果：' + record['report'])
             self.detail.setPlainText('\n'.join(filter(None, lines)))
@@ -103,12 +111,14 @@ class TaskCenter(QDialog):
         layout.addWidget(label)
         refresh = QCheckBox('确认使用已修改文件的当前版本，并重新计算受影响结果')
         layout.addWidget(refresh)
+        reviewed = QCheckBox('已核对上次结果不明的操作；上方填写实际结果，继续时重新观察')
+        layout.addWidget(reviewed)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
         if dialog.exec() == QDialog.Accepted:
-            self.manager.resume(identifier, inputs={'files': files}, note=note.toPlainText(), refresh=refresh.isChecked())
+            self.manager.resume(identifier, inputs={'files': files}, note=note.toPlainText(), refresh=refresh.isChecked(), reviewed=reviewed.isChecked())
 
     def act(self, action):
         """向管理器提交精确控制，失败原因留在界面，不影响其他任务。"""
@@ -127,6 +137,13 @@ class TaskCenter(QDialog):
                 self.supplement(identifier)
             elif action == 'prioritize':
                 self.manager.prioritize(identifier)
+            elif action == 'approve':
+                record = next(r for r in self.manager.list() if r['task_id'] == identifier)
+                request = record.get('action_request')
+                if not request:
+                    raise ValueError('没有待确认操作')
+                if self.confirm_action(request):
+                    self.manager.approve_action(identifier)
             elif action == 'delete':
                 self.manager.delete(identifier)
             elif action == 'open':
@@ -138,3 +155,30 @@ class TaskCenter(QDialog):
         except Exception as error:
             self.message.setText('bo s s，' + str(error))
         self.refresh()
+
+    def confirm_action(self, request):
+        """显示精确动作及窗口截图标记，避免用户只能凭坐标批准视觉候选。"""
+        if not request.get('preview'):
+            return QMessageBox.question(self, '确认本次具体操作', request['detail']) == QMessageBox.Yes
+        dialog = QDialog(self)
+        dialog.setWindowTitle('确认截图中的操作目标')
+        layout = QVBoxLayout(dialog)
+        description = QLabel(request['detail'])
+        description.setWordWrap(True)
+        layout.addWidget(description)
+        preview = request['preview']
+        pixmap = QPixmap(preview['path'])
+        if pixmap.isNull():
+            raise ValueError('截图预览已缺失，请重新定位')
+        painter = QPainter(pixmap)
+        painter.setPen(QPen(QColor('#ff3050'), 3))
+        painter.drawEllipse(preview['x']-12, preview['y']-12, 24, 24)
+        painter.end()
+        label = QLabel()
+        label.setPixmap(pixmap.scaled(800, 600, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        layout.addWidget(label)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        return dialog.exec() == QDialog.Accepted

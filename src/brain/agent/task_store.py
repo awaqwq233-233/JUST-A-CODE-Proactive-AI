@@ -91,12 +91,17 @@ class TaskStore:
         """接受完整用户目标和显式授权资料，尚不访问资料或启动模型。"""
         if not isinstance(task, str) or not 2 <= len(task.strip()) <= 4000:
             raise AgentRefused('任务文字须为2–4000字')
+        from .action_policy import authorize, VERSION
+        inputs = dict(inputs or {})
+        selected = authorize(inputs.pop('actions', None))
         record = {'version': 1, 'task_id': 'jac-' + uuid4().hex, 'request': task.strip(),
                   'source': source or {'kind': 'gui'}, 'inputs': inputs or {}, 'status': 'queued',
                   'created_at': time.time(), 'order': time.time_ns(), 'control': None,
                   'budget': {'seconds': 1800, 'calls': 120, 'used_seconds': 0.0, 'used_calls': 0},
                   'stage': 0, 'failures': 0, 'stalls': 0, 'checkpoint': None, 'pending': None,
                   'plan': [], 'acceptance': {}, 'notes': [], 'authorization': 'local-read-and-new-artifacts-v1'}
+        if selected:
+            record.update(authorization=VERSION, action_scope=selected)
         self.save(record)
         return record
 

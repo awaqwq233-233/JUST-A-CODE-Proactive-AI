@@ -67,7 +67,8 @@ class GatewayClient:
                  video_enabled=True, mic_gain=1.0, session_seconds=240,
                  context_provider=None, device_factory=LiveDevices, retry_limit=3, drain_seconds=8,
                  transcription_enabled=False, whisper_model_dir=None,
-                 brain_url="http://127.0.0.1:12345", pipeline_factory=None, task_submitter=None):
+                 brain_url="http://127.0.0.1:12345", pipeline_factory=None, task_submitter=None,
+                 memory_provider=None):
         """仅配置客户端，不打开设备；默认在视频会话上限前 60 秒主动重建。"""
         self.url = protocol.gateway_url(url, "video")
         if not 5 <= session_seconds <= 240 or retry_limit < 0:
@@ -104,6 +105,22 @@ class GatewayClient:
         self._costs = deque(maxlen=3000)
         self._stats = Counter()
         self.last_error = None
+        self.memory_provider = memory_provider
+        self.memory = None
+        self._memory_refresh = threading.Event()
+
+    def memory_changed(self, revision, invalidated):
+        """撤销旧记忆关联输出；已注入旧事实时在唯一 WS 循环受控轮换。"""
+        if invalidated and self._speech is not None:
+            self._speech.cancel()
+        if invalidated:
+            self._memory_refresh.set()
+            pipeline = self._pipeline
+            if pipeline is not None:
+                with pipeline.lock:
+                    pipeline.memory_invalidated = True
+                    pipeline.response_guard.set()
+                    pipeline.response_policy = 'block'
 
     async def _close_session(self, ws, receiver, reason) -> None:
         """保留唯一接收器直到关闭确认，避免提前断链令 Worker 收尾与重启冲突。"""
@@ -123,7 +140,14 @@ class GatewayClient:
 
     async def _init_message(self, voice) -> dict:
         """每次建会话重新注入用户提供的上下文和有界助手历史，不伪造用户转写。"""
+        if self._memory_refresh.is_set():
+            self._recent.clear()
+            self._pending_text = ''
+            self._memory_refresh.clear()
         extra = await asyncio.to_thread(self.context_provider) if self.context_provider else ""
+        if self.memory is not None and not self.memory.ready.is_set():
+            await asyncio.to_thread(self.memory.ready.wait, 3)
+            extra = await asyncio.to_thread(self.context_provider) if self.context_provider else ''
         recent = "\n".join(self._recent)[-2000:]
         prompt = self.system_prompt
         if extra:
@@ -267,6 +291,8 @@ class GatewayClient:
                     self._ready.set()
                     stream_start = None
                     for index in range(self.session_seconds):
+                        if self._memory_refresh.is_set():
+                            break
                         chunk = await asyncio.to_thread(devices.audio.get, True, 2)
                         if stream_start is None:
                             stream_start = time.monotonic()
@@ -368,6 +394,9 @@ class GatewayClient:
                 from .task_pipeline import TaskPipeline, DEFAULT_MODEL_DIR
                 factory = self.pipeline_factory or TaskPipeline
                 self._pipeline = factory(self.callbacks, self.whisper_model_dir or DEFAULT_MODEL_DIR, self.brain_url)
+                if self.memory_provider is not None:
+                    self.memory = self.memory_provider()
+                    self._pipeline.memory = self.memory
                 if self.task_submitter is not None:
                     self._pipeline.assistant_submitter = self.task_submitter
                 from .task_speech import TaskSpeechQueue
@@ -383,6 +412,8 @@ class GatewayClient:
                     raise
             await self._run_sessions(max_sessions=max_sessions)
         finally:
+            if self.memory is not None:
+                self.memory.request('flush_index')
             if self._pipeline is not None:
                 self._pipeline.request_stop()
                 await asyncio.to_thread(self._pipeline.stop)
@@ -415,6 +446,19 @@ class GatewayClient:
                     raise
                 self.callbacks.on_state("reconnecting", {"attempt": failures, "capture_paused": True})
                 await asyncio.sleep(min(2 ** (failures - 1), 4))
+            except RuntimeError as error:
+                # 上游把内部连接断开编码为 session_failed；重建代次，不重放旧语句或任务。
+                init_race = completed > 0 and str(error) == '会话提前关闭: backend_error'
+                disconnected = self._stats['sessions_started'] > 0 and str(error) == '服务端错误: session_failed'
+                if not (init_race or disconnected):
+                    raise
+                failures += 1
+                if failures > self.retry_limit or self._stop.is_set():
+                    raise
+                with self._lock:
+                    self._stats['backend_init_retries' if init_race else 'backend_session_retries'] += 1
+                self.callbacks.on_state('reconnecting', {'attempt': failures, 'capture_paused': True})
+                await asyncio.sleep(min(2 ** failures, 8))
         self.callbacks.on_state("closed")
 
     def start(self, timeout=180) -> bool:

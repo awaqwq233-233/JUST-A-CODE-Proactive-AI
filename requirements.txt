@@ -1,5 +1,7 @@
 # 当前主程序仅运行固定 Gateway，Python 3.11。
-# 共用版本锁；Gateway 已接并行 CPU 转写/查询及受限本地任务与原生结果播报，记忆仍待接入。
+# 共用版本锁；Gateway 已接并行 CPU 转写/查询及受限本地任务与原生结果播报，长期记忆使用独立环境。
 -r new_computer_download/requirements-m0.txt
 
 # 可选独立 Agent：setup_new_computer.py --only agent；锁在 requirements-agent.txt，不并入本环境。
+
+# 记忆向量独立环境：--only memory；requirements-memory.txt 与 memory.lock.json。

@@ -131,7 +131,8 @@ class VoiceToolBoundary:
                 raise BrainError("同一动作不得用新调用 ID 重试")
             signatures.add(signature)
             pending[identity] = copy.deepcopy(call)
-            if self.reuse_repeated:
+            from .action_tools import VOLATILE
+            if self.reuse_repeated and name not in VOLATILE:
                 prior = next((key for key, item in reversed(list({**self.calls, **pending}.items()))
                               if key != identity and item['name'] == name and item['arguments'] == call['arguments']), None)
                 if prior:
@@ -218,6 +219,8 @@ class HarnessBrain:
 
     def _run(self, prompt, system, tools, execute, should_stop, timeout, steps, *, domain="voice", stop_tool=None):
         """在任务线程拥有运行时进程组；终态、持久化和完整证据都通过才返回。"""
+        if any(item['function']['name'] == 'run_code' for item in tools):
+            raise BrainError('run_code 是 Harness 保留工具名，不能注册自定义实现')
         check_cancelled(should_stop)
         context = self.context_reader()
         deadline = time.monotonic() + timeout

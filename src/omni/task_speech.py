@@ -9,6 +9,9 @@ import time
 
 def speech_summary(result, fields):
     """从已交付的工具证据生成短句，不让感知模型重新推理或编造数字。"""
+    if fields[0] == 'memory':
+        answer = re.sub(r'[#*`\n\r\t<>]+', ' ', result.answer).strip()
+        return 'bo s s，' + (answer if len(answer) <= 140 else '已找到相关记忆，内容较长，请查看界面中的完整回答。')
     if fields[0] == 'assistant':
         if result.status == 'deferred':
             return 'bo s s，这项任务需要云端处理。OpenClaw尚未接入，任务未提交，手机未发送；交接单已保存在本机。'
@@ -84,6 +87,8 @@ class SpeechJob:
     received: int = 0
     nonzero: bool = False
     transcript: str = ""
+    memory_revision: int | None = None
+    memory_refs: list = field(default_factory=list)
 
 
 class TaskSpeechQueue:
@@ -113,6 +118,8 @@ class TaskSpeechQueue:
                 return
             self.seen.append(identifier)
             job = SpeechJob(identifier, generation, speech_summary(result, fields), self.clock() + 20)
+            job.memory_revision = getattr(result, 'memory_revision', None)
+            job.memory_refs = getattr(result, 'memory_refs', [])
             if fields[0] in {"weather_city", "local_input"} or getattr(result, 'status', '') == 'needs_input':
                 job.purpose = "clarification"
             if self.pending or self.active:
@@ -139,7 +146,7 @@ class TaskSpeechQueue:
             now = self.clock()
             for name in ("pending", "active"):
                 job = getattr(self, name)
-                if job and (not self.pipeline.current(job.generation) or now >= job.deadline):
+                if job and (not self.pipeline.current(job.generation) or now >= job.deadline or not self._memory_current(job)):
                     job.cancellation.set()
                     setattr(self, name, None)
                     self._notify("skipped", job, "speech_timeout")
@@ -164,7 +171,19 @@ class TaskSpeechQueue:
         """调用方持有代次锁时核对已派发的播报归属。"""
         job = self.active
         return job if (job and job.identifier == identifier and not job.cancellation.is_set()
-                       and self.clock() < job.deadline and self.pipeline.current(job.generation)) else None
+                       and self.clock() < job.deadline and self.pipeline.current(job.generation) and self._memory_current(job)) else None
+
+    def _memory_current(self, job):
+        """发送与接收边界复核事实版本，阻止删除竞争下迟到的语音继续播放。"""
+        if job.memory_revision is None and not job.memory_refs:
+            return True
+        memory = getattr(self.pipeline, 'memory', None)
+        valid = memory is not None and (job.memory_revision is None or memory.valid(job.memory_revision))
+        if valid and job.memory_refs:
+            valid = memory.valid_refs(job.memory_refs)
+        if not valid:
+            job.cancellation.set()
+        return valid
 
     def text_delta(self, identifier, text):
         """保留有界字面文本供完成核对，过期/错代次增量直接丢弃。"""

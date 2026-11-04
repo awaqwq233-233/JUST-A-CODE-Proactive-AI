@@ -25,6 +25,13 @@ def main():
     parser.add_argument('--note', default='')
     parser.add_argument('--refresh', action='store_true')
     parser.add_argument('--extend', action='store_true')
+    parser.add_argument('--workspace')
+    parser.add_argument('--allow-edit', action='store_true')
+    parser.add_argument('--runtime', action='append', choices=['python', 'node'], default=[])
+    parser.add_argument('--origin', action='append', default=[])
+    parser.add_argument('--app', action='append', default=[])
+    parser.add_argument('--approve', action='store_true')
+    parser.add_argument('--reviewed', action='store_true', help='已核对结果不明动作，须同时用--note说明实际结果')
     args = parser.parse_args()
     store = TaskStore(args.store)
     if args.list:
@@ -38,11 +45,16 @@ def main():
     try:
         manager.start()
         inputs = {'files': [str(Path(p).absolute()) for p in args.file], 'text': args.text}
+        if args.workspace or args.origin or args.app or args.runtime or args.allow_edit:
+            inputs['actions'] = {'workspace': args.workspace or '', 'edit': args.allow_edit,
+                                 'runtimes': args.runtime, 'origins': args.origin, 'apps': args.app}
         if args.resume:
             identifier = args.resume
             current = next(r for r in manager.list() if r['task_id'] == identifier)
-            if current['status'] in {'paused', 'needs_input', 'failed'}:
-                manager.resume(identifier, inputs=inputs, note=args.note, refresh=args.refresh,
+            if args.approve:
+                manager.approve_action(identifier)
+            elif current['status'] in {'paused', 'needs_input', 'failed'}:
+                manager.resume(identifier, inputs=inputs, note=args.note, refresh=args.refresh, reviewed=args.reviewed,
                                extra_seconds=1800 if args.extend else 0, extra_calls=120 if args.extend else 0)
         else:
             identifier = manager.submit(args.task, inputs, {'kind': 'explicit_cli'})

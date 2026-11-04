@@ -91,6 +91,36 @@ class GatewayRuntime:
         self._assistant_thread = None
         self._assistant_cancel = threading.Event()
         self._assistant_lock = threading.RLock()
+        self.memory = None
+
+    def start_memory(self):
+        """应用级记忆生命周期独立于语音；构造只启动后台，不等待磁盘或模型。"""
+        with self._assistant_lock:
+            if self.application_closing.is_set():
+                raise RuntimeError('程序正在退出')
+            if self.memory is None:
+                from src.memory.longterm.service import MemoryService
+                self.memory = MemoryService(base_url=self.brain_url, on_event=self._memory_event,
+                                            on_change=self._memory_changed)
+            return self.memory
+
+    def _memory_event(self, state, detail):
+        """记忆事件不改变任务忙碌状态；通过已有信号送往界面。"""
+        if self.task_callback:
+            self.task_callback(state, detail)
+
+    def _memory_changed(self, revision, invalidated):
+        """更正删除后清除旧用户上下文，并要求语音客户端刷新已注入事实。"""
+        if invalidated:
+            with self.context._lock:
+                self.context._transcriptions.clear()
+        client = self.omni_client
+        if client is not None:
+            client.memory_changed(revision, invalidated)
+
+    def _memory_context(self):
+        """初始化仅注入版本化有效记忆，防止旧转写在删除后重新进入提示。"""
+        return self.memory.bootstrap() if self.memory else ''
 
     def notify(self, running):
         """向 GUI 发布启动/停止结果。"""
@@ -121,10 +151,11 @@ class GatewayRuntime:
                 output_device=config.gateway_output_device, camera=config.gateway_camera, video_fps=config.omni_fps,
                 video_enabled=config.omni_video_enabled, mic_gain=config.omni_mic_gain,
                 session_seconds=config.gateway_session_seconds, retry_limit=config.gateway_retry_limit,
-                context_provider=lambda: self.context.get_recent_transcriptions(window=300),
+                context_provider=self._memory_context,
                 transcription_enabled=config.gateway_transcription_enabled,
                 whisper_model_dir=config.whisper_model_dir, brain_url=config.gateway_brain_url,
                 task_submitter=self.accept_voice_task,
+                memory_provider=self.start_memory,
             )
             self.running = self.omni_mode = True
             if not self.omni_client.start(timeout=180):
@@ -187,7 +218,7 @@ class GatewayRuntime:
                 from src.brain.agent.production import HarnessBrain
                 store = TaskStore()
                 self.tasks = TaskManager(store, DurableTaskRunner(store,
-                    AssistantTaskRunner(HarnessBrain(self.brain_url))), self._managed_event)
+                    AssistantTaskRunner(HarnessBrain(self.brain_url)), memory_provider=self.start_memory), self._managed_event)
             self.tasks.start()
         return self.tasks
 
@@ -205,8 +236,23 @@ class GatewayRuntime:
     def submit_task(self, text, inputs=None):
         """GUI文字任务进入持久化队列，停止语音不影响执行。"""
         selected = inputs if inputs is not None else self.task_inputs
+        memory = self.start_memory()
+
+        def after_memory(result):
+            """记忆请求直接交付；其它文字任务保留原授权范围并送入持久任务管理器。"""
+            if self.application_closing.is_set():
+                return
+            if result.get('handled'):
+                self._memory_event('memory_answer', {'managed': True, 'answer': result.get('answer', '')})
+                return
+            try:
+                self.start_tasks().submit(text, selected, {'kind': 'gui', 'memory_refs': [
+                    {'id': fact['id'], 'revision': fact['revision']} for fact in result.get('facts', [])]})
+            except Exception as error:
+                DesktopCallbacks(self).on_task_event('rejected', {'answer': str(error)})
         try:
-            self.start_tasks().submit(text, selected, {'kind': 'gui'})
+            from .task_pipeline import route_task
+            memory.offer(text, {'kind': 'gui', 'task': bool(route_task(text))}, after_memory)
             self.task_inputs = {}
             return True
         except Exception as error:
@@ -231,6 +277,8 @@ class GatewayRuntime:
         self.stop()
         if self.tasks:
             self.tasks.close()
+        if self.memory:
+            self.memory.close()
 
 
 class DesktopRuntime(GatewayRuntime):

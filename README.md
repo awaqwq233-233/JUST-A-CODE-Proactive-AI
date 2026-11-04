@@ -8,6 +8,16 @@ A local-first multimodal Proactive AI Butler inspired by JARVIS.
 
 J.A.C. aims to perceive its surroundings, plan ahead, warn of hazards and perform tasks proactively. Smart glasses and MR are optional terminals; the core product is the AI system and service framework. Development primarily targets macOS on Apple Silicon.
 
+**Development paused on 2026-11-04 at the user's request.** The local multimodal Agent prototype includes recoverable tasks, scoped computer actions and production long-term memory. Real OpenClaw execution, proactive to-dos/reminders and hazard-response loops remain unfinished. The pause snapshot, acceptance limits and suggested restart order are recorded in [CHANGELOG Appendix A8](CHANGELOG.md#pause-snapshot-20261104). The first recommended restart milestone is integrated live-device acceptance of the existing capabilities.
+
+### Long-term memory (2026-11-02)
+
+Production voice and GUI text now share a local memory service. Explicit facts and ordinary self-described preferences can be saved automatically; quoted, hypothetical, temporary and secret content is excluded or kept out of confirmed facts. JSON is the source of truth, with atomic commits, source evidence, versions and deletion barriers. Corrections supersede the current fact; deleted facts cannot be recovered from the vector index. Human-readable `MEMORY.md` and daily views are derived from JSON.
+
+Default storage is `~/.jac/memory/memory-v2/` (`JAC_MEMORY_DIR` overrides the parent). The GUI **长期记忆** window supports review, correction, deletion, automatic-memory settings and index rebuilding. Disk and model work run in the background. Chroma/BGE run in a separate CPU process; Qwen/Harness performs bounded extraction and evidence-based answers. New facts participate in retrieval before the five-item index batch is written. Changes invalidate queued answers and stale session context; refreshing injected context can require a controlled voice reconnect. Missing evidence is reported, not invented.
+
+Install with `setup_new_computer.py --only memory`; Gateway setup includes this stage unless `--skip-embed` is supplied. `memory.lock.json` pins the INT8 ONNX conversion and preprocessing. Runtime never downloads models. Files, indexes, pending text and migration state remain private and ignored by Git. `verify_memory.py --model` uses an isolated synthetic store. Native replay and human listening have separate acceptance records in CHANGELOG. See [installation section 23](new_computer_download/READMEfirst.md#23-长期记忆生产接线).
+
 ### Architecture and current status
 
 **Reliability follow-up (2026-10-22):** the registered native patch now pairs forced-listen input with its queued prefill/decode step, preventing persistent input lag and queue blockage, and removes a duplicate TTS audio-BOS condition. One short two-turn file replay continued and expanded the prior answer; longer-interval follow-ups still produced silence, and other runs missed a first answer or misread visual details. A temporary 16384-context experiment did not reliably restore replies, so production remains at 4096. The user subsequently confirmed that the updated GUI answered the first question and continued the immediate follow-up. This accepts that live short exchange, not general or long-interval context reliability. `verify_native_reliability.py` checks 64 consecutive forced-listen steps, literal speech ownership/sample counts and session closure without devices; generated test audio is saved only with `--save-generated-audio`. Existing installations must rebuild the current combined patch. The user has accepted both fixed speech samples as complete, without obvious pauses, and close to the reference voice. Four 240-second synthetic production sessions completed eight real queries/reports/native speech receipts and closed normally, with no cleanup failures or simulated playback gaps. This is a 16-minute fixed-workload check, not all-day or live-device acceptance; details are in CHANGELOG.
@@ -28,11 +38,11 @@ Input audio is 16 kHz mono float32 PCM, sent in fixed 1-second blocks. Output au
 
 The target capture pipeline uses SoundDevice and background OpenCV capture at 640×480 and 5–10 fps. Each audio block carries the latest JPEG frame by default; GUI preview and model input rates are independent. Audio callbacks and the Qt/asyncio main loop must not perform blocking capture, encoding or retrieval.
 
-Target memory uses JSON as the structured source of truth, ChromaDB as a rebuildable index, and BGE-Small-ZH-v1.5 ONNX INT8 embeddings. Summaries are batch-written every five records or on session end. Retrieval runs at session initialization and completed user utterances, using parallel local transcription where needed.
+Production memory v2 uses JSON as the structured source of truth, ChromaDB as a rebuildable index, and BGE-Small-ZH-v1.5 ONNX INT8 embeddings. Facts commit immediately; vector updates are batched every five records or on session end. Retrieval runs at session initialization and completed user utterances, using parallel local transcription where needed.
 
 **Late-stage plan approved on 2026-10-11; not implemented:** a local to-do list and proactive reminders will follow the existing core migrations. MiniCPM will identify tasks, owners, intended executors, current activities and timing; the local application will validate and persist updates to JSON and refresh the GUI. Ambiguous entries await clarification, inferred activities expire, and completion requires user feedback or actual execution evidence. Task changes are saved promptly, independently of the five-summary vector-index batch. Normal silent reviews default to every 45 minutes, configurable to 30–60 minutes or longer; explicit reminder times and significant task events are handled separately. Review frequency is not notification frequency: reminders respect activity and do-not-disturb settings, support snooze/cancel, and suppress duplicates. A validated structured-event channel from MiniCPM and its integration with the pinned backend must first be verified; ordinary model replies are not reliable write instructions. No automatic full-list cloud upload or Git publication, no promise of on-time reminders while the app is closed or the computer sleeps, and no implementation or installation changes are included in this plan. Optional wearables are not prerequisites. See [AGENTS.md](AGENTS.md) and CHANGELOG Appendix A6.
 
-**M0 is accepted with the 30-minute soak explicitly waived. M1 live listening/vision/speech, GUI preview and manual restart were accepted by the user on 2026-10-07.** The production Gateway SDK, SoundDevice capture/native playback and background 640×480 OpenCV capture are available through `main.py --gateway`, with a lightweight GUI via `--gui`. M2a independent Qwen read-only tool execution and Chinese file output are now verified. M2b now connects parallel VAD/Whisper transcription and explicit read-only system tasks and web searches to the Gateway CLI/GUI; the user confirmed successful live text results on 2026-10-08. Native task-result speech is now connected; ChromaDB and cloud tasks are still pending. This acceptance does not establish unlimited sessions or long-term stability.
+**M0 is accepted with the 30-minute soak explicitly waived. M1 live listening/vision/speech, GUI preview and manual restart were accepted by the user on 2026-10-07.** The production Gateway SDK, SoundDevice capture/native playback and background 640×480 OpenCV capture are available through `main.py --gateway`, with a lightweight GUI via `--gui`. M2a independent Qwen read-only tool execution and Chinese file output are now verified. M2b now connects parallel VAD/Whisper transcription and explicit read-only system tasks and web searches to the Gateway CLI/GUI; the user confirmed successful live text results on 2026-10-08. Native task-result speech is connected. Long-term memory v2 is now wired into production; cloud execution remains pending. This acceptance does not establish unlimited sessions or long-term stability.
 
 The pinned Gateway limits video sessions to 300 seconds and audio sessions to 600 seconds. M1 rotates video sessions after 240 input seconds, closes/releases devices and reconnects with the reference voice and bounded assistant history plus supplied confirmed context. Capture visibly pauses during reconnection. It does not reconstruct untranscribed user speech or provide seamless audio across the gap.
 
@@ -64,7 +74,13 @@ Supported inputs include text, CSV/TSV/JSON, DOCX/XLSX and text PDFs, up to 8 Mi
 
 WeChat requires the separately authorized macOS reader and an exact conversation name. Current loaded-message reading remains supported; bounded paging code exists with title/overlap checks, but production keeps it disabled pending real history-paging acceptance. Timestamp-to-message association and automatic attachment download are not reliable enough to enable: provide saved attachments through the material picker. Media placeholders are not decoded content. No message sending or database decryption is provided.
 
-Supported WeChat-to-Excel work can run locally. Explicit cloud/phone requests still create only a local `handoff.json`: OpenClaw is **not connected**, tasks are not submitted and phone delivery does not occur. Private inputs disable public web tools. Arbitrary shell, original-file modification, scanned-PDF OCR and unrestricted desktop automation remain outside this release. See [setup guide](new_computer_download/READMEfirst.md#21-可恢复长任务与扩展工具) and [CHANGELOG](CHANGELOG.md) for evidence and limitations.
+Supported WeChat-to-Excel work can run locally. Explicit cloud/phone requests still create only a local `handoff.json`: OpenClaw is **not connected**, tasks are not submitted and phone delivery does not occur. Private inputs disable public web tools. Scanned-PDF OCR and arbitrary host shell remain unavailable. Task-scoped editing and desktop actions are described below. See [setup guide](new_computer_download/READMEfirst.md#21-可恢复长任务与扩展工具) and [CHANGELOG](CHANGELOG.md) for evidence and limitations.
+
+### Scoped computer actions (2026-10-31)
+
+In **任务与资料 → 设置本次电脑操作范围**, select a workspace, editing/runtime permissions, website origins or application bundles for this task. File editing uses versioned staging, exact patches, atomic per-file commits and conditional rollback. Python/Node scripts run in a disposable, network-disabled container with copied inputs and no host mounts. Browser tools use a separate task profile; macOS desktop tools observe accessibility controls before clicking, typing, scrolling or dragging. Screenshot fallback uses the same local Qwen to propose a marked target, followed by explicit confirmation and a fresh image check.
+
+Results require real file hashes, exit codes or UI text verification. Task Center provides concrete-action confirmation and **停止电脑操作**. UI tasks pause after app restart; uncertain dispatched actions are never automatically replayed. This is scoped automation, with bounded pages/files and fixed navigation keys. Password entry, arbitrary host shell, browser upload/download and opaque UI success detection are not provided. Current acceptance is macOS arm64 with synthetic windows/pages; general application compatibility and voice/MiniCPM co-running remain separate acceptance work. See [setup guide section 22](new_computer_download/READMEfirst.md#22-电脑操作文件编辑与隔离执行).
 
 ### Setup and verification
 
@@ -158,6 +174,18 @@ Dynamic mappings live in ignored `.cache/sites/resolutions.json` (up to 128 entr
 
 ## 中文说明
 
+**2026-11-04 按 boss 要求暂停开发。** 当前成果是具备可恢复任务、受限电脑操作和长期记忆的本地多模态 Agent 原型。真实 OpenClaw、主动待办/提醒及危险预警/应急闭环仍未完成。阶段成果、验收边界、保留清单与恢复顺序见 [CHANGELOG 附 A8](CHANGELOG.md#pause-snapshot-20261104)；恢复后的首个建议目标是现有能力的真人综合验收。
+
+### 长期记忆（2026-11-02）
+
+生产语音与GUI文字共用本机记忆服务：明确事实和日常自述的稳定偏好可自动保存；更正更新同一事实，删除后不能从索引复活。JSON为真源，记录原话来源、版本和删除屏障；`MEMORY.md`与每日文件是自动生成的可读视图。默认目录`~/.jac/memory/memory-v2/`，`JAC_MEMORY_DIR`可修改父目录。
+
+GUI“长期记忆”可查看、更正、删除、清空、暂停自动记忆和重建索引。后台完成写盘与提炼，Chroma/BGE使用独立CPU进程；Qwen/Harness负责受控提炼和有证据的回答。新事实不必等满五条才能查到。更正和删除使旧回答、任务依赖与会话上下文失效；刷新已注入内容可能短暂重连。尚未记住或证据不足时明确说明，记忆不会授予新的电脑操作权限。
+
+安装使用`setup_new_computer.py --only memory`；Gateway阶段默认一并准备。`--skip-embed`仅跳过向量环境，运行期不下载。实际记忆、索引、待处理原话和迁移状态不上传Git。文字验证入口`verify_memory.py --model`使用隔离合成数据；真实模型、原生回放与真人听感以CHANGELOG分别记录为准。[完整安装说明](new_computer_download/READMEfirst.md#23-长期记忆生产接线)。
+
+
+
 J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS。目标是持续感知环境、提前规划与预警，并主动完成任务。智能眼镜、AR 和 Vision Pro 是可选终端，核心是 AI 系统与主动服务框架。当前主要开发平台为 macOS Apple Silicon。
 
 ### 已确认的方案 B
@@ -176,7 +204,7 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 
 目标采集层使用 SoundDevice 和独立 OpenCV 线程，640×480、采集 5–10fps；每个音频块默认附最新一帧 JPEG。GUI 预览与模型上行频率独立，采集、编码、重采样和记忆检索不得阻塞主事件循环。
 
-目标记忆层为 JSON 事实真源 + ChromaDB 可重建索引 + BGE-Small-ZH-v1.5 ONNX INT8。每 5 条摘要或会话结束批量提交，检索仅在会话初始化和完整句子结束后触发。本地 Whisper 为并行转写提供查询文本。
+生产记忆 v2 已采用 JSON 事实真源 + ChromaDB 可重建索引 + BGE-Small-ZH-v1.5 ONNX INT8。事实立即提交；向量更新满 5 条或会话结束批量写入。语音检索在会话初始化和完整句子结束后触发，显式 GUI 文字轮次也可检索；本地 Whisper 提供并行转写查询文本。
 
 **末期计划，尚未实现（2026-10-11 已确认）**：现有核心迁移完成后，最后接入本地待办清单与主动提醒。MiniCPM 判断任务、负责人、拟交给谁执行、当前活动与时间，本地程序校验后及时保存 JSON 并刷新 GUI；歧义待确认，推测活动会过期，完成须有用户反馈或真实执行证据。待办落盘不等待五条摘要的向量索引批次。普通静默巡检默认每 45 分钟，可设 30–60 分钟或更长；明确提醒时间和关键任务事件单独处理。巡检频率不等于提醒频率，提醒结合当前活动和免打扰，支持延后/取消并去重。实施前须验证 MiniCPM 独立结构化事件通道与固定后端接线，普通模型回复不能直接作为写入指令。清单不整份自动上传云端、不进入 Git；不承诺程序退出或电脑休眠时准时提醒。本次不改实现或安装方式，可选眼镜等外设不作为前置条件。详见 [AGENTS.md](AGENTS.md) 与 CHANGELOG 附 A6。
 
@@ -206,7 +234,13 @@ GUI「任务与资料」发布任务，「任务中心」查看队列、进度�
 
 支持文字PDF、DOCX/XLSX结构表及原文本格式，每份8 MiB、最多40份。新增资料查找、筛选/排序/去重、类型转换、分组统计、表间关联、带数字类型的Excel和可编辑Word报告。程序验收结构、字段、行数、引用、输入版本及导出数据一致性；主观内容仍须审阅。结果仍在 `output/m2/qwen/<task_id>/`，长回复只做原生查看提示。
 
-微信保持精确会话只读。有限分页实验已有实现和身份/连续重叠保护，实际历史翻页尚未验收，生产不开放多页工具；时间标签关联和附件自动下载未可靠验证，附件正文须选择已保存文件。不发送消息、不解密数据库，不将媒体占位当作正文。现有工具能完成的微信→表格任务可在本地执行；明确云端/手机交付仍只生成本地交接单，**OpenClaw尚未接入、未提交、手机未发送**。OCR、任意shell、原位文件修改和通用桌面控制仍后置。详见[安装指南第21节](new_computer_download/READMEfirst.md#21-可恢复长任务与扩展工具)。
+微信保持精确会话只读。有限分页实验已有实现和身份/连续重叠保护，实际历史翻页尚未验收，生产不开放多页工具；时间标签关联和附件自动下载未可靠验证，附件正文须选择已保存文件。不发送消息、不解密数据库，不将媒体占位当作正文。现有工具能完成的微信→表格任务可在本地执行；明确云端/手机交付仍只生成本地交接单，**OpenClaw尚未接入、未提交、手机未发送**。OCR和任意宿主shell仍未开放；独立授权的文件编辑与桌面操作见下节。详见[安装指南第21节](new_computer_download/READMEfirst.md#21-可恢复长任务与扩展工具)。
+
+### 电脑操作、文件编辑与代码执行（2026-10-31）
+
+在「任务与资料 → 设置本次电脑操作范围」选择工作目录、编辑/执行权限、网站和应用，再发布任务。支持文本/代码读取、精确片段修改、暂存差异、逐文件原子提交与条件回滚；Python/Node 在禁网、无宿主挂载的临时容器中运行输入副本。网站使用独立浏览器资料，桌面通过 macOS 辅助功能观察后点击、输入、滚动和拖动；截图后备由同一本机 Qwen 产生带预览的定位候选，具体确认并重新核对画面后点击。
+
+文件哈希、真实退出码和界面结果核验决定完成状态。任务中心可「确认操作」「停止电脑操作」；重开软件后界面任务先暂停，结果不明的动作先核对再继续。首版有文件/页面预算与固定导航键，不提供任意宿主 shell、密码代填、网页上传下载或所有应用通用兼容承诺。实际验收为 macOS arm64 上合成页面/窗口；真人语音及 MiniCPM 长时同跑另行验收。安装、使用和限制见[第22节](new_computer_download/READMEfirst.md#22-电脑操作文件编辑与隔离执行)。
 
 ### 当前实现状态
 
@@ -214,7 +248,7 @@ GUI「任务与资料」发布任务，「任务中心」查看队列、进度�
 
 **真人反馈修复（2026-10-22）**：Whisper small 增加含 Python、Lightroom 的有限中英词汇提示，不含执行句示例、不做同音猜改、不降低质量门槛。无工具语义的短展开追问可经两次一致的声学复核恢复；识别放行后 12 秒没有普通回复时明确显示提示。原生两轮回放仍出现转写正确但沉默或只答简短应答，提示实验无稳定改善已撤回；上下文追问尚未修复。原生播放增加 0.8 秒预缓冲和续播空档统计，保留 PCM 与取消边界，首音增加等待；持续供音不足仍可能停顿。原参考及条件缓存校验通过，但生成音频离线复核仍未还原完整任务句，播报完整性、克隆相似度和真人流畅度仍未验收。原生任务播报另修复字面文本送完后提前重置 TTS 尾段及滑窗误清理的问题，已有安装须更新登记补丁并重新编译；包版本和模型文件不变。
 
-**M0 已通过且 30 分钟长测免测；M1 听看说、GUI 预览与手动启停已于 2026-10-07 获用户真机验收。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。M2a 独立 Qwen 只读工具调用与中文文件输出已实测通过；M2b 已接入 Gateway CLI/GUI 的并行转写和明确系统指令路由，并于 2026-10-08 获用户确认真机文字结果正常；原生结果播报已接入，ChromaDB 与云端任务尚未接入。旧 MiniCPM 客户端、:9060 启动器、轮询 judge 与传统运行入口已移除，所有入口统一使用 Gateway。当前验收不等于无限会话或长期稳定性验证。
+**M0 已通过且 30 分钟长测免测；M1 听看说、GUI 预览与手动启停已于 2026-10-07 获用户真机验收。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。M2a 独立 Qwen 只读工具调用与中文文件输出已实测通过；M2b 已接入 Gateway CLI/GUI 的并行转写和明确系统指令路由，并于 2026-10-08 获用户确认真机文字结果正常；原生结果播报及含 ChromaDB 的长期记忆 v2 已接入，真实云端任务尚未接入。旧 MiniCPM 客户端、:9060 启动器、轮询 judge 与传统运行入口已移除，所有入口统一使用 Gateway。当前验收不等于无限会话或长期稳定性验证。
 
 固定版本 Gateway 的视频会话限 300 秒、音频会话限 600 秒。M1 默认每 240 秒上行后关闭并重建视频会话，重新注入参考音、已确认上下文和有界助手历史；重连时明确暂停采集，未转写的用户原话不会凭空恢复，目前存在采集间隙。
 
@@ -278,7 +312,7 @@ Qwen 每句仅获一个工具及精确参数枚举，改参数、重复或多项
 
 文件搜索只读名称，限定主目录内明确的非隐藏子目录（可说桌面/下载/文档，或完整路径），跳过隐藏项与符号链接；最多 20 条结果、60000 个条目、20 层子目录、4 秒扫描，独立进程 7 秒硬等待上限。POSIX 逐级使用 `O_NOFOLLOW`；达到上限或权限不足标明部分扫描，不能据此声称整个目录没有匹配。停止/重连取消等待、后续派发和旧报告发布，派发与取消使用同一代次锁；已提交给系统的打开动作不能撤回。
 
-生产记录仍在忽略的 `output/m2/qwen/`，独立验收为 `verify_local_tasks.py`。该项本地动作功能没有新增依赖或模型；当前生产入口还须完成前文 Agent 环境安装及原生 UTF-8 后端更新，随后重开 GUI 并开启“本地转写与电脑任务”。Windows/Linux 保留文件搜索和网址交接代码，但本阶段应用白名单仅支持 macOS，未做其他平台实测。任意命令、鼠标键盘控制、文件修改、长期记忆与云端升级仍待后续阶段。验收与命令见安装指南第 15 节。
+生产记录仍在忽略的 `output/m2/qwen/`，独立验收为 `verify_local_tasks.py`。该项本地动作功能没有新增依赖或模型；当前生产入口还须完成前文 Agent 环境安装及原生 UTF-8 后端更新，随后重开 GUI 并开启“本地转写与电脑任务”。Windows/Linux 保留文件搜索和网址交接代码，但本阶段应用白名单仅支持 macOS，未做其他平台实测。本节旧单步授权不扩大；新增文件编辑与桌面操作见上文独立任务授权。长期记忆已接生产，真实云端升级仍待后续阶段。验收与命令见安装指南第 15 节。
 
 站名自动解析（2026-10-17）：现在可直接说“打开小众软件”等未预设的名称，不必先登记域名。已知应用、明确网址和常用站名快捷入口保留。独立解析器通过国内优先必应 RSS 搜索（请求失败或结果失配再试全球入口），按主机去重，最多读取三个首页；核对名称、标题、正文、页面声明的规范地址及主站/论坛/下载分站差异。Qwen 只能选择真实候选编号。自动打开须唯一 HTTPS 候选满足证据门槛且 Qwen 同意；搜索排名、模型自报概率、页面自称官网都不足以单独放行。这些线索不是域名所有权证明，不承诺任意站名都能无歧义识别。
 
