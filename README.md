@@ -8,6 +8,8 @@ A local-first multimodal Proactive AI Butler inspired by JARVIS.
 
 J.A.C. aims to perceive its surroundings, plan ahead, warn of hazards and perform tasks proactively. Smart glasses and MR are optional terminals; the core product is the AI system and service framework. Development primarily targets macOS on Apple Silicon.
 
+**Development paused on 2026-11-04 at the user's request.** The local multimodal Agent prototype includes recoverable tasks, scoped computer actions and production long-term memory. Real OpenClaw execution, proactive to-dos/reminders and hazard-response loops remain unfinished. The pause snapshot, acceptance limits and suggested restart order are recorded in [CHANGELOG Appendix A8](CHANGELOG.md#pause-snapshot-20261104). The first recommended restart milestone is integrated live-device acceptance of the existing capabilities.
+
 ### Long-term memory (2026-11-02)
 
 Production voice and GUI text now share a local memory service. Explicit facts and ordinary self-described preferences can be saved automatically; quoted, hypothetical, temporary and secret content is excluded or kept out of confirmed facts. JSON is the source of truth, with atomic commits, source evidence, versions and deletion barriers. Corrections supersede the current fact; deleted facts cannot be recovered from the vector index. Human-readable `MEMORY.md` and daily views are derived from JSON.
@@ -172,6 +174,8 @@ Dynamic mappings live in ignored `.cache/sites/resolutions.json` (up to 128 entr
 
 ## 中文说明
 
+**2026-11-04 按 boss 要求暂停开发。** 当前成果是具备可恢复任务、受限电脑操作和长期记忆的本地多模态 Agent 原型。真实 OpenClaw、主动待办/提醒及危险预警/应急闭环仍未完成。阶段成果、验收边界、保留清单与恢复顺序见 [CHANGELOG 附 A8](CHANGELOG.md#pause-snapshot-20261104)；恢复后的首个建议目标是现有能力的真人综合验收。
+
 ### 长期记忆（2026-11-02）
 
 生产语音与GUI文字共用本机记忆服务：明确事实和日常自述的稳定偏好可自动保存；更正更新同一事实，删除后不能从索引复活。JSON为真源，记录原话来源、版本和删除屏障；`MEMORY.md`与每日文件是自动生成的可读视图。默认目录`~/.jac/memory/memory-v2/`，`JAC_MEMORY_DIR`可修改父目录。
@@ -200,7 +204,7 @@ J.A.C. 是一个本地优先的多模态主动 AI 管家，灵感来自 JARVIS�
 
 目标采集层使用 SoundDevice 和独立 OpenCV 线程，640×480、采集 5–10fps；每个音频块默认附最新一帧 JPEG。GUI 预览与模型上行频率独立，采集、编码、重采样和记忆检索不得阻塞主事件循环。
 
-目标记忆层为 JSON 事实真源 + ChromaDB 可重建索引 + BGE-Small-ZH-v1.5 ONNX INT8。每 5 条摘要或会话结束批量提交，检索仅在会话初始化和完整句子结束后触发。本地 Whisper 为并行转写提供查询文本。
+生产记忆 v2 已采用 JSON 事实真源 + ChromaDB 可重建索引 + BGE-Small-ZH-v1.5 ONNX INT8。事实立即提交；向量更新满 5 条或会话结束批量写入。语音检索在会话初始化和完整句子结束后触发，显式 GUI 文字轮次也可检索；本地 Whisper 提供并行转写查询文本。
 
 **末期计划，尚未实现（2026-10-11 已确认）**：现有核心迁移完成后，最后接入本地待办清单与主动提醒。MiniCPM 判断任务、负责人、拟交给谁执行、当前活动与时间，本地程序校验后及时保存 JSON 并刷新 GUI；歧义待确认，推测活动会过期，完成须有用户反馈或真实执行证据。待办落盘不等待五条摘要的向量索引批次。普通静默巡检默认每 45 分钟，可设 30–60 分钟或更长；明确提醒时间和关键任务事件单独处理。巡检频率不等于提醒频率，提醒结合当前活动和免打扰，支持延后/取消并去重。实施前须验证 MiniCPM 独立结构化事件通道与固定后端接线，普通模型回复不能直接作为写入指令。清单不整份自动上传云端、不进入 Git；不承诺程序退出或电脑休眠时准时提醒。本次不改实现或安装方式，可选眼镜等外设不作为前置条件。详见 [AGENTS.md](AGENTS.md) 与 CHANGELOG 附 A6。
 
@@ -244,7 +248,7 @@ GUI「任务与资料」发布任务，「任务中心」查看队列、进度�
 
 **真人反馈修复（2026-10-22）**：Whisper small 增加含 Python、Lightroom 的有限中英词汇提示，不含执行句示例、不做同音猜改、不降低质量门槛。无工具语义的短展开追问可经两次一致的声学复核恢复；识别放行后 12 秒没有普通回复时明确显示提示。原生两轮回放仍出现转写正确但沉默或只答简短应答，提示实验无稳定改善已撤回；上下文追问尚未修复。原生播放增加 0.8 秒预缓冲和续播空档统计，保留 PCM 与取消边界，首音增加等待；持续供音不足仍可能停顿。原参考及条件缓存校验通过，但生成音频离线复核仍未还原完整任务句，播报完整性、克隆相似度和真人流畅度仍未验收。原生任务播报另修复字面文本送完后提前重置 TTS 尾段及滑窗误清理的问题，已有安装须更新登记补丁并重新编译；包版本和模型文件不变。
 
-**M0 已通过且 30 分钟长测免测；M1 听看说、GUI 预览与手动启停已于 2026-10-07 获用户真机验收。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。M2a 独立 Qwen 只读工具调用与中文文件输出已实测通过；M2b 已接入 Gateway CLI/GUI 的并行转写和明确系统指令路由，并于 2026-10-08 获用户确认真机文字结果正常；原生结果播报已接入，ChromaDB 与云端任务尚未接入。旧 MiniCPM 客户端、:9060 启动器、轮询 judge 与传统运行入口已移除，所有入口统一使用 Gateway。当前验收不等于无限会话或长期稳定性验证。
+**M0 已通过且 30 分钟长测免测；M1 听看说、GUI 预览与手动启停已于 2026-10-07 获用户真机验收。** 新生产 Gateway 客户端、SoundDevice 采集/原生播放和 640×480 后台视频采集已接入 `main.py --gateway`，`--gui` 打开轻量 GUI。M2a 独立 Qwen 只读工具调用与中文文件输出已实测通过；M2b 已接入 Gateway CLI/GUI 的并行转写和明确系统指令路由，并于 2026-10-08 获用户确认真机文字结果正常；原生结果播报及含 ChromaDB 的长期记忆 v2 已接入，真实云端任务尚未接入。旧 MiniCPM 客户端、:9060 启动器、轮询 judge 与传统运行入口已移除，所有入口统一使用 Gateway。当前验收不等于无限会话或长期稳定性验证。
 
 固定版本 Gateway 的视频会话限 300 秒、音频会话限 600 秒。M1 默认每 240 秒上行后关闭并重建视频会话，重新注入参考音、已确认上下文和有界助手历史；重连时明确暂停采集，未转写的用户原话不会凭空恢复，目前存在采集间隙。
 
